@@ -61,26 +61,28 @@ payload 文件名必须保持 "Quest3TriggerUI.payload.dll.disabled"
    和 "Quest 3 Trigger UI" 插件启动日志。没有这两行
    说明插件没生效，先查文件是否放对位置。
 
-四、可选依赖（已随包附在"可选依赖"目录，按需安装）
+四、可选依赖（本包不含，需自行获取，按需安装）
 --------------------------------------------------------------------
-缺了对应功能自动降级并在日志报错，不影响其他功能。
-本包已把全部依赖实体打进 可选依赖\ 目录：
+以下依赖均为第三方作者作品，本包不再随附；缺了对应功能自动降级
+并在日志报错，不影响其他功能。请从原作者发布渠道（VaM Hub /
+Patreon / 官网）获取：
 
-| 依赖（包内位置）                        | 安装到                    | 影响的功能 |
-|-----------------------------------------|---------------------------|------------|
-| VAR插件包\AcidBubbles.Embody.60.var    | AddonPackages\            | "Embody"   |
-| VAR插件包\AcidBubbles.Timeline.291.var | AddonPackages\            | "表情"全量 |
-|                                         |                           | + "播放"   |
-| 表情Morphs\ 整个目录                   | 直接合并到 VaM 根目录      | "表情"morph|
-|                                         | （内含 Custom\Atom\...）   | 动画数据   |
-| VAR插件包\JayJayWon.UIAssist(Patron).93.var | AddonPackages\        | "脱衣"     |
-| VAR插件包\JayJayWon.BrowserAssist.91.var    | AddonPackages\        | "刷新VAR"  |
-|                                         |                           | 增量同步   |
-| VAR插件包\Skynet.BetterBends.15.var    | AddonPackages\            | "物理"     |
-| VAR插件包\Skynet.OrificeDynamics.30.var| AddonPackages\            | "物理"     |
-| LightLinker\ 整个文件夹                | Custom\Scripts\           | "灯光"     |
-| VamDlssNr\ 整个文件夹                  | BepInEx\plugins\          | "DLSS"     |
-| ffmpeg\bin\ffmpeg.exe                  | 任意位置，改配置指过去     | "录制"     |
+| 依赖                                   | 安装到                    | 影响的功能 |
+|----------------------------------------|---------------------------|------------|
+| AcidBubbles.Embody(.var)               | AddonPackages\            | "Embody"   |
+| AcidBubbles.Timeline ≥287(.var)        | AddonPackages\            | "表情"全量 |
+|                                        |                           | + "播放"   |
+| 各 morph 包中的表情 morph 文件          | 合并到 VaM 根目录          | "表情"morph|
+| （源自 AshAuryn、CheesyFX、SPQR、       | （Custom\Atom\... 结构）   | 动画数据   |
+|  VL_13、Jackaroo、jyy 等）              |                           |            |
+| JayJayWon.UIAssist(Patron)(.var)       | AddonPackages\            | "脱衣"     |
+| JayJayWon.BrowserAssist(.var)          | AddonPackages\            | "刷新VAR"  |
+|                                        |                           | 增量同步   |
+| Skynet.BetterBends(.var)               | AddonPackages\            | "物理"     |
+| Skynet.OrificeDynamics(.var)           | AddonPackages\            | "物理"     |
+| Lzswwx LightLinker                     | Custom\Scripts\           | "灯光"     |
+| VamDlssNr（作者 uncleburrito）          | BepInEx\plugins\          | "DLSS"     |
+| ffmpeg（ffmpeg.exe）                    | 任意位置，改配置指过去     | "录制"     |
 
 安装方式：
   - .var 文件：直接拷进 <VaM目录>\AddonPackages\，
@@ -97,7 +99,7 @@ payload 文件名必须保持 "Quest3TriggerUI.payload.dll.disabled"
     或加入系统 PATH 后保持默认 "ffmpeg.exe"。
 
 版本说明：
-  表情功能要求 Timeline ≥287，包内附的是 .291（向下兼容）。
+  表情功能要求 Timeline ≥287（向下兼容）。
   若你机器上已有更新版本，保留新版即可，不必降级。
   morph 文件与已有同名 morph 共存时以显示名合并，
   重复安装无副作用。
@@ -117,12 +119,11 @@ payload 文件名必须保持 "Quest3TriggerUI.payload.dll.disabled"
 表情功能补充说明：
   表情=Timeline动画（插件内嵌）+ morph文件驱动。动画数据
   已内嵌；运行时的内容依赖是两样——Timeline插件（≥287，
-  包内附.291）和72个引用morph。其中29个是VaM自带morph，
-  其余42个已从各morph包中提取、按原目录结构收在
-  可选依赖\表情Morphs\ 下（源自AshAuryn、CheesyFX、
-  SPQR、VL_13、Jackaroo、jyy等morph包，仅取所需文件）。
-  把该目录合并到VaM根目录即可全部生效；缺个别morph时
-  对应表情通道静默失效，不报错。
+  请自装）和72个引用morph。其中29个是VaM自带morph，
+  其余42个分散在AshAuryn、CheesyFX、SPQR、VL_13、
+  Jackaroo、jyy等morph包中，需从对应包按原目录结构
+  提取并合并到VaM根目录；缺个别morph时对应表情通道
+  静默失效，不报错。
   数据来源包 sevenseason.Car!_Sex!_Money!_Music!_Custom_8_
   Expression_V2_1 仅作出处标注，运行不需要，未打入包内。
 
