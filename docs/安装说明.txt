@@ -1,0 +1,208 @@
+====================================================================
+ Quest 3 Trigger UI v4.6.104 —— 安装说明与适用条件
+====================================================================
+
+一、包内容
+--------------------------------------------------------------------
+BepInEx/
+└── plugins/
+    └── Quest3TriggerUI/
+        ├── Quest3TriggerUI.HotLoader.dll        （热加载器，必需）
+        ├── Quest3TriggerUI.payload.dll.disabled （功能载荷，必需）
+        ├── pinyin_dict.txt        （拼音词库·全拼，中文输入法必需）
+        ├── pinyin_initials.txt    （拼音词库·简拼）
+        ├── pinyin_fuzzy.txt       （拼音词库·模糊音）
+        └── pinyin_syllables.txt   （拼音音节表）
+
+两个 dll 缺一不可。HotLoader 负责在游戏运行中加载/热更新 payload；
+payload 文件名必须保持 "Quest3TriggerUI.payload.dll.disabled"
+（带 .disabled 后缀是有意为之，BepInEx 不会直接加载它，
+由 HotLoader 按字节装载，请勿改名）。
+四个 pinyin_*.txt 是内置中文输入法的词库（共约 48MB，
+首次使用时后台加载）；缺失时中文输入不可用，
+其余功能不受影响。
+
+二、适用条件（不满足则不要装）
+--------------------------------------------------------------------
+【必需】
+1. Virt-A-Mate，已在 VaM 1.22.0.12 上开发和验证。
+   其他 1.2x 版本理论上可运行，但未实测；1.1x 大概率不兼容。
+2. 已安装 BepInEx 5.x（插件为 BepInEx 插件，非 VaM Session Plugin）。
+   未装 BepInEx 的 VaM 请先自行安装。
+3. Windows 64 位。
+
+【VR 环境】
+4. 本插件面向 VR 设计，主要交互（径向菜单、虚拟键盘、手柄震动、
+   VR 光标）只在 VR 模式下可用。桌面模式下插件能加载，
+   但绝大部分功能没有意义。
+5. 运行时：SteamVR / OpenVR（Quest 2/3 经 Link、Air Link 或
+   Virtual Desktop 串流均可）。按键映射按 Quest 手柄设计，
+   Index/Vive 手柄未做适配验证。
+6. Oculus 原生运行时（OVRManager）有兜底分支，但主验证路径是
+   SteamVR，建议用 SteamVR。
+
+【图形】
+7. VR 录制功能硬性要求 NVIDIA 显卡（编码器固定为
+   h264_nvenc / hevc_nvenc / av1_nvenc），并且需要 ffmpeg
+   （见"可选依赖"）。其余功能不挑显卡。
+
+三、安装步骤
+--------------------------------------------------------------------
+1. 关闭 VaM。
+2. 把包内 BepInEx 文件夹整个合并到 VaM 安装目录下
+   （即让 Quest3TriggerUI.HotLoader.dll 落在
+   <VaM目录>\BepInEx\plugins\Quest3TriggerUI\ 里）。
+   不会覆盖任何 VaM 原文件。
+3. 启动 VaM（VR 模式）。首次启动会生成配置文件：
+   <VaM目录>\BepInEx\config\local.vam.quest3-trigger-ui.cfg
+4. 验证加载成功：打开 <VaM目录>\BepInEx\LogOutput.log，
+   应能看到
+       Loaded Quest3TriggerUI payload SHA256=xxxxxxxx
+   和 "Quest 3 Trigger UI" 插件启动日志。没有这两行
+   说明插件没生效，先查文件是否放对位置。
+
+四、可选依赖（已随包附在"可选依赖"目录，按需安装）
+--------------------------------------------------------------------
+缺了对应功能自动降级并在日志报错，不影响其他功能。
+本包已把全部依赖实体打进 可选依赖\ 目录：
+
+| 依赖（包内位置）                        | 安装到                    | 影响的功能 |
+|-----------------------------------------|---------------------------|------------|
+| VAR插件包\AcidBubbles.Embody.60.var    | AddonPackages\            | "Embody"   |
+| VAR插件包\AcidBubbles.Timeline.291.var | AddonPackages\            | "表情"全量 |
+|                                         |                           | + "播放"   |
+| 表情Morphs\ 整个目录                   | 直接合并到 VaM 根目录      | "表情"morph|
+|                                         | （内含 Custom\Atom\...）   | 动画数据   |
+| VAR插件包\JayJayWon.UIAssist(Patron).93.var | AddonPackages\        | "脱衣"     |
+| VAR插件包\JayJayWon.BrowserAssist.91.var    | AddonPackages\        | "刷新VAR"  |
+|                                         |                           | 增量同步   |
+| VAR插件包\Skynet.BetterBends.15.var    | AddonPackages\            | "物理"     |
+| VAR插件包\Skynet.OrificeDynamics.30.var| AddonPackages\            | "物理"     |
+| LightLinker\ 整个文件夹                | Custom\Scripts\           | "灯光"     |
+| VamDlssNr\ 整个文件夹                  | BepInEx\plugins\          | "DLSS"     |
+| ffmpeg\bin\ffmpeg.exe                  | 任意位置，改配置指过去     | "录制"     |
+
+安装方式：
+  - .var 文件：直接拷进 <VaM目录>\AddonPackages\，
+    游戏内刷新包列表即可（也可放后点菜单"刷新VAR"）。
+  - LightLinker：把整个 LightLinker 文件夹拷到
+    <VaM目录>\Custom\Scripts\ 下，最终应为
+    Custom\Scripts\LightLinker\LightLinker.cslist。
+  - VamDlssNr：把整个 VamDlssNr 文件夹拷到
+    <VaM目录>\BepInEx\plugins\ 下（含 ngx 子目录与
+    nvngx.dll 目录，勿散开放）。仅 NVIDIA 显卡有意义。
+  - ffmpeg：把 ffmpeg.exe 放到任意固定目录（如
+    <VaM目录>\tools\ffmpeg.exe），然后在配置
+    [Recording] FfmpegPath 写它的全路径；
+    或加入系统 PATH 后保持默认 "ffmpeg.exe"。
+
+版本说明：
+  表情功能要求 Timeline ≥287，包内附的是 .291（向下兼容）。
+  若你机器上已有更新版本，保留新版即可，不必降级。
+  morph 文件与已有同名 morph 共存时以显示名合并，
+  重复安装无副作用。
+
+灯光功能补充说明：
+  "灯光"按钮打开的是 Lzswwx LightLinker 插件的控制面板。
+  如果它还没作为 Session Plugin 加载，插件会**自动把它
+  懒加载进 Session Plugins** 再开面板——默认从
+  Custom/Scripts/LightLinker/LightLinker.cslist 读取。
+  如果你的 LightLinker 在 .var 包里而非散文件，改配置
+  [Paths] LightLinkerUrl 指向包内路径，例如
+  Lzswwx.LightLinker.latest:/Custom/Scripts/LightLinker/LightLinker.cslist
+  文件确实找不到时按钮报错，不影响其他功能。面板内附带
+  "恢复场景原始灯光"按钮：按当前场景文件把灯光原子
+  恢复成存档状态，不重载场景。
+
+表情功能补充说明：
+  表情=Timeline动画（插件内嵌）+ morph文件驱动。动画数据
+  已内嵌；运行时的内容依赖是两样——Timeline插件（≥287，
+  包内附.291）和72个引用morph。其中29个是VaM自带morph，
+  其余42个已从各morph包中提取、按原目录结构收在
+  可选依赖\表情Morphs\ 下（源自AshAuryn、CheesyFX、
+  SPQR、VL_13、Jackaroo、jyy等morph包，仅取所需文件）。
+  把该目录合并到VaM根目录即可全部生效；缺个别morph时
+  对应表情通道静默失效，不报错。
+  数据来源包 sevenseason.Car!_Sex!_Money!_Music!_Custom_8_
+  Expression_V2_1 仅作出处标注，运行不需要，未打入包内。
+
+五、路径与自定义配置（换机必读）
+--------------------------------------------------------------------
+配置文件：BepInEx/config/local.vam.quest3-trigger-ui.cfg
+（游戏内改档位后 BepInEx 会自动回写此文件；手动改文件后
+需重启 VaM 才生效——本插件不会热读文件改动。）
+
+【Recording】录制输出（VR录制功能的路径）
+  OutputDirectory = VR录制
+      输出目录。相对路径相对 VaM 安装目录解析；
+      也可以写绝对路径，例如  D:\Videos\VaM 。
+  FfmpegPath = ffmpeg.exe
+      ffmpeg 可执行文件。只写名字时走系统 PATH 查找；
+      找不到就写全路径，例如
+      C:\tools\ffmpeg\bin\ffmpeg.exe 。
+      ffmpeg 必须带 NVENC 编码器（官方 gyan/essentials
+      构建一般都带）。
+
+【Paths】预设浏览器的起始目录（"人物"子菜单相关）
+  HairPresetDir       = Custom/Atom/Person/Hair
+  ClothingPresetDir   = Custom/Atom/Person/Clothing
+  AppearancePresetDir = Custom/Atom/Person/Appearance
+  SkinPresetDir       = Custom/Atom/Person/Skin
+      以上均为相对 VaM 安装目录的路径，对应"头发"预设、
+      服装预设浏览器的打开位置，以及预设浏览器文件工具
+      允许操作的范围。如果你的预设放在别的文件夹
+      （例如整合包把预设挪到了 Custom/Presets 下），
+      改成你的实际路径即可。
+      注意：VR 预设浏览器默认接管所有文件框，
+      "皮肤""外观"浏览也走新面板；关掉接管后才回到
+      VaM 原生预设面板（其默认目录由 VaM 自己管理）。
+
+【Browser】VR 预设浏览器接管开关
+  TakeoverNative = true
+      true = 所有原生文件浏览框（含第三方插件调起的）
+      统一走 VR 预设浏览器；false = 只有已接线的
+      保存/加载入口用新面板，其余回原生框。
+
+【IME】内置中文输入法
+  Learning = true
+      词频记忆。选过的词/词组进用户词典，全拼/简拼/
+      前缀输入都能召回，越常用越靠前；存于
+      config/Quest3TriggerUI.pinyin-user.txt。
+      false = 关闭记忆。
+  CloudCandidates = false
+      云候选开关。true = 打字时把拼音发到百度搜索建议
+      取候选（隐私自担）；false = 纯本地词库。
+      默认关——本地 rime-ice 词库已覆盖输入法级词汇。
+  DesktopImeBridge = false
+      桌面输入法桥接（实验性）。true = VaM 前台时把
+      VR 按键转发给桌面中文输入法（如豆包）并把它的
+      候选栏截图显示进 VR；false = 始终用内置引擎。
+
+【其余配置段】（一般不用动）
+  Input        手柄触发阈值与长按时长
+  Keyboard     虚拟键盘尺寸/距离/透明度/组合键时长
+  RadialMenu   径向菜单透明度
+  GlobalCursor VR 光标开关
+  Haptics      震动开关与强度
+  ViewPitch    右摇杆俯仰速度/上限/死区/反向
+  PhysicsBudget 物理降载档位与细调开关（见使用说明）
+
+六、数据文件（迁移存档用）
+--------------------------------------------------------------------
+以下文件由插件自动生成，都在 BepInEx/config/ 下，
+换机时连同 cfg 一起复制即可保留数据：
+  Quest3TriggerUI.clothing-favorites.txt        服装收藏列表
+  Quest3TriggerUI.clothing-favstate.<角色>.json 各收藏的物理快照
+  Quest3TriggerUI.clothing-locks.<角色>.txt     服装锁定列表
+  Quest3TriggerUI.clothing-bans.<角色>.txt      服装禁用列表
+  Quest3TriggerUI.browser-tabs.txt              浏览器标签页（跨会话）
+  Quest3TriggerUI.browser-fav-dirs.txt          浏览器收藏目录
+  Quest3TriggerUI.preset-save-dirs.txt          各类别最近保存目录
+  Quest3TriggerUI.pinyin-user.txt               输入法记忆词库
+  q3haptics-diag.txt                            诊断日志（可不带）
+
+七、卸载
+--------------------------------------------------------------------
+删除 BepInEx/plugins/Quest3TriggerUI/ 整个文件夹即可，
+不会残留任何对 VaM 文件的修改。config 下的数据文件
+按需保留或删除。
