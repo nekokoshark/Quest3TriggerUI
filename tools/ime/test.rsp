@@ -1,0 +1,5 @@
+/reference:System.dll
+/reference:System.Core.dll
+/reference:"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll"
+EngineTest.cs
+F:\vam1.22.0.12\工作区\Quest3TriggerUI工程\plugin_sources\PinyinEngine.cs

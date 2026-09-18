@@ -1,0 +1,1239 @@
+using System;
+using System.Reflection;
+using BepInEx;
+using BepInEx.Configuration;
+using BepInEx.Logging;
+using HarmonyLib;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace Quest3TriggerUI
+{
+    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    public sealed class Quest3TriggerUIPlugin : BaseUnityPlugin
+    {
+        public const string PluginGuid = "local.vam.quest3-trigger-ui";
+        public const string PluginName = "Quest 3 Trigger UI";
+        public const string PluginVersion = "4.6.104";
+
+        internal static Quest3TriggerUIPlugin Instance;
+        internal static TriggerStateMachine Trigger;
+		internal static TriggerStateMachine LeftTrigger;
+		internal static TriggerStateMachine RightGripTrigger;
+        internal static KeyboardChordStateMachine KeyboardChord;
+        internal static KeyboardChordStateMachine RecenterChord;
+        internal static ShortcutGestureBank ShortcutGestures;
+        internal static ManualLogSource Log;
+        public static bool RuntimeReady { get; private set; }
+
+        private Harmony _harmony;
+        private VrKeyboardOverlay _keyboard;
+        internal void ShowTextKeyboard()
+        {
+            if (_keyboard != null && !_keyboard.Visible) _keyboard.Toggle();
+            // While the preset browser owns the panel area, pin the keyboard
+            // to it instead of letting it track the view centre.
+            Transform dock = VrPresetBrowser.KeyboardDock;
+            if (dock != null && _keyboard != null)
+                _keyboard.DockAt(dock);
+        }
+
+        internal void UndockTextKeyboard(Transform host)
+        {
+            if (_keyboard != null && _keyboard.IsDockedUnder(host))
+                _keyboard.Recenter();
+        }
+        private VrRadialMenu _radialMenu;
+        private VrPinnedActionTiles _pinnedTiles;
+        private GlobalVrPitchController _globalPitch;
+        private EmbodyNavigationGuard _embodyNavigationGuard;
+        private PresetBrowserFileTools _presetBrowserFileTools;
+        private VrAimGuide _aimGuide;
+        private VrGlobalCursor _globalCursor;
+        private ConfigEntry<int> _physicsBudgetEntry;
+        private ConfigEntry<int> _physicsSolverCapEntry;
+        private ConfigEntry<float> _physicsHairScaleEntry;
+        private ConfigEntry<int> _physicsHairCollEntry;
+        private ConfigEntry<float> _physicsClothScaleEntry;
+        private ConfigEntry<int> _physicsClothOffEntry;
+        private int _handledToggleFrame = -1;
+        private int _handledRecenterFrame = -1;
+        private int _targetedInputSelfTestPhase;
+        private int _targetedInputSelfTestDeadline;
+        private bool _targetedInputSelfTestDown;
+        private IntPtr _targetedInputSelfTestForeground;
+        private int _duplicateSweepFrame;
+        private bool _hudCleanupDone;
+        private bool _updateLogged;
+        private bool _warmupPending = true;
+        private float _warmupDelay = 2.5f;
+        private int _quickActionRevision = -1;
+        private static int _inputSampleFrame = -1;
+        private static Vector2 _sampledRightStick;
+        private static bool _lastAButton;
+        private static int _aButtonDownFrame = -1;
+        private static int _aButtonUpFrame = -1;
+		internal static bool SliderDragActive { get; private set; }
+        internal static AceFavDragSource ClothingDragCandidate;
+        internal static bool ClothingDragActive;
+
+        internal static bool KeyboardVisible
+        {
+            get { return Instance != null && Instance._keyboard != null && Instance._keyboard.Visible; }
+        }
+
+        internal static bool RadialMenuVisible
+        {
+            get
+            {
+                return Instance != null && Instance._radialMenu != null &&
+                       Instance._radialMenu.Visible;
+            }
+        }
+
+        internal static bool PinnedTilesCapturingGrip { get { return Instance != null && Instance._pinnedTiles != null && Instance._pinnedTiles.CapturingGrip; } }
+        internal static bool GripPitchCapturing { get { return Instance != null && Instance._globalPitch != null && Instance._globalPitch.CapturingGrip; } }
+
+        internal static bool ShortcutBindingMode
+        {
+            get
+            {
+                return Instance != null && Instance._keyboard != null &&
+                       Instance._keyboard.BindingMode;
+            }
+        }
+
+        internal static bool InputRuntimeActive
+        {
+            get
+            {
+                return OVRManager.isHmdPresent || OpenVrInputBridge.IsActive;
+            }
+        }
+
+        internal static void AwakeDiag(string msg)
+        {
+            try
+            {
+                System.IO.File.AppendAllText(
+                    System.IO.Path.Combine(
+                        BepInEx.Paths.ConfigPath, "q3haptics-diag.txt"),
+                    msg + "\r\n");
+            }
+            catch { }
+        }
+
+        private void Awake()
+        { DlssUiOverlay.Begin();
+            try
+            {
+                RemoveDuplicateRuntimeInstances();
+            }
+            catch (Exception exception)
+            {
+                Logger.LogError("Duplicate runtime cleanup failed: " + exception);
+            }
+            RuntimeReady = false;
+            ConfigEntry<float> longPress = Config.Bind(
+                "Input", "LongPressSeconds", 0.35f,
+				"Seconds before right index opens the radial menu or right grip starts Grab while the keyboard is hidden.");
+            ConfigEntry<float> pressThreshold = Config.Bind(
+                "Input", "PressThreshold", 0.55f,
+                "Trigger pressure that begins a press.");
+            ConfigEntry<float> releaseThreshold = Config.Bind(
+                "Input", "ReleaseThreshold", 0.45f,
+                "Trigger pressure below which a press is released.");
+            ConfigEntry<float> chordTap = Config.Bind(
+                "Keyboard", "ChordTapSeconds", 0.45f,
+                "Maximum duration of a right index+grip tap that toggles the keyboard.");
+            ConfigEntry<float> keyboardScale = Config.Bind(
+                "Keyboard", "Scale", 0.00058f,
+                "World-space keyboard scale.");
+            ConfigEntry<float> keyboardDistance = Config.Bind(
+                "Keyboard", "Distance", 0.90f,
+                "Distance in metres used by Recenter.");
+            ConfigEntry<float> pitchSpeed = Config.Bind(
+                "ViewPitch", "DegreesPerSecond", 45f,
+                "Global VR view pitch speed for the right thumbstick vertical axis.");
+            ConfigEntry<float> pitchLimit = Config.Bind(
+                "ViewPitch", "MaximumDegrees", 80f,
+                "Maximum global VR view pitch above or below the neutral horizon.");
+            ConfigEntry<float> pitchDeadzone = Config.Bind(
+                "ViewPitch", "Deadzone", 0.18f,
+                "Right thumbstick vertical deadzone for global VR view pitch.");
+            ConfigEntry<bool> invertPitch = Config.Bind(
+                "ViewPitch", "Invert", false,
+                "Invert the global VR view pitch direction.");
+            ConfigEntry<float> radialOpacity = Config.Bind(
+                "RadialMenu", "Opacity", 0.75f,
+                "Radial menu and pinned tile opacity, 0.2 to 1.0.");
+            ConfigEntry<float> keyboardOpacity = Config.Bind(
+                "Keyboard", "Opacity", 0.75f,
+                "Virtual keyboard opacity, 0.2 to 1.0.");
+            ConfigEntry<bool> globalCursor = Config.Bind(
+                "GlobalCursor", "Enabled", true,
+                "Glowing ring cursor on UI surfaces under the VR pointer ray.");
+            ConfigEntry<bool> hapticsEnabled = Config.Bind(
+                "Haptics", "Enabled", true,
+                "Short controller vibration pulses on this plugin's VR UI interactions.");
+            ConfigEntry<float> hapticsStrength = Config.Bind(
+                "Haptics", "Strength", 1.0f,
+                "Haptic pulse strength, 0.0 to 1.0 (scales pulse length).");
+            VrHaptics.Enabled = hapticsEnabled.Value;
+            VrHaptics.Strength = Mathf.Clamp01(hapticsStrength.Value);
+            ConfigEntry<bool> takeover = Config.Bind(
+                "Browser", "TakeoverNative", true,
+                "Route every native file-browser call (loads, plugin dialogs) through the Quest3 browser. false = only the wired save/load entries use it.");
+            FileBrowserTakeover.Enabled = takeover.Value;
+            ConfigEntry<bool> pkgMgrBlock = Config.Bind(
+                "Browser", "BlockPackageManager", true,
+                "Disable VaM's built-in Package Manager entirely (it freezes for seconds scanning all .var files on open, and its queued thumbnail decodes keep hitching the game after close). true = every entry point is blocked and hidden; false = stock behavior.");
+            PackageManagerGuard.BlockEntry = pkgMgrBlock.Value;
+            // Drop thumbnail decodes/cache left over from any package
+            // manager session that ran before this payload loaded.
+            PackageManagerGuard.PurgeResiduals();
+            ConfigEntry<bool> imeCloud = Config.Bind(
+                "IME", "CloudCandidates", false,
+                "Query Baidu's search-suggestion service for Chinese candidates (typed pinyin is sent over the network). false = local dictionary only. Off by default — the local rime-ice dictionary already covers IME-grade vocabulary.");
+            PinyinEngine.CloudEnabled = imeCloud.Value;
+            PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
+            ConfigEntry<bool> imeLearning = Config.Bind(
+                "IME", "Learning", true,
+                "Remember committed words/phrases in a local user dictionary (全拼+简拼 both recall). Stored in Quest3TriggerUI.pinyin-user.txt next to the plugin.");
+            PinyinEngine.UserLearning = imeLearning.Value;
+            ConfigEntry<bool> imeBridge = Config.Bind(
+                "IME", "DesktopImeBridge", false,
+                "When the VaM window is foreground and the desktop Chinese IME (Doubao etc.) owns the layout, feed VR keys to it and mirror its candidate bar as an image in VR. false = always use the built-in engine.");
+            DoubaoImeBridge.ConfigEnabled = imeBridge.Value;
+            ConfigEntry<int> physicsBudget = Config.Bind(
+                "PhysicsBudget", "Level", 0,
+                "Physics cost cap: 0=off, 1=balanced, 2=aggressive. Runtime-only, fully revertible.");
+            ConfigEntry<int> physicsSolverCap = Config.Bind(
+                "PhysicsBudget", "SolverCap", -1,
+                "solverIterations cap override; -1=off (caps measured harmful), 0=disable.");
+            ConfigEntry<float> physicsHairScale = Config.Bind(
+                "PhysicsBudget", "HairScale", -1.0f,
+                "Hair density/detail scale; -1=level default (0.75/0.5), 0=disable.");
+            ConfigEntry<int> physicsHairColl = Config.Bind(
+                "PhysicsBudget", "HairCollision", -1,
+                "Hair collision solve off: -1=level default (aggressive only), 0=never, 1=always.");
+            ConfigEntry<float> physicsClothScale = Config.Bind(
+                "PhysicsBudget", "ClothScale", -1.0f,
+                "Cloth iteration scale for items with headroom; -1=level default (0.8/0.66), 0=disable.");
+            ConfigEntry<int> physicsClothOff = Config.Bind(
+                "PhysicsBudget", "ClothOffBelow", -1,
+                "Cloth items with <=N physics particles get sim disabled entirely; -1=level default (250/500), 0=never.");
+            ConfigEntry<string> recordingDir = Config.Bind(
+                "Recording", "OutputDirectory", "VR录制",
+                "VR recording output folder. Relative paths resolve under the VaM install folder; absolute paths are used as-is.");
+            ConfigEntry<string> ffmpegPath = Config.Bind(
+                "Recording", "FfmpegPath", "ffmpeg.exe",
+                "ffmpeg executable for VR recording. Bare name resolves through PATH; otherwise give a full path.");
+            VrVideoRecorder.OutputDirectory = recordingDir.Value;
+            VrVideoRecorder.FfmpegPath = ffmpegPath.Value;
+            ConfigEntry<string> hairPresetDir = Config.Bind(
+                "Paths", "HairPresetDir", "Custom/Atom/Person/Hair",
+                "VaM-relative folder where the hair preset browser opens. Change it if your hair presets live elsewhere.");
+            ConfigEntry<string> clothingPresetDir = Config.Bind(
+                "Paths", "ClothingPresetDir", "Custom/Atom/Person/Clothing",
+                "VaM-relative folder where the clothing preset browser opens. Change it if your clothing presets live elsewhere.");
+            ConfigEntry<string> appearancePresetDir = Config.Bind(
+                "Paths", "AppearancePresetDir", "Custom/Atom/Person/Appearance",
+                "VaM-relative appearance preset folder. Used by the preset browser file tools.");
+            ConfigEntry<string> skinPresetDir = Config.Bind(
+                "Paths", "SkinPresetDir", "Custom/Atom/Person/Skin",
+                "VaM-relative skin preset folder. Used by the preset browser file tools.");
+            ConfigEntry<string> lightLinkerUrl = Config.Bind(
+                "Paths", "LightLinkerUrl", "Custom/Scripts/LightLinker/LightLinker.cslist",
+                "LightLinker cslist URL used when the lights button lazy-loads it into Session Plugins. Point it at a .var path (e.g. Lzswwx.LightLinker.latest:/...) if yours lives in a package.");
+            PluginPaths.HairPresetDir = hairPresetDir.Value;
+            PluginPaths.ClothingPresetDir = clothingPresetDir.Value;
+            PluginPaths.AppearancePresetDir = appearancePresetDir.Value;
+            PluginPaths.SkinPresetDir = skinPresetDir.Value;
+            PluginPaths.LightLinkerUrl = lightLinkerUrl.Value;
+            PhysicsBudget.SetLevel(physicsBudget.Value);
+            PhysicsBudget.SolverCapOverride = physicsSolverCap.Value;
+            PhysicsBudget.HairScaleOverride = physicsHairScale.Value;
+            PhysicsBudget.HairCollisionMode = physicsHairColl.Value;
+            PhysicsBudget.ClothScaleOverride = physicsClothScale.Value;
+            PhysicsBudget.ClothOffBelowOverride = physicsClothOff.Value;
+            PhysicsBudget.LevelEntry = physicsBudget;
+            _physicsBudgetEntry = physicsBudget;
+            _physicsSolverCapEntry = physicsSolverCap;
+            _physicsHairScaleEntry = physicsHairScale;
+            _physicsHairCollEntry = physicsHairColl;
+            _physicsClothScaleEntry = physicsClothScale;
+            _physicsClothOffEntry = physicsClothOff;
+
+            Instance = this;
+            Log = Logger;
+            Trigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
+			LeftTrigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
+			RightGripTrigger = new TriggerStateMachine(
+				longPress.Value, pressThreshold.Value, releaseThreshold.Value);
+            KeyboardChord = new KeyboardChordStateMachine(
+                chordTap.Value, pressThreshold.Value, releaseThreshold.Value);
+            RecenterChord = new KeyboardChordStateMachine(
+                chordTap.Value, pressThreshold.Value, releaseThreshold.Value);
+            ShortcutGestures = new ShortcutGestureBank(pressThreshold.Value, releaseThreshold.Value);
+            _keyboard = new VrKeyboardOverlay(this, keyboardScale.Value, keyboardDistance.Value, keyboardOpacity.Value);
+            _radialMenu = new VrRadialMenu(
+                _keyboard.QuickActions, keyboardScale.Value, keyboardDistance.Value,
+                radialOpacity.Value);
+            _quickActionRevision = _keyboard.QuickActionRevision;
+            _pinnedTiles = new VrPinnedActionTiles(delegate(string id) { return _radialMenu.FindAction(id); }, radialOpacity.Value);
+            _radialMenu.SetPinnedTiles(_pinnedTiles);
+            _globalPitch = new GlobalVrPitchController(
+                pitchSpeed.Value, pitchLimit.Value, pitchDeadzone.Value, invertPitch.Value);
+            _embodyNavigationGuard = new EmbodyNavigationGuard();
+            _presetBrowserFileTools = new PresetBrowserFileTools();
+            _aimGuide = new VrAimGuide();
+            _globalCursor = new VrGlobalCursor(globalCursor.Value);
+            if (Environment.GetEnvironmentVariable("QUEST3_KEYBOARD_SELFTEST") == "1")
+                _targetedInputSelfTestPhase = 1;
+
+            AwakeDiag("awake entering patch region asm=" + GetType().Assembly.FullName);
+            _harmony = new Harmony(PluginGuid);
+            _harmony.PatchAll(typeof(Quest3TriggerUIPlugin).Assembly);
+            AwakeDiag("PatchAll done");
+            VrHaptics.ApplyExecutePatch(_harmony);
+            // Keep the game loop and rendering active while the desktop window is in
+            // the background; the OpenComposite/VDXR/OFXR path needs continuous frames.
+            Application.runInBackground = true;
+            Logger.LogInfo("Quest 3 Trigger UI: runInBackground forced enabled.");
+            Logger.LogInfo(
+				"Quest 3 full VR keyboard v" + PluginVersion + " ready: tap right index+grip to show/hide; " +
+                "left index=UI click; right-index hold over slider=drag slider without radial; " +
+                "both grips=recenter; toolbar=Embody/Recording; temporary shortcuts=ready; " +
+                "hold right index=show radial; center=pin mode; pinned tiles=drag/delete; right-grip long press=Grab; " +
+                "right-thumbstick vertical=Embody-only VR pitch; " +
+                "right-grip+right-thumbstick vertical=non-Embody VR pitch; " +
+                "preset browser=top toolbar + create folder + move preset bundle; person preset=exact replay including clothing; skin preset=nearest female; refresh VAR=toolbar action; " +
+                "standby=resident scene + paused simulation + UI-only cameras + 15 FPS + immediate restore; " +
+                "shared quick-action catalog=ready; bindable actions=ready; " +
+                "SevenSeason expression submenu=non-destructive preload/playback + per-expression Timeline + toggle + optional mixing + tongue baseline restore; " +
+                "keyboard eye-gap slider=50% calibrated midpoint/2x open upper/stable eyelid writer/blink blend/nearest female/non-radial; UIAssist clothing editor=forced direct display without reopening control panel; " +
+                "title bar=hold-to-move; " +
+                "keys=in-process Unity Input bridge + VaM window; VR Chinese IME=pinyin composition + clickable candidates; " +
+                "desktop focus independent; no SteamVR dependency.");
+            RuntimeReady = true;
+            _duplicateSweepFrame = Time.frameCount + 2;
+            Logger.LogInfo("payload awake asm=" + GetType().Assembly.GetHashCode() +
+                " go='" + (gameObject != null ? gameObject.name : "?") + "'");
+        }
+
+        private void RemoveDuplicateRuntimeInstances()
+        {
+            int removed = 0;
+            MonoBehaviour[] behaviours = Resources.FindObjectsOfTypeAll<MonoBehaviour>();
+            for (int i = 0; i < behaviours.Length; i++)
+            {
+                MonoBehaviour candidate = behaviours[i];
+                if (candidate == null || ReferenceEquals(candidate, this) ||
+                    candidate.GetType().FullName != GetType().FullName)
+                    continue;
+
+                UnityEngine.Object.DestroyImmediate(candidate);
+                removed++;
+            }
+            if (removed > 0)
+                Logger.LogWarning("Removed " + removed +
+                    " duplicate Quest3TriggerUI runtime instance(s) and their overlapping canvases.");
+        }
+
+        private void Update()
+        {
+            if (!_updateLogged) { _updateLogged = true; Logger.LogInfo("payload update asm=" + GetType().Assembly.GetHashCode()); }
+            UiAssistHudLink.Observe();
+            if (_duplicateSweepFrame >= 0 && Time.frameCount >= _duplicateSweepFrame)
+            {
+                _duplicateSweepFrame = -1;
+                RemoveDuplicateRuntimeInstances();
+            }
+
+            // Orphaned hide-groups injected by earlier payload generations
+            // leave the control panel grey and unclickable for the whole
+            // session. Clean once the HUD exists — Awake can precede it.
+            if (!_hudCleanupDone && SuperController.singleton != null &&
+                SuperController.singleton.mainHUD != null)
+            {
+                _hudCleanupDone = true;
+                VrPresetBrowser.CleanupHudState();
+                PackageManagerGuard.RemoveEntryButtons();
+            }
+
+            // First-open stall fix: a freshly (re)loaded payload has cold
+            // JIT + empty dir/thumb caches, so the first browser open used
+            // to freeze for seconds. Spread the warmup across frames.
+            if (_warmupPending && SuperController.singleton != null)
+            {
+                if (_warmupDelay > 0f)
+                    _warmupDelay -= Time.unscaledDeltaTime;
+                else
+                {
+                    VrPresetBrowser.BeginWarmup();
+                    if (!VrPresetBrowser.WarmupStep())
+                        _warmupPending = false;
+                }
+            }
+
+            if (_targetedInputSelfTestPhase != 0)
+                RunTargetedInputSelfTest();
+
+            // The native preset browser is also used by VDXR paths where
+            // OVRManager.isHmdPresent can be false. Keep its toolbar outside
+            // the Quest-controller input gate so it is always attached.
+            if (SuperController.singleton != null)
+                _presetBrowserFileTools.Tick();
+
+            if (!InputRuntimeActive || SuperController.singleton == null)
+                return;
+
+            SampleInputs();
+            VrHaptics.Tick();
+            // Level syncs on change only — per-frame override syncing would
+            // stomp runtime lever changes made through the menu.
+            if (_physicsBudgetEntry != null &&
+                _physicsBudgetEntry.Value != PhysicsBudget.Level)
+                PhysicsBudget.SetLevel(_physicsBudgetEntry.Value);
+            PhysicsBudget.Tick();
+            _keyboard.Tick();
+            if (_quickActionRevision != _keyboard.QuickActionRevision)
+            {
+                _quickActionRevision = _keyboard.QuickActionRevision;
+
+                _radialMenu.RefreshActions(_keyboard.QuickActions);
+            }
+            _radialMenu.Tick();
+            _pinnedTiles.Tick(Trigger, RightGripTrigger);
+            HairDebugMode.Tick();
+            ClothingRegionMode.Tick();
+            int frame = Time.frameCount;
+            if (ClothingDragCandidate != null && Trigger != null &&
+                Trigger.LongPressStartFrame == frame)
+            {
+                ClothingDragActive = UiAssistHudLink.BeginFavoriteDrag(ClothingDragCandidate);
+            }
+            if (ClothingDragActive && Trigger != null)
+            {
+                if (Trigger.ReleasedFrame == frame)
+                {
+                    UiAssistHudLink.EndFavoriteDrag(ClothingDragCandidate);
+                    ClothingDragActive = false;
+                    ClothingDragCandidate = null;
+                }
+                else
+                {
+                    UiAssistHudLink.TickFavoriteDrag();
+                }
+            }
+            if (Trigger != null && Trigger.LongPressStartFrame == frame)
+            {
+                if (_keyboard.Visible)
+                    Logger.LogInfo("Q3 radial blocked: keyboard visible");
+                else if (SliderDragActive)
+                    Logger.LogInfo("Q3 radial blocked: slider drag active");
+                else if (ClothingDragCandidate != null)
+                    Logger.LogInfo("Q3 radial blocked: clothing drag candidate");
+                else if (ClothingRegionMode.PointerInside)
+                    Logger.LogInfo("Q3 radial blocked: regional clothing drag");
+                else if (VrPresetBrowser.PointerInside)
+                    Logger.LogInfo("Q3 radial blocked: pointer inside browser");
+                else if (KeyboardChord != null && KeyboardChord.Active)
+                    Logger.LogInfo("Q3 radial blocked: chord active (grip latch?)");
+                else
+                {
+                    _radialMenu.ShowHold();
+                    Logger.LogInfo("VR radial quick menu shown for hold selection. asm=" +
+                        GetType().Assembly.GetHashCode());
+                }
+            }
+            if (_radialMenu.Visible && Trigger != null &&
+                Trigger.LongPressReleaseFrame == frame)
+            {
+                string selectedAction = _radialMenu.ReleaseAndSelect();
+                Logger.LogInfo(selectedAction == null
+                    ? "VR radial quick menu closed without selection."
+                    : "VR radial quick action selected: " + selectedAction);
+            }
+            if (_radialMenu.Visible && _radialMenu.PinMode && Trigger != null &&
+                Trigger.TapFrame == frame)
+            {
+                string pinnedAction = _radialMenu.FixedTapSelect();
+                if (pinnedAction != null) Logger.LogInfo("VR radial " + pinnedAction);
+            }
+            if (!_radialMenu.Visible)
+            {
+                _keyboard.HandleShortcutGestures(ShortcutGestures, frame);
+            }
+            if (KeyboardChord != null && KeyboardChord.ToggleFrame == frame && _handledToggleFrame != frame)
+            {
+                _handledToggleFrame = frame;
+                _radialMenu.Hide();
+                _keyboard.Toggle();
+                Logger.LogInfo(_keyboard.Visible ? "VR keyboard shown." : "VR keyboard hidden.");
+            }
+            if (_keyboard.Visible && RecenterChord != null &&
+                RecenterChord.ToggleFrame == frame && _handledRecenterFrame != frame)
+            {
+                _handledRecenterFrame = frame;
+                _keyboard.Recenter();
+                Logger.LogInfo("VR keyboard recentered by left+right grip tap.");
+            }
+        }
+
+        private void LateUpdate()
+        {
+            if (_keyboard != null)
+            {
+                _keyboard.LateTick();
+                _keyboard.ThrottleStandbyFrame();
+            }
+
+            SuperController controller = SuperController.singleton;
+            bool radialVisible = _radialMenu != null && _radialMenu.Visible;
+            bool showAimGuide = InputRuntimeActive && controller != null &&
+
+
+                (_keyboard == null || !_keyboard.StandbyActive);
+            if (_aimGuide != null)
+                _aimGuide.Tick(showAimGuide,
+                    controller == null ? null : VrPointerPresentation.MotionController(controller, false),
+                    controller == null ? null : VrPointerPresentation.MotionController(controller, true));
+            if (_globalCursor != null && InputRuntimeActive)
+                _globalCursor.Tick();
+        }
+
+        private void RefreshPitchInputMode()
+        {
+            if (_globalPitch == null)
+                return;
+            SuperController controller = SuperController.singleton;
+            bool embodyActive = _keyboard != null && _keyboard.EmbodyActive;
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.Observe(
+                    embodyActive, SuperController.singleton, _globalPitch);
+            bool blockInput = _keyboard == null || _keyboard.Visible ||
+                              _radialMenu == null || _radialMenu.Visible ||
+                              (controller != null && controller.worldUIActivated) ||
+                              (_pinnedTiles != null && _pinnedTiles.CapturingGrip) ||
+                              (KeyboardChord != null && KeyboardChord.Active) ||
+                              (Trigger != null && Trigger.LongPressActive);
+            bool gripPressed = RightGripTrigger != null && RightGripTrigger.Pressed;
+            // Reuse this frame's sampled stick: SampleInputs already paid for
+            // the OpenVR/Oculus read. Resampling here doubles reflection calls.
+            Vector2 thumbstick;
+            if (_inputSampleFrame == Time.frameCount)
+            {
+                thumbstick = _sampledRightStick;
+            }
+            else
+            {
+                float openVrIndex;
+                float openVrGrip;
+                float openVrLeftGrip;
+                float openVrA;
+                if (!OpenVrInputBridge.TryGetInput(
+                    out openVrIndex, out openVrGrip, out openVrLeftGrip,
+                    out openVrA, out thumbstick))
+                {
+                    thumbstick = OVRInput.Get(
+                        OVRInput.Axis2D.SecondaryThumbstick,
+                        OVRInput.Controller.Touch);
+                }
+            }
+            float thumbstickY = thumbstick.y;
+            _globalPitch.UpdateInputMode(
+                embodyActive, gripPressed, blockInput, thumbstickY);
+        }
+
+        internal void BeforeSuperControllerUpdate(SuperController controller)
+        {
+            if (_globalPitch != null)
+                _globalPitch.BeforeSuperControllerUpdate(controller);
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.BeforeFrame(controller, _globalPitch);
+        }
+
+        internal void BeforeControllerInteraction(SuperController controller)
+        {
+            if (_globalPitch == null) return;
+            SampleInputs();
+            RefreshPitchInputMode();
+            _globalPitch.BeforeControllerInteraction(controller);
+        }
+        internal void BeforeNativeNavigation(SuperController controller)
+        {
+            if (_globalPitch != null)
+                _globalPitch.BeforeNativeNavigation(controller);
+        }
+        internal void BeforePointerFinalization(SuperController controller)
+        {
+            if (_globalPitch != null)
+                _globalPitch.BeforePointerFinalization(controller);
+        }
+        internal void BeforeEmbodyToggle(bool wasActive)
+        {
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.BeforeToggle(
+                    wasActive, SuperController.singleton, _globalPitch);
+        }
+        internal void AfterEmbodyToggle(bool wasActive, bool active)
+        {
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.AfterToggle(wasActive, active);
+        }
+        internal void ForceEmbodyNavigationReset()
+        {
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.ForceNavigationReset(
+                    SuperController.singleton, _globalPitch);
+        }
+        internal void ResetGlobalPitch(SuperController controller)
+        {
+            if (_globalPitch != null)
+                _globalPitch.Reset(controller);
+        }
+
+        private void RunTargetedInputSelfTest()
+        {
+            const ushort virtualKeyF12 = 0x7B;
+            if (_targetedInputSelfTestPhase == 1)
+            {
+                if (Time.frameCount < 120)
+                    return;
+
+                _targetedInputSelfTestForeground = WindowsKeyboard.GetForegroundWindowHandle();
+                bool gameForeground =
+                    _targetedInputSelfTestForeground == WindowsKeyboard.GetGameWindowHandle();
+                VirtualKeyboardState.KeyDown(virtualKeyF12, false);
+                _targetedInputSelfTestDeadline = Time.frameCount + 30;
+                _targetedInputSelfTestPhase = 2;
+                Logger.LogInfo(
+                    "INPROCESS INPUT SELFTEST START; Key=F12; WindowPost=False; " +
+                    "GameForeground=" + gameForeground +
+                    "; ApplicationFocused=" + Application.isFocused);
+                return;
+            }
+
+            if (_targetedInputSelfTestPhase == 2)
+            {
+                if (Input.GetKeyDown(KeyCode.F12))
+                {
+                    _targetedInputSelfTestDown = true;
+                    VirtualKeyboardState.KeyUp(virtualKeyF12, false);
+                    _targetedInputSelfTestDeadline = Time.frameCount + 30;
+                    _targetedInputSelfTestPhase = 3;
+                }
+                else if (Time.frameCount > _targetedInputSelfTestDeadline)
+                {
+                    VirtualKeyboardState.KeyUp(virtualKeyF12, false);
+                    Logger.LogError(
+                        "INPROCESS INPUT SELFTEST RESULT=FAIL; UnityKeyDown=False; ForegroundChanged=" +
+                        (WindowsKeyboard.GetForegroundWindowHandle() != _targetedInputSelfTestForeground));
+                    _targetedInputSelfTestPhase = 0;
+                }
+                return;
+            }
+
+            if (_targetedInputSelfTestPhase == 3)
+            {
+                if (Input.GetKeyUp(KeyCode.F12))
+                {
+                    bool foregroundChanged =
+                        WindowsKeyboard.GetForegroundWindowHandle() != _targetedInputSelfTestForeground;
+                    Logger.LogInfo(
+                        "INPROCESS INPUT SELFTEST RESULT=PASS; UnityKeyDown=" +
+                        _targetedInputSelfTestDown + "; UnityKeyUp=True; ForegroundChanged=" +
+                        foregroundChanged);
+                    _targetedInputSelfTestPhase = 0;
+                }
+                else if (Time.frameCount > _targetedInputSelfTestDeadline)
+                {
+                    Logger.LogError(
+                        "INPROCESS INPUT SELFTEST RESULT=FAIL; UnityKeyDown=" +
+                        _targetedInputSelfTestDown + "; UnityKeyUp=False");
+                    _targetedInputSelfTestPhase = 0;
+                }
+            }
+        }
+
+        private void OnApplicationFocus(bool focused)
+        {
+            if (!focused && _keyboard != null)
+                _keyboard.ReleaseAllKeys();
+        }
+
+        private void OnDestroy()
+        {
+            UiAssistHudLink.Reset(); DlssUiOverlay.Stop();
+            PinyinEngine.FlushUserDict();
+            HairDebugMode.Shutdown();
+            ClothingRegionMode.Shutdown();
+            PhysicsBudget.Restore();
+            RuntimeReady = false;
+            if (_globalPitch != null)
+                _globalPitch.Reset(SuperController.singleton);
+            if (_presetBrowserFileTools != null)
+                _presetBrowserFileTools.Dispose();
+            if (_keyboard != null)
+                _keyboard.Dispose();
+            if (_radialMenu != null)
+                _radialMenu.Dispose();
+            if (_pinnedTiles != null) _pinnedTiles.Dispose();
+            if (_aimGuide != null) _aimGuide.Dispose();
+            if (_globalCursor != null) _globalCursor.Dispose();
+            VirtualKeyboardState.Clear();
+            if (_harmony != null)
+                _harmony.UnpatchAll(PluginGuid);
+
+            Instance = null;
+            Trigger = null;
+			LeftTrigger = null;
+			RightGripTrigger = null;
+            KeyboardChord = null;
+            RecenterChord = null;
+            ShortcutGestures = null;
+            _inputSampleFrame = -1;
+            _lastAButton = false;
+            _aButtonDownFrame = -1;
+            _aButtonUpFrame = -1;
+			SliderDragActive = false;
+            ClothingDragActive = false;
+            ClothingDragCandidate = null;
+            _globalPitch = null;
+            if (_embodyNavigationGuard != null)
+                _embodyNavigationGuard.Reset();
+            _embodyNavigationGuard = null;
+            _presetBrowserFileTools = null;
+            _aimGuide = null;
+            _globalCursor = null;
+        }
+
+        private static float _lastSampleTime = -1f;
+        private static float _rightGripHeldSeconds;
+        private static float _leftGripHeldSeconds;
+        private static bool _rightGripStaleLogged;
+        private static bool _leftGripStaleLogged;
+        private static bool _gripReResolveTried;
+        private const float StaleGripSeconds = 20f;
+        private const float StaleGripThreshold = 0.5f;
+
+        // A VR-runtime reconnect can freeze a SteamVR digital action at its
+        // last state (e.g. grip held at disconnect stays "held"). A real grip
+        // hold this long is a Grab handled natively by VaM, so zeroing our
+        // sampled value past the window only costs gestures we would never
+        // trigger mid-Grab anyway.
+        private static float FilterStaleHold(float raw, bool right, float dt)
+        {
+            if (raw >= StaleGripThreshold)
+            {
+                if (right) _rightGripHeldSeconds += dt;
+                else _leftGripHeldSeconds += dt;
+            }
+            else
+            {
+                if (right) { _rightGripHeldSeconds = 0f; _rightGripStaleLogged = false; }
+                else { _leftGripHeldSeconds = 0f; _leftGripStaleLogged = false; }
+                if (!_rightGripStaleLogged && !_leftGripStaleLogged)
+                    _gripReResolveTried = false;
+                return raw;
+            }
+
+            float held = right ? _rightGripHeldSeconds : _leftGripHeldSeconds;
+            if (held <= StaleGripSeconds)
+                return raw;
+            if (right ? _rightGripStaleLogged : _leftGripStaleLogged)
+                return 0f;
+            if (right) _rightGripStaleLogged = true; else _leftGripStaleLogged = true;
+            if (Log != null)
+                Log.LogInfo("Q3: " + (right ? "right" : "left") +
+                    " grip held " + StaleGripSeconds + "s — treating input as stale; " +
+                    "re-resolving OpenVR actions and clamping grip.");
+            if (!_gripReResolveTried)
+            {
+                _gripReResolveTried = true;
+                OpenVrInputBridge.ForceReResolve();
+            }
+            return 0f;
+        }
+
+        internal static void SampleInputs()
+        {
+			if (Trigger == null || LeftTrigger == null || RightGripTrigger == null ||
+				KeyboardChord == null || RecenterChord == null ||
+                ShortcutGestures == null)
+                return;
+
+            int frame = Time.frameCount;
+            if (_inputSampleFrame == frame)
+                return;
+            _inputSampleFrame = frame;
+            float indexValue;
+			float leftIndexValue;
+            float gripValue;
+            float leftGripValue;
+            float aValue;
+            Vector2 rightStick;
+            if (!OpenVrInputBridge.TryGetInput(
+                out indexValue, out gripValue, out leftGripValue, out aValue,
+                out rightStick))
+            {
+                indexValue = OVRInput.Get(
+                    OVRInput.Axis1D.SecondaryIndexTrigger, OVRInput.Controller.Touch);
+                gripValue = OVRInput.Get(
+                    OVRInput.Axis1D.SecondaryHandTrigger, OVRInput.Controller.Touch);
+                leftGripValue = OVRInput.Get(
+                    OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.Touch);
+                aValue = OVRInput.Get(
+                    OVRInput.Button.One, OVRInput.Controller.Touch) ? 1f : 0f;
+				leftIndexValue = OVRInput.Get(
+					OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.Touch);
+                rightStick = OVRInput.Get(
+                    OVRInput.Axis2D.SecondaryThumbstick, OVRInput.Controller.Touch);
+            }
+			else if (!OpenVrInputBridge.TryGetLeftIndexTrigger(out leftIndexValue))
+				leftIndexValue = 0f;
+            _sampledRightStick = rightStick;
+            float sampleDt = _lastSampleTime > 0f ?
+                Time.unscaledTime - _lastSampleTime : 0f;
+            _lastSampleTime = Time.unscaledTime;
+            gripValue = FilterStaleHold(gripValue, true, sampleDt);
+            leftGripValue = FilterStaleHold(leftGripValue, false, sampleDt);
+            Trigger.Advance(frame, Time.unscaledTime, indexValue);
+			LeftTrigger.Advance(frame, Time.unscaledTime, leftIndexValue);
+			if (Trigger.PressedDownFrame == frame)
+            {
+                if (Log != null &&
+                    ((KeyboardChord != null && KeyboardChord.Active) ||
+                     KeyboardVisible || RadialMenuVisible ||
+                     VrPresetBrowser.PointerInside))
+                    Log.LogInfo("Q3 input idx=" + indexValue.ToString("F2") +
+                        " grip=" + gripValue.ToString("F2") + " lGrip=" +
+                        leftGripValue.ToString("F2") + " a=" + aValue.ToString("F2") +
+                        " chordAct=" + (KeyboardChord != null && KeyboardChord.Active) +
+                        " kbVis=" + KeyboardVisible + " radVis=" + RadialMenuVisible +
+                        " ptrIn=" + VrPresetBrowser.PointerInside);
+				SliderDragActive = VrSliderPointer.IsRightPointerOverSlider();
+                GameObject pressLookRight = VrPointerPresentation.CurrentLookTarget(true);
+                GameObject pressLookLeft = VrPointerPresentation.CurrentLookTarget(false);
+                ClothingDragCandidate =
+                    UiAssistHudLink.BeginFavoriteCandidate(pressLookRight) ??
+                    UiAssistHudLink.BeginFavoriteCandidate(pressLookLeft);
+                if (ClothingDragCandidate == null)
+                    UiAssistHudLink.LogPressMiss(pressLookRight, pressLookLeft);
+            }
+			else if (!Trigger.Pressed && Trigger.ReleasedFrame != frame)
+            {
+				SliderDragActive = false;
+                ClothingDragCandidate = null;
+            }
+			RightGripTrigger.Advance(frame, Time.unscaledTime, gripValue);
+            if (RightGripTrigger.PressedDownFrame == frame && Log != null)
+                Log.LogInfo("Q3 grip edge: grip=" + gripValue.ToString("F2") +
+                    " idx=" + indexValue.ToString("F2"));
+            KeyboardChord.Advance(frame, Time.unscaledTime, indexValue, gripValue);
+            RecenterChord.Advance(frame, Time.unscaledTime, leftGripValue, gripValue);
+            bool aPressed = aValue >= 0.5f;
+            _aButtonDownFrame = ! _lastAButton && aPressed ? frame : -1;
+            _aButtonUpFrame = _lastAButton && !aPressed ? frame : -1;
+            _lastAButton = aPressed;
+
+            ShortcutGestures.Advance(frame, Time.unscaledTime,
+                leftIndexValue, leftGripValue, indexValue, gripValue,
+                SliderDragActive || ClothingDragActive || RadialMenuVisible || PinnedTilesCapturingGrip || GripPitchCapturing);
+
+            if (Instance != null)
+                Instance.RefreshPitchInputMode();
+        }
+
+        internal static bool IndexAButtonDown()
+        {
+            return _aButtonDownFrame == Time.frameCount;
+        }
+
+        internal static bool IndexAButtonUp()
+        {
+            return _aButtonUpFrame == Time.frameCount;
+        }
+
+internal static bool SuppressRightInput()
+        {
+            SampleInputs();
+            int frame = Time.frameCount;
+            return (KeyboardChord != null && KeyboardChord.SuppressInput(frame)) ||
+                   GripPitchCapturing ||
+				   (!SliderDragActive && !KeyboardVisible && Trigger != null &&
+                    (Trigger.LongPressActive || Trigger.LongPressReleaseFrame == frame));
+        }
+    }
+
+	internal static class VrSliderPointer
+	{
+		private static readonly BindingFlags Fields = BindingFlags.Instance |
+			BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+
+		internal static bool IsRightPointerOverSlider()
+		{
+			try
+			{
+				FieldInfo singletonField = typeof(LookInputModule).GetField("_singleton", Fields);
+				LookInputModule module = singletonField == null
+					? null : singletonField.GetValue(null) as LookInputModule;
+				if (module == null) return false;
+				FieldInfo lookField = typeof(LookInputModule).GetField("currentLookRight", Fields);
+				GameObject target = lookField == null ? null : lookField.GetValue(module) as GameObject;
+				return target != null &&
+					(target.GetComponentInParent<Slider>() != null ||
+					 target.GetComponentInParent<Scrollbar>() != null ||
+					 target.GetComponentInParent<SliderControl>() != null);
+			}
+			catch { return false; }
+		}
+	}
+
+    internal static class SyntheticRightUiClick
+    {
+        private static readonly SyntheticClickState State = new SyntheticClickState();
+        internal static void Begin(int frame) { State.Begin(frame); }
+        internal static bool ConsumeUp(int frame) { return State.ConsumeUp(frame); }
+    }
+
+    [HarmonyPatch(typeof(LookInputModule), "GetSubmitRightButtonDown")]
+    internal static class GetSubmitRightButtonDownPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(ref bool __result)
+        {
+            if (!Quest3TriggerUIPlugin.InputRuntimeActive)
+                return true;
+
+            Quest3TriggerUIPlugin.SampleInputs();
+            int frame = Time.frameCount;
+			if (Quest3TriggerUIPlugin.SliderDragActive)
+			{
+				__result = Quest3TriggerUIPlugin.Trigger != null &&
+					Quest3TriggerUIPlugin.Trigger.PressedDownFrame == frame;
+				return false;
+			}
+            if (Quest3TriggerUIPlugin.SuppressRightInput())
+            {
+                __result = false;
+                return false;
+            }
+
+            if (Quest3TriggerUIPlugin.KeyboardVisible)
+            {
+                __result = Quest3TriggerUIPlugin.Trigger != null &&
+                           Quest3TriggerUIPlugin.Trigger.PressedDownFrame == frame;
+                return false;
+            }
+
+            bool triggerTap = Quest3TriggerUIPlugin.Trigger != null &&
+                              Quest3TriggerUIPlugin.Trigger.TapFrame == frame;
+            if (triggerTap)
+                SyntheticRightUiClick.Begin(frame);
+            __result = triggerTap || Quest3TriggerUIPlugin.IndexAButtonDown();
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(LookInputModule), "GetSubmitRightButtonUp")]
+    internal static class GetSubmitRightButtonUpPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(ref bool __result)
+        {
+            if (!Quest3TriggerUIPlugin.InputRuntimeActive)
+                return true;
+
+            Quest3TriggerUIPlugin.SampleInputs();
+            int frame = Time.frameCount;
+			if (Quest3TriggerUIPlugin.SliderDragActive)
+			{
+				__result = Quest3TriggerUIPlugin.Trigger != null &&
+					Quest3TriggerUIPlugin.Trigger.ReleasedFrame == frame;
+				return false;
+			}
+            if (Quest3TriggerUIPlugin.SuppressRightInput())
+            {
+                __result = false;
+                return false;
+            }
+
+            if (Quest3TriggerUIPlugin.KeyboardVisible)
+            {
+                __result = Quest3TriggerUIPlugin.Trigger != null &&
+                           Quest3TriggerUIPlugin.Trigger.ReleasedFrame == frame;
+                return false;
+            }
+
+            __result = SyntheticRightUiClick.ConsumeUp(frame) ||
+                       Quest3TriggerUIPlugin.IndexAButtonUp();
+            return false;
+        }
+    }
+
+	[HarmonyPatch(typeof(LookInputModule), "GetSubmitLeftButtonDown")]
+	internal static class GetSubmitLeftButtonDownPatch
+	{
+		[HarmonyPrefix]
+		private static bool Prefix(ref bool __result)
+		{
+			if (!Quest3TriggerUIPlugin.InputRuntimeActive) return true;
+			Quest3TriggerUIPlugin.SampleInputs();
+			__result = Quest3TriggerUIPlugin.LeftTrigger != null &&
+				Quest3TriggerUIPlugin.LeftTrigger.PressedDownFrame == Time.frameCount;
+			return false;
+		}
+	}
+
+	[HarmonyPatch(typeof(LookInputModule), "GetSubmitLeftButtonUp")]
+	internal static class GetSubmitLeftButtonUpPatch
+	{
+		[HarmonyPrefix]
+		private static bool Prefix(ref bool __result)
+		{
+			if (!Quest3TriggerUIPlugin.InputRuntimeActive) return true;
+			Quest3TriggerUIPlugin.SampleInputs();
+			__result = Quest3TriggerUIPlugin.LeftTrigger != null &&
+				Quest3TriggerUIPlugin.LeftTrigger.ReleasedFrame == Time.frameCount;
+			return false;
+		}
+	}
+
+    internal static class RightTriggerGrabResult
+    {
+        internal static bool TryGetLongPressStart(bool isOvr, out bool result)
+        {
+            if (!isOvr && !OpenVrInputBridge.IsActive)
+            {
+                result = false;
+                return false;
+            }
+
+            Quest3TriggerUIPlugin.SampleInputs();
+            if (Quest3TriggerUIPlugin.KeyboardVisible || Quest3TriggerUIPlugin.SuppressRightInput())
+            {
+                result = false;
+                return true;
+            }
+
+            result = false;
+            return true;
+        }
+
+        internal static bool TryGetLongPressRelease(bool isOvr, out bool result)
+        {
+            if (!isOvr && !OpenVrInputBridge.IsActive)
+            {
+                result = false;
+                return false;
+            }
+
+            Quest3TriggerUIPlugin.SampleInputs();
+            if (Quest3TriggerUIPlugin.KeyboardVisible || Quest3TriggerUIPlugin.SuppressRightInput())
+            {
+                result = false;
+                return true;
+            }
+
+            result = false;
+            return true;
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightGrab")]
+    internal static class GetRightGrabPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, ref bool __result)
+        {
+            return !RightTriggerGrabResult.TryGetLongPressStart(___isOVR, out __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightRemoteGrab")]
+    internal static class GetRightRemoteGrabPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, bool ___rightGUIInteract, ref bool __result)
+        {
+            if ((___isOVR || OpenVrInputBridge.IsActive) && ___rightGUIInteract)
+            {
+                __result = false;
+                return false;
+            }
+            return !RightTriggerGrabResult.TryGetLongPressStart(___isOVR, out __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightGrabRelease")]
+    internal static class GetRightGrabReleasePatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, ref bool __result)
+        {
+            return !RightTriggerGrabResult.TryGetLongPressRelease(___isOVR, out __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightRemoteGrabRelease")]
+    internal static class GetRightRemoteGrabReleasePatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, ref bool __result)
+        {
+            return !RightTriggerGrabResult.TryGetLongPressRelease(___isOVR, out __result);
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightGrabVal")]
+    internal static class GetRightGrabValPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, ref float __result)
+        {
+            if (!___isOVR && !OpenVrInputBridge.IsActive)
+                return true;
+
+            Quest3TriggerUIPlugin.SampleInputs();
+            if (Quest3TriggerUIPlugin.KeyboardVisible ||
+                Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
+                Quest3TriggerUIPlugin.GripPitchCapturing)
+            {
+                __result = 0f;
+                return false;
+            }
+
+            if (!___isOVR)
+            {
+                __result = Quest3TriggerUIPlugin.RightGripTrigger != null &&
+                           Quest3TriggerUIPlugin.RightGripTrigger.Pressed
+                    ? Quest3TriggerUIPlugin.RightGripTrigger.AnalogValue
+                    : 0f;
+                return false;
+            }
+
+            __result = Quest3TriggerUIPlugin.KeyboardChord != null &&
+                       Quest3TriggerUIPlugin.KeyboardChord.LongHoldActive &&
+                       Quest3TriggerUIPlugin.Trigger != null
+                ? Quest3TriggerUIPlugin.Trigger.AnalogValue
+                : 0f;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightHoldGrab")]
+    internal static class GetRightHoldGrabPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, ref bool __result)
+        {
+            if (!___isOVR && !OpenVrInputBridge.IsActive)
+                return true;
+			Quest3TriggerUIPlugin.SampleInputs();
+			int frame = Time.frameCount;
+            if (Quest3TriggerUIPlugin.KeyboardVisible ||
+                Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
+                Quest3TriggerUIPlugin.GripPitchCapturing)
+            {
+                __result = false;
+                return false;
+            }
+			if (Quest3TriggerUIPlugin.KeyboardChord != null &&
+				Quest3TriggerUIPlugin.KeyboardChord.LongHoldStartFrame == frame)
+			{
+				__result = true;
+				return false;
+			}
+			if (Quest3TriggerUIPlugin.SuppressRightInput())
+			{
+				__result = false;
+				return false;
+			}
+			__result = Quest3TriggerUIPlugin.RightGripTrigger != null &&
+				Quest3TriggerUIPlugin.RightGripTrigger.LongPressStartFrame == frame;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(SuperController), "GetRightRemoteHoldGrab")]
+    internal static class GetRightRemoteHoldGrabPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(bool ___isOVR, bool ___rightGUIInteract, ref bool __result)
+        {
+            if (!___isOVR && !OpenVrInputBridge.IsActive)
+                return true;
+			Quest3TriggerUIPlugin.SampleInputs();
+			int frame = Time.frameCount;
+            if (Quest3TriggerUIPlugin.KeyboardVisible ||
+                Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
+                Quest3TriggerUIPlugin.GripPitchCapturing || ___rightGUIInteract)
+            {
+                __result = false;
+                return false;
+            }
+			if (Quest3TriggerUIPlugin.KeyboardChord != null &&
+				Quest3TriggerUIPlugin.KeyboardChord.LongHoldStartFrame == frame)
+			{
+				__result = true;
+				return false;
+			}
+			if (Quest3TriggerUIPlugin.SuppressRightInput())
+			{
+				__result = false;
+				return false;
+			}
+			__result = Quest3TriggerUIPlugin.RightGripTrigger != null &&
+				Quest3TriggerUIPlugin.RightGripTrigger.LongPressStartFrame == frame;
+            return false;
+        }
+    }
+
+    [HarmonyPatch(typeof(Application), "set_runInBackground")]
+    internal static class RunInBackgroundPatch
+    {
+        [HarmonyPrefix]
+        private static void Prefix(ref bool __0)
+        {
+            if (!__0)
+                __0 = true;
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

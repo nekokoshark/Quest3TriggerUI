@@ -1,0 +1,24 @@
+# Binaries, game assemblies and generated payloads never belong in the repo.
+*.dll
+*.dll.*
+*.exe
+*.pdb
+*.obj
+*.lib
+*.zip
+*.7z
+*.rar
+*.var
+
+# Generated IME dictionaries (rebuild with tools/ime/build_dict.py)
+pinyin_dict.txt
+pinyin_fuzzy.txt
+pinyin_initials.txt
+pinyin_syllables.txt
+Quest3TriggerUI.pinyin-user.txt
+
+# Local machine state
+*.log
+.vs/
+bin/
+obj/
