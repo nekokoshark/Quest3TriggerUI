@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.171";
+        public const string PluginVersion = "4.6.172";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;

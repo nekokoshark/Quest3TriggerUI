@@ -614,7 +614,9 @@ internal void OpenPersonPreset()
                 }
 
                 var root = new JSONClass();
-                root["setUnlistedParamsToDefault"] = new JSONData(true);
+                // See ExtractEyePreset: false keeps unlisted storables intact
+                // when this file is fed to AppearancePresets.
+                root["setUnlistedParamsToDefault"] = new JSONData(false);
                 var outStorables = new JSONArray();
                 for (int i = 0; i < EyeStorableIds.Length; i++)
                 {
@@ -2056,7 +2058,10 @@ internal void OpenPersonPreset()
             if (!found) return null;
 
             var output = new JSONClass();
-            output["setUnlistedParamsToDefault"] = new JSONData(true);
+            // MUST be false here: AppearancePresets' restore domain is the
+            // whole person, so "unlisted → default" would reset every other
+            // storable (morphs/clothing/hair/skin) to a stock character.
+            output["setUnlistedParamsToDefault"] = new JSONData(false);
             output["storables"] = outStorables;
             return output;
         }
