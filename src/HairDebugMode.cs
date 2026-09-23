@@ -69,6 +69,8 @@ namespace Quest3TriggerUI
             {
                 // Automatic LOD must not overwrite the values being edited.
                 PhysicsBudget.SetLevelEntry(0);
+                ClothingRegionMode.Shutdown();
+                PluginListMode.Shutdown();
                 _nextScan = 0f;
             }
             if (!Active)

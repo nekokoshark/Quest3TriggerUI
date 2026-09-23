@@ -7,29 +7,38 @@ namespace Quest3TriggerUI
 		private readonly Action _action;
 
 		private ShortcutBindingTarget(
-			string label, ushort virtualKey, bool extended, Action action)
+			string label, ushort virtualKey, bool extended, Action action,
+			string actionId)
 		{
 			Label = label;
 			VirtualKey = virtualKey;
 			Extended = extended;
 			_action = action;
+			ActionId = actionId;
 		}
 
 		public string Label { get; private set; }
 		public ushort VirtualKey { get; private set; }
 		public bool Extended { get; private set; }
+		public string ActionId { get; private set; }
 		public bool IsAction { get { return _action != null; } }
 
 		public static ShortcutBindingTarget Key(
 			string label, ushort virtualKey, bool extended)
 		{
-			return new ShortcutBindingTarget(label, virtualKey, extended, null);
+			return new ShortcutBindingTarget(label, virtualKey, extended, null, null);
 		}
 
 		public static ShortcutBindingTarget ActionButton(string label, Action action)
 		{
+			return ActionButton(label, action, null);
+		}
+
+		public static ShortcutBindingTarget ActionButton(
+			string label, Action action, string actionId)
+		{
 			if (action == null) throw new ArgumentNullException("action");
-			return new ShortcutBindingTarget(label, 0, false, action);
+			return new ShortcutBindingTarget(label, 0, false, action, actionId);
 		}
 
 		public void InvokeAction()

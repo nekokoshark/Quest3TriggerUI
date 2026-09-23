@@ -134,6 +134,8 @@ namespace Quest3TriggerUI
         {
             if (Quest3TriggerUIPlugin.GripPitchCapturing)
                 __result.w = 0f;
+            if (PluginListMode.ConsumeNavigation)
+                __result = Vector4.zero;
         }
     }
 

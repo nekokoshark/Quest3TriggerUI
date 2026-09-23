@@ -57,6 +57,20 @@ namespace Quest3TriggerUI
             return true;
         }
 
+        internal static bool TryGetSticks(out Vector2 right, out Vector2 left)
+        {
+            right = left = Vector2.zero;
+            if (!IsActive)
+                return false;
+            right = InvokeVectorAxis(_freeModeMove, _rightInvokeArgs);
+            if (right == Vector2.zero)
+                right = InvokeVectorAxis(_freeMove, _rightInvokeArgs);
+            left = InvokeVectorAxis(_freeModeMove, _leftInvokeArgs);
+            if (left == Vector2.zero)
+                left = InvokeVectorAxis(_freeMove, _leftInvokeArgs);
+            return true;
+        }
+
         internal static bool TryGetLeftIndexTrigger(out float value)
         {
             value = 0f;

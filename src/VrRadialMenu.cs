@@ -184,7 +184,7 @@ namespace Quest3TriggerUI
         {
             _actions = actions;
             if (_pinnedTiles != null) _pinnedTiles.Refresh();
-            _scale = scale;
+            _scale = scale * 0.8f;
             _distance = Mathf.Min(distance, 0.78f);
             _opacity = Mathf.Clamp(opacity, 0.2f, 1f);
         }
@@ -205,6 +205,8 @@ namespace Quest3TriggerUI
             if (actions == null)
                 return;
             bool wasVisible = Visible;
+            Vector3 savedPosition = wasVisible ? _canvas.transform.position : Vector3.zero;
+            Quaternion savedRotation = wasVisible ? _canvas.transform.rotation : Quaternion.identity;
             if (_canvas != null)
                 Dispose();
             _actions = actions;
@@ -213,6 +215,8 @@ namespace Quest3TriggerUI
                 return;
 
             Build();
+            _canvas.transform.position = savedPosition;
+            _canvas.transform.rotation = savedRotation;
             _canvas.gameObject.SetActive(true);
             VrPointerPresentation.EnsureVisible();
             SyncButtonColors();
@@ -767,10 +771,33 @@ namespace Quest3TriggerUI
                 SuperController.singleton.centerCameraTarget == null)
                 return;
 
-            Transform anchor = SuperController.singleton.centerCameraTarget.transform;
-            _canvas.transform.SetParent(anchor, false);
-            _canvas.transform.localPosition = new Vector3(0f, 0f, _distance);
-            _canvas.transform.localRotation = Quaternion.identity;
+            // Snapshot the same camera axis used by the visible right-hand guide.
+            // Never re-parent to the hand/head or update this pose while open.
+            Transform head = SuperController.singleton.centerCameraTarget.transform;
+            Camera pointerCamera = SuperController.singleton.rightControllerCamera;
+            Transform pointer = pointerCamera != null ? pointerCamera.transform : head;
+            Vector3 direction = pointer.forward.normalized;
+            float outerRadius = WedgeOuterR;
+            for (int i = 0; i < _actions.Count; i++)
+            {
+                if (!_actions[i].HasChildren) continue;
+                outerRadius = Mathf.Max(outerRadius, SubOuterR);
+                for (int j = 0; j < _actions[i].Children.Count; j++)
+                    if (_actions[i].Children[j].HasChildren) outerRadius = Sub2OuterR;
+            }
+            // Keep the complete menu inside an approximately 90-degree cone.
+            // Include head/hand lateral offset, rather than only the main ring.
+            Vector3 fromHead = pointer.position - head.position;
+            float along = Vector3.Dot(fromHead, direction);
+            float lateral = (fromHead - direction * along).magnitude;
+            float viewingDistance = Mathf.Max(_distance + 0.02f,
+                (outerRadius * _scale + lateral) / Mathf.Tan(45f * Mathf.Deg2Rad));
+            Vector3 pos = pointer.position + direction * Mathf.Max(0.18f, viewingDistance - along);
+            Vector3 up = Vector3.ProjectOnPlane(head.up, direction);
+            if (up.sqrMagnitude < 0.001f) up = pointer.up;
+            _canvas.transform.SetParent(null, true);
+            _canvas.transform.position = pos;
+            _canvas.transform.rotation = Quaternion.LookRotation(direction, up);
             _canvas.transform.localScale = Vector3.one * _scale;
         }
 
@@ -846,6 +873,8 @@ namespace Quest3TriggerUI
             PropertyGetter<Transform>("motionControllerLeft");
         private static readonly Func<SuperController, Transform> MotionRight =
             PropertyGetter<Transform>("motionControllerRight");
+        private static readonly Func<LookInputModule, PointerEventData> LookDataRightRef =
+            LookField<PointerEventData>("lookDataRight");
 
         private static Func<LookInputModule, T> LookField<T>(string name)
         {
@@ -877,6 +906,34 @@ namespace Quest3TriggerUI
         {
             Func<SuperController, Transform> getter = right ? MotionRight : MotionLeft;
             return controller == null || getter == null ? null : getter(controller);
+        }
+
+        internal static Camera ReferenceCamera()
+        {
+            LookInputModule module = LookInputModule.singleton;
+            return module == null || ReferenceCameraRef == null
+                ? null
+                : ReferenceCameraRef(module);
+        }
+
+        // The exact ray VaM uses for right-hand UI raycasts — the same ray the
+        // visible laser represents. Pitch adjustments live in the pointer's
+        // screen position, not in any transform, so this is the only source
+        // that tracks them.
+        internal static bool TryGetEventRay(out Ray ray)
+        {
+            ray = new Ray();
+            LookInputModule module = LookInputModule.singleton;
+            Camera cam = module == null || ReferenceCameraRef == null
+                ? null
+                : ReferenceCameraRef(module);
+            PointerEventData data = module == null || LookDataRightRef == null
+                ? null
+                : LookDataRightRef(module);
+            if (cam == null || data == null)
+                return false;
+            ray = cam.ScreenPointToRay(data.position);
+            return ray.direction.sqrMagnitude > 0.5f;
         }
 
         internal static void EnsureVisible()

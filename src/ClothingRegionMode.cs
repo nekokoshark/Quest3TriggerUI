@@ -1,7 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
+using System.Text;
 using BepInEx;
+using SimpleJSON;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -65,6 +69,91 @@ namespace Quest3TriggerUI
         private static Vector3 _anchor;
         private static string _message = "";
         private static string FilePath { get { return Path.Combine(Paths.ConfigPath, "Quest3TriggerUI.clothing-regions.txt"); } }
+        private static string PresetDir { get { return Path.Combine(Paths.ConfigPath, "Quest3TriggerUI.clothing-presets"); } }
+        private static string PresetPath(string uid)
+        {
+            var sb = new StringBuilder(uid.Length);
+            foreach (var c in uid)
+                sb.Append(char.IsLetterOrDigit(c) || c == '.' || c == '-' ? c : '_');
+            return Path.Combine(PresetDir, sb.ToString() + ".json");
+        }
+        // Registration captures the garment's whole storable state (physics,
+        // materials, colors — every JSONStorable on the item instance) so
+        // wearing it later restores exactly that preset. DAZClothingItem is
+        // not itself a storable: its params live on the JSONStorable[]
+        // "jss" inside the dynamic instance, which unloads when unworn —
+        // hence restore runs deferred until the instance rebuilds.
+        private static FieldInfo _fiJss;
+        private static JSONStorable[] ItemStorables(DAZClothingItem item)
+        {
+            if (_fiJss == null)
+                _fiJss = typeof(JSONStorableDynamic).GetField("jss",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+            if (_fiJss == null || item == null) return null;
+            return _fiJss.GetValue(item) as JSONStorable[];
+        }
+        private static void SnapshotClothing(DAZClothingItem item)
+        {
+            try {
+                var storables = ItemStorables(item);
+                if (storables == null || storables.Length == 0) {
+                    Quest3TriggerUIPlugin.Log.LogInfo("服装预设快照跳过（实例未加载）：" + item.uid);
+                    return;
+                }
+                var root = new JSONClass();
+                int n = 0;
+                foreach (var js in storables) {
+                    if (js == null || string.IsNullOrEmpty(js.storeId)) continue;
+                    var jc = js.GetJSON(true, true, true);
+                    if (jc != null) { root[js.storeId] = jc; n++; }
+                }
+                if (n == 0) return;
+                Directory.CreateDirectory(PresetDir);
+                File.WriteAllText(PresetPath(item.uid), root.ToString(""));
+                Quest3TriggerUIPlugin.Log.LogInfo("服装预设已存：" + item.uid + " (" + n + " storables)");
+            } catch (Exception e) {
+                Quest3TriggerUIPlugin.Log.LogError("服装预设快照失败：" + e.Message);
+            }
+        }
+        private static IEnumerator RestorePresetRoutine(DAZClothingItem item, string path)
+        {
+            JSONClass root;
+            try { root = JSON.Parse(File.ReadAllText(path)).AsObject; }
+            catch (Exception e) {
+                Quest3TriggerUIPlugin.Log.LogError("服装预设解析失败：" + e.Message);
+                yield break;
+            }
+            if (root == null) yield break;
+            float deadline = Time.unscaledTime + 8f;
+            while (item != null && Time.unscaledTime < deadline)
+            {
+                var storables = ItemStorables(item);
+                if (storables != null && storables.Length > 0)
+                {
+                    int n = 0;
+                    foreach (var js in storables) {
+                        if (js == null || string.IsNullOrEmpty(js.storeId)) continue;
+                        var st = root[js.storeId] == null ? null : root[js.storeId].AsObject;
+                        if (st == null) continue;
+                        js.RestoreFromJSON(st, true, true, null, false);
+                        js.LateRestoreFromJSON(st, true, true, false);
+                        n++;
+                    }
+                    Quest3TriggerUIPlugin.Log.LogInfo("服装预设已应用：" + item.uid + " (" + n + " storables)");
+                    yield break;
+                }
+                yield return null;
+            }
+        }
+        private static bool WearWithPreset(DAZClothingItem item)
+        {
+            _selector.SetActiveClothingItem(item, true);
+            if (!item.active) return false;
+            string path = PresetPath(item.uid);
+            if (!File.Exists(path)) return false;
+            Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetRoutine(item, path));
+            return true;
+        }
 
         internal static bool PointerInside
         {
@@ -85,6 +174,7 @@ namespace Quest3TriggerUI
             foreach (var bone in _atom.GetComponentsInChildren<DAZBone>(true))
                 if (!Bones.ContainsKey(bone.name)) Bones.Add(bone.name, bone.transform);
             HairDebugMode.Shutdown();
+            PluginListMode.Shutdown();
             Active = true; _region = -1; _page = 0; _register = false; _nextIndex = 0; _miss = Time.unscaledTime;
             Quest3TriggerUIPlugin.Log.LogInfo("手动服装目标：" + _atom.uid);
         }
@@ -270,8 +360,11 @@ namespace Quest3TriggerUI
             bool wear = !item.active;
             if (wear ? UiAssistHudLink.IsClothingBanned(_atom, item.uid) : UiAssistHudLink.IsClothingLocked(_atom, item.uid))
             { _message = wear ? "该服装已禁用" : "该服装已锁定"; UpdateTitle(); return; }
-            _selector.SetActiveClothingItem(item, wear);
-            _message = item.active ? "已穿戴：" + item.displayName : "已脱下：" + item.displayName;
+            bool preset = false;
+            if (wear) preset = WearWithPreset(item);
+            else _selector.SetActiveClothingItem(item, false);
+            _message = !item.active ? "已脱下：" + item.displayName
+                : (preset ? "已穿戴（预设已应用）：" : "已穿戴：") + item.displayName;
             RefreshAfterClothingOperation(item);
         }
 
@@ -364,13 +457,14 @@ namespace Quest3TriggerUI
             if(_register) {
                 if (_region == 10 && IsEyeWear(item)) { _message="眼部服装不注册到头部"; UpdateTitle(); return; }
                 Manual[_region].Remove(item.uid);Manual[_region].Insert(0,item.uid);Hidden[_region].Remove(item.uid);
-                Save();Index();_register=false;_page=0;_message="已注册："+item.displayName;Rebuild();return;
+                SnapshotClothing(item);
+                Save();Index();_register=false;_page=0;_message="已注册（含当前物理/外观预设）："+item.displayName;Rebuild();return;
             }
             if(UiAssistHudLink.IsClothingBanned(_atom,item.uid)) { _message="该服装已在禁用栏中";UpdateTitle();return; }
             // Additive wear: do not remove other active garments from this region.
-            _selector.SetActiveClothingItem(item,true);
+            bool preset = WearWithPreset(item);
             if(!item.active) { _message="穿戴未成功，保留原服装";UpdateTitle();return; }
-            _message="已穿戴："+item.displayName;UpdateTitle();
+            _message=(preset?"已穿戴（预设已应用）：":"已穿戴：")+item.displayName;UpdateTitle();
             RefreshAfterClothingOperation(item);
         }
         private static void TogglePointed()

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.104";
+        public const string PluginVersion = "4.6.171";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -46,6 +46,7 @@ namespace Quest3TriggerUI
         private VrRadialMenu _radialMenu;
         private VrPinnedActionTiles _pinnedTiles;
         private GlobalVrPitchController _globalPitch;
+        private VrAuxiliaryUiView _auxiliaryUiView;
         private EmbodyNavigationGuard _embodyNavigationGuard;
         private PresetBrowserFileTools _presetBrowserFileTools;
         private VrAimGuide _aimGuide;
@@ -111,6 +112,21 @@ namespace Quest3TriggerUI
             }
         }
 
+        // A scene load must not run under the standby frame limiter or with
+        // simulation paused, so the scene-load accelerator releases standby
+        // before it hands the request to the native loader.
+        internal bool ReleaseStandbyForSceneLoad()
+        {
+            return _keyboard != null && _keyboard.ReleaseStandby();
+        }
+
+        // The preheat pass must never load a scene while standby holds the
+        // simulation paused and the frame limiter is active.
+        internal bool StandbyActiveNow
+        {
+            get { return _keyboard != null && _keyboard.StandbyActive; }
+        }
+
         internal static void AwakeDiag(string msg)
         {
             try
@@ -165,8 +181,11 @@ namespace Quest3TriggerUI
                 "ViewPitch", "Invert", false,
                 "Invert the global VR view pitch direction.");
             ConfigEntry<float> radialOpacity = Config.Bind(
-                "RadialMenu", "Opacity", 0.75f,
+                "RadialMenu", "Opacity", 0.9f,
                 "Radial menu and pinned tile opacity, 0.2 to 1.0.");
+            ConfigEntry<float> discOpacity = Config.Bind(
+                "RadialMenu", "DiscOpacity", 0.30f,
+                "Radial disc opacity only; pinned tiles keep Opacity. 0.2 to 1.0.");
             ConfigEntry<float> keyboardOpacity = Config.Bind(
                 "Keyboard", "Opacity", 0.75f,
                 "Virtual keyboard opacity, 0.2 to 1.0.");
@@ -189,6 +208,10 @@ namespace Quest3TriggerUI
                 "Browser", "BlockPackageManager", true,
                 "Disable VaM's built-in Package Manager entirely (it freezes for seconds scanning all .var files on open, and its queued thumbnail decodes keep hitching the game after close). true = every entry point is blocked and hidden; false = stock behavior.");
             PackageManagerGuard.BlockEntry = pkgMgrBlock.Value;
+            ConfigEntry<bool> baPkgSync = Config.Bind(
+                "BA", "SkipPackageListSync", true,
+                "Incremental VA/VAR rescans skip VaM PackageBuilder.SyncPackages refresh handler (~13s on an 11k-var library). VaM own package registry is updated per package instead; only the Package Builder tool list waits for the next full rescan. false = always run it.");
+            BrowserAssistScanAccelerator.SkipPackageListSync = baPkgSync.Value;
             // Drop thumbnail decodes/cache left over from any package
             // manager session that ran before this payload loaded.
             PackageManagerGuard.PurgeResiduals();
@@ -246,6 +269,32 @@ namespace Quest3TriggerUI
             ConfigEntry<string> lightLinkerUrl = Config.Bind(
                 "Paths", "LightLinkerUrl", "Custom/Scripts/LightLinker/LightLinker.cslist",
                 "LightLinker cslist URL used when the lights button lazy-loads it into Session Plugins. Point it at a .var path (e.g. Lzswwx.LightLinker.latest:/...) if yours lives in a package.");
+            ConfigEntry<bool> standbyVramDiet = Config.Bind(
+                "Standby", "VramDiet", true,
+                "Compress textures during standby. Saves VRAM but hitches the world briefly on entry. Set false for near-instant standby.");
+            ConfigEntry<bool> standbySweep = Config.Bind(
+                "Standby", "SweepUnusedAssets", false,
+                "Run Resources.UnloadUnusedAssets during standby. Reclaims managed memory but is the longest single stall — off by default.");
+            FastStandbyController.VramDiet = standbyVramDiet.Value;
+            FastStandbyController.SweepUnusedAssets = standbySweep.Value;
+            ConfigEntry<bool> baFastRescan = Config.Bind(
+                "BrowserAssist", "FastRescan", true,
+                "Patch JayJayWon BrowserAssist's rescan button: skip the full scan when the file tree is unchanged, and only re-enumerate changed .var packages when it isn't. false = original always-full scan.");
+            BrowserAssistScanAccelerator.Enabled = baFastRescan.Value;
+            ConfigEntry<bool> baDeferHiddenResync = Config.Bind(
+                "BrowserAssist", "DeferHiddenClothingUiResync", true,
+                "While a rescan runs, skip the engine's clothing/hair selector UI rebuild for panels that are not currently visible in the hierarchy, and replay that rebuild once when the panel is opened. Closed panels cost ~7s per rescan on a 24k-item library. false = native behaviour (rebuild hidden panels too).");
+            BrowserAssistScanAccelerator.DeferHiddenResync =
+                baDeferHiddenResync.Value;
+            ConfigEntry<bool> sceneResyncCoalesce = Config.Bind(
+                "SceneLoad", "CoalesceSelectorResync", true,
+                "While a scene load runs, allow the first rebuild of each clothing/hair selector UI per instance and skip the rest (every later rebuild reconstructs a catalogue that is still growing); when the load settles, the skipped panels are rebuilt the moment they become visible. Native cost on this library: 24 rebuilds inside one 190s load. false = native behaviour.");
+            SceneResyncCoalesce.Enabled = sceneResyncCoalesce.Value;
+            ConfigEntry<bool> sceneFastLoad = Config.Bind(
+                "SceneLoad", "FastSwitch", true,
+                "Accelerate scene loads: time every load, remember each scene's package dependencies, reuse that record while the VAR library is unchanged, and let the BrowserAssist package scan take its unchanged-library skip when a scene change triggers it. false = native behaviour only.");
+            SceneLoadAccelerator.Enabled = sceneFastLoad.Value;
+            SceneLoadAccelerator.FastSwitch = sceneFastLoad.Value;
             PluginPaths.HairPresetDir = hairPresetDir.Value;
             PluginPaths.ClothingPresetDir = clothingPresetDir.Value;
             PluginPaths.AppearancePresetDir = appearancePresetDir.Value;
@@ -265,8 +314,34 @@ namespace Quest3TriggerUI
             _physicsClothScaleEntry = physicsClothScale;
             _physicsClothOffEntry = physicsClothOff;
 
+            ConfigEntry<bool> preheatAuto = Config.Bind(
+                "Preheat", "Enabled", true,
+                "Load one scene shortly after startup, while the game is still on the menu, so the first scene the user opens reuses the process-wide costs (Unity asset realization, morph banks, clothing-item tables) instead of paying them. Nothing is restarted and no VaM file is touched. false = never preheat automatically.");
+            ConfigEntry<float> preheatDelay = Config.Bind(
+                "Preheat", "DelaySeconds", 30f,
+                "Seconds after coming up before the startup preheat runs. Keep it long enough that the engine is fully initialized.");
+            ConfigEntry<string> preheatTarget = Config.Bind(
+                "Preheat", "TargetScene", "",
+                "Only used when Mode=fixed. A light single-character scene pays the same process-wide costs for much less of its own artwork.");
+            ScenePreheat.Auto = preheatAuto;
+            ScenePreheat.DelaySeconds = preheatDelay;
+            ConfigEntry<string> preheatMode = Config.Bind(
+                "Preheat", "Mode", "headless",
+                "headless (default): pay the process-wide costs without loading any scene — call the character-selector catalogue builders (morph banks, character tables, clothing/hair item tables) directly and pre-clone 3 generic Person prefabs into the atom clone pool for AddAtom adoption. cheapest = load VaM's own single-character container (Saves\\scene\\default.json). last = preheat the scene opened most recently. fixed = preheat the path in TargetScene.");
+            ScenePreheat.TargetScene = preheatTarget;
+            ScenePreheat.Mode = preheatMode;
+            ScenePreheat.Source = Config;
+            AudioDeviceFollower.Enabled = Config.Bind(
+                "Audio", "FollowDefaultDevice", true,
+                "Keeps VaM's audio on the Windows default output device: when the default changes, the Unity audio engine is reset once so it rebinds (all playing sounds restart). false = never follow.").Value;
+            ConfigEntry<bool> preClonePersons = Config.Bind(
+                "Preheat", "PreClonePersons", true,
+                "Experimental: after the scene preheat realizes prefabs, also pre-Instantiate dormant clones of the scene's Person atoms (measured ~10s and ~100MB each, paid while browsing instead of during the load) and let scene atom creation adopt them via AddAtom's native no-instantiate path. false = preheat only realizes assets.");
+            AtomClonePool.Enabled = preClonePersons.Value;
+
             Instance = this;
             Log = Logger;
+            _auxiliaryUiView = VrAuxiliaryUiView.Begin();
             Trigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
 			LeftTrigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
 			RightGripTrigger = new TriggerStateMachine(
@@ -279,7 +354,7 @@ namespace Quest3TriggerUI
             _keyboard = new VrKeyboardOverlay(this, keyboardScale.Value, keyboardDistance.Value, keyboardOpacity.Value);
             _radialMenu = new VrRadialMenu(
                 _keyboard.QuickActions, keyboardScale.Value, keyboardDistance.Value,
-                radialOpacity.Value);
+                discOpacity.Value);
             _quickActionRevision = _keyboard.QuickActionRevision;
             _pinnedTiles = new VrPinnedActionTiles(delegate(string id) { return _radialMenu.FindAction(id); }, radialOpacity.Value);
             _radialMenu.SetPinnedTiles(_pinnedTiles);
@@ -293,6 +368,8 @@ namespace Quest3TriggerUI
                 _targetedInputSelfTestPhase = 1;
 
             AwakeDiag("awake entering patch region asm=" + GetType().Assembly.FullName);
+            DoorstopIcallRepair.TryInstall();
+            Logger.LogInfo("Doorstop GC icall repair: " + DoorstopIcallRepair.Status);
             _harmony = new Harmony(PluginGuid);
             _harmony.PatchAll(typeof(Quest3TriggerUIPlugin).Assembly);
             AwakeDiag("PatchAll done");
@@ -314,8 +391,9 @@ namespace Quest3TriggerUI
                 "SevenSeason expression submenu=non-destructive preload/playback + per-expression Timeline + toggle + optional mixing + tongue baseline restore; " +
                 "keyboard eye-gap slider=50% calibrated midpoint/2x open upper/stable eyelid writer/blink blend/nearest female/non-radial; UIAssist clothing editor=forced direct display without reopening control panel; " +
                 "title bar=hold-to-move; " +
+                "scene load=staged timing + dependency cache + in-process switch; " +
                 "keys=in-process Unity Input bridge + VaM window; VR Chinese IME=pinyin composition + clickable candidates; " +
-                "desktop focus independent; no SteamVR dependency.");
+                "desktop focus independent; preheat=headless startup (catalogue builders + 3-person clone pool); no SteamVR dependency.");
             RuntimeReady = true;
             _duplicateSweepFrame = Time.frameCount + 2;
             Logger.LogInfo("payload awake asm=" + GetType().Assembly.GetHashCode() +
@@ -343,8 +421,25 @@ namespace Quest3TriggerUI
 
         private void Update()
         {
+            long __frameBudgetT0 = FrameBudgetProbe.MarkUpdateStart();
+            try
+            {
+                UpdateInner();
+            }
+            finally
+            {
+                FrameBudgetProbe.MarkUpdateEnd(__frameBudgetT0);
+            }
+        }
+
+        private void UpdateInner()
+        {
             if (!_updateLogged) { _updateLogged = true; Logger.LogInfo("payload update asm=" + GetType().Assembly.GetHashCode()); }
             UiAssistHudLink.Observe();
+            BrowserAssistScanAccelerator.Tick();
+            SceneLoadAccelerator.Tick();
+            SceneResyncCoalesce.Tick();
+            ScenePreheat.Tick();
             if (_duplicateSweepFrame >= 0 && Time.frameCount >= _duplicateSweepFrame)
             {
                 _duplicateSweepFrame = -1;
@@ -386,6 +481,10 @@ namespace Quest3TriggerUI
             if (SuperController.singleton != null)
                 _presetBrowserFileTools.Tick();
 
+            HairPerfProbe.Tick();
+            AtomClonePool.Tick();
+            AudioDeviceFollower.Tick();
+
             if (!InputRuntimeActive || SuperController.singleton == null)
                 return;
 
@@ -408,6 +507,7 @@ namespace Quest3TriggerUI
             _pinnedTiles.Tick(Trigger, RightGripTrigger);
             HairDebugMode.Tick();
             ClothingRegionMode.Tick();
+            PluginListMode.Tick();
             int frame = Time.frameCount;
             if (ClothingDragCandidate != null && Trigger != null &&
                 Trigger.LongPressStartFrame == frame)
@@ -437,8 +537,14 @@ namespace Quest3TriggerUI
                     Logger.LogInfo("Q3 radial blocked: clothing drag candidate");
                 else if (ClothingRegionMode.PointerInside)
                     Logger.LogInfo("Q3 radial blocked: regional clothing drag");
+                else if (PluginListMode.PointerInside)
+                    Logger.LogInfo("Q3 radial blocked: pointer inside plugin panel");
                 else if (VrPresetBrowser.PointerInside)
                     Logger.LogInfo("Q3 radial blocked: pointer inside browser");
+                else if (_pinnedTiles != null && _pinnedTiles.PointerOverTile)
+                    Logger.LogInfo("Q3 radial blocked: pointer over pinned tile");
+                else if (VrShotCameras.PointerInside)
+                    Logger.LogInfo("Q3 radial blocked: pointer inside shot panel");
                 else if (KeyboardChord != null && KeyboardChord.Active)
                     Logger.LogInfo("Q3 radial blocked: chord active (grip latch?)");
                 else
@@ -560,6 +666,7 @@ namespace Quest3TriggerUI
             if (_globalPitch == null) return;
             SampleInputs();
             RefreshPitchInputMode();
+            VrShotCameras.ApplyPendingShot(controller, _globalPitch);
             _globalPitch.BeforeControllerInteraction(controller);
         }
         internal void BeforeNativeNavigation(SuperController controller)
@@ -667,9 +774,12 @@ namespace Quest3TriggerUI
         private void OnDestroy()
         {
             UiAssistHudLink.Reset(); DlssUiOverlay.Stop();
+            if (_auxiliaryUiView != null) DestroyImmediate(_auxiliaryUiView.gameObject);
             PinyinEngine.FlushUserDict();
             HairDebugMode.Shutdown();
+            VrShotCameras.Shutdown();
             ClothingRegionMode.Shutdown();
+            PluginListMode.Shutdown();
             PhysicsBudget.Restore();
             RuntimeReady = false;
             if (_globalPitch != null)

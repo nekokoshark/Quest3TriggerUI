@@ -58,21 +58,21 @@ namespace Quest3TriggerUI
             _recordPanel.AddComponent<Image>().color=new Color(.04f,.06f,.09f,.99f);
             GameObject title=CreateUiObject("Title",p);SetTopLeft(title.GetComponent<RectTransform>(),10,5,1250,50);
             AddText(title.transform,"VR录制 · 单眼 · 可选帧率 · " + VrVideoRecorder.OutputDirectory + " · 含系统混音",30,TextAnchor.MiddleCenter,Color.white,4);
-            CreateBindableActionButton(p,"关闭",1300,5,140,50,delegate{_recordPanel.SetActive(false);});
+            CreateBindableActionButton(p,"关闭",1300,5,140,50,delegate{_recordPanel.SetActive(false);},"rec.close");
             for(int i=0;i<VrVideoRecorder.Scales.Length;i++)
             {
                 int index=i; float scale=VrVideoRecorder.Scales[i];
                 int w=VrVideoRecorder.Dimension(XRSettings.eyeTextureWidth,scale),h=VrVideoRecorder.Dimension(XRSettings.eyeTextureHeight,scale);
                 CreateBindableActionButton(p,scale.ToString("0.0")+"倍\n"+w+"×"+h,10+i*238,75,228,90,delegate{
-                    if(_recorder.Busy){UpdateHelpText("停止录制后再更改设置");return;} _recorder.ScaleIndex=index; RecordingSelection();});
+                    if(_recorder.Busy){UpdateHelpText("停止录制后再更改设置");return;} _recorder.ScaleIndex=index; RecordingSelection();},"rec.scale."+i);
             }
             string[] codecs={"H.264 (NVENC)","HEVC (NVENC)","AV1 (NVENC)"};
             for(int i=0;i<3;i++){int index=i;CreateBindableActionButton(p,codecs[i],10+i*477,180,465,65,delegate{
-                if(_recorder.Busy){UpdateHelpText("停止录制后再更改设置");return;} _recorder.CodecIndex=index;RecordingSelection();});}
-            for(int fi=0;fi<VrVideoRecorder.FrameRates.Length;fi++){int fj=fi;CreateBindableActionButton(p,VrVideoRecorder.FrameRates[fi]+" FPS",10+fj*220,340,210,55,delegate{if(!_recorder.Busy){_recorder.FrameRateIndex=fj;RecordingSelection();}});}
-            CreateBindableActionButton(p,"码率 -5 Mbps",10,265,350,65,delegate{if(!_recorder.Busy){_recorder.Bitrate=Math.Max(5,_recorder.Bitrate-5);RecordingSelection();}});
-            CreateBindableActionButton(p,"码率 +5 Mbps",380,265,350,65,delegate{if(!_recorder.Busy){_recorder.Bitrate=Math.Min(200,_recorder.Bitrate+5);RecordingSelection();}});
-            _recordToggle=CreateBindableActionButton(p,_recorder.Active?"停止":"开始",750,265,680,65,ToggleRecording);
+                if(_recorder.Busy){UpdateHelpText("停止录制后再更改设置");return;} _recorder.CodecIndex=index;RecordingSelection();},"rec.codec."+i);}
+            for(int fi=0;fi<VrVideoRecorder.FrameRates.Length;fi++){int fj=fi;CreateBindableActionButton(p,VrVideoRecorder.FrameRates[fi]+" FPS",10+fj*220,340,210,55,delegate{if(!_recorder.Busy){_recorder.FrameRateIndex=fj;RecordingSelection();}},"rec.fps."+fi);}
+            CreateBindableActionButton(p,"码率 -5 Mbps",10,265,350,65,delegate{if(!_recorder.Busy){_recorder.Bitrate=Math.Max(5,_recorder.Bitrate-5);RecordingSelection();}},"rec.bitrate.down");
+            CreateBindableActionButton(p,"码率 +5 Mbps",380,265,350,65,delegate{if(!_recorder.Busy){_recorder.Bitrate=Math.Min(200,_recorder.Bitrate+5);RecordingSelection();}},"rec.bitrate.up");
+            _recordToggle=CreateBindableActionButton(p,_recorder.Active?"停止":"开始",750,265,680,65,ToggleRecording,"rec.toggle");
             GameObject status=CreateUiObject("Status",p);SetTopLeft(status.GetComponent<RectTransform>(),10,420,1430,80);
             _recordStatus=AddText(status.transform,"",27,TextAnchor.MiddleCenter,Color.white,4);
             RecordingSelection();

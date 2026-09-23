@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -44,6 +44,17 @@ namespace Quest3TriggerUI
 			new List<ShortcutBindingTarget>();
         private readonly Text[] _bindingTexts = new Text[ShortcutGestureBank.GestureCount];
         private readonly GameObject[] _bindingDeleteButtons = new GameObject[ShortcutGestureBank.GestureCount];
+        private readonly Text[] _presetSlotTexts = new Text[ShortcutPresetStore.SlotCount];
+        private readonly Image[] _presetSlotImages = new Image[ShortcutPresetStore.SlotCount];
+        private List<ShortcutPresetStore.Entry>[] _presetSlots;
+        private readonly Dictionary<string, Action> _actionRegistry =
+            new Dictionary<string, Action>();
+        private bool _presetWriteMode;
+        private Image _presetWriteImage;
+        private GameObject _bindingsPage;
+        private GameObject _presetPage;
+        private Text _flipText;
+        private bool _showingPresets;
         private Canvas _canvas;
         private Font _font;
         private bool _dragging;
@@ -60,6 +71,11 @@ namespace Quest3TriggerUI
         private int _shortcutReleaseFrame = -1;
         private float _nextEmbodySync;
         private VrHoverFeedback _pointerHoverFeedback;
+        private readonly List<GameObject> _actionSubmenus = new List<GameObject>();
+        private float _actionSubmenuHideAt = -1f;
+        private readonly Dictionary<QuickActionDefinition, GameObject> _actionSubmenuCache =
+            new Dictionary<QuickActionDefinition, GameObject>();
+        private KeyboardActionHover _actionHover;
 
         internal VrKeyboardOverlay(Quest3TriggerUIPlugin plugin, float scale, float distance, float opacity)
         {
@@ -117,6 +133,12 @@ namespace Quest3TriggerUI
             get { return _quickActions != null && _quickActions.StandbyActive; }
         }
 
+        internal bool ReleaseStandby()
+        {
+            return _quickActions != null &&
+                _quickActions.RestoreStandbyForSceneLoad();
+        }
+
         internal void Toggle()
         {
             if (_canvas == null)
@@ -127,6 +149,7 @@ namespace Quest3TriggerUI
             {
                 VrTextInputBridge.Clear();
                 SetBindingMode(false);
+                HideActionSubmenus();
                 EndDrag();
                 ReleaseAllKeys();
                 ClearPointerHover();
@@ -147,6 +170,11 @@ namespace Quest3TriggerUI
                 SyncPointerHover();
             else
                 ClearPointerHover();
+            if (_actionSubmenuHideAt > 0f && Time.unscaledTime >= _actionSubmenuHideAt)
+            {
+                _actionSubmenuHideAt = -1f;
+                if (!_bindingMode) HideActionSubmenus();
+            }
 
             if (_repeats.Count > 0 && VrTextInputBridge.Active)
                 TickKeyRepeat();
@@ -419,6 +447,7 @@ namespace Quest3TriggerUI
 
             _bindingMode = active;
             ClearBindingSelection();
+            if (!active) HideActionSubmenus();
             if (_shortcutModeButtonImage != null)
                 _shortcutModeButtonImage.color = active
                     ? new Color(0.84f, 0.52f, 0.08f, 1f)
@@ -573,6 +602,7 @@ namespace Quest3TriggerUI
 
         internal void Dispose()
         {
+            HideActionSubmenus();
             _quickActions.Dispose();
             VrTextInputBridge.Shutdown();
             ReleaseAllKeys();
@@ -620,7 +650,18 @@ namespace Quest3TriggerUI
         private void SyncPointerHover()
         {
             VrPointerPresentation.EnsureVisible();
-            GameObject target = VrPointerPresentation.CurrentLookTarget();
+            GameObject target = VrPointerPresentation.CurrentLookTarget(true);
+            if (target == null || !target.transform.IsChildOf(_canvas.transform))
+                target = VrPointerPresentation.CurrentLookTarget(false);
+            KeyboardActionHover actionHover = target != null && target.transform.IsChildOf(_canvas.transform)
+                ? target.GetComponentInParent<KeyboardActionHover>() : null;
+            if (actionHover != _actionHover)
+            {
+                if (_actionHover != null) ScheduleActionSubmenuHide();
+                _actionHover = actionHover;
+                if (actionHover != null) actionHover.OnPointerEnter(null);
+            }
+            if (actionHover != null) CancelActionSubmenuHide();
             VrHoverFeedback next = null;
             if (target != null && _canvas != null &&
                 target.transform.IsChildOf(_canvas.transform))
@@ -692,7 +733,8 @@ namespace Quest3TriggerUI
             {
                 QuickActionDefinition definition = _quickActionDefinitions[i];
 				ShortcutActionButton button = CreateBindableActionButton(
-                    parent, definition.Label, x, 10f, buttonWidth, 58f, definition.Action);
+                    parent, definition.Label, x, 10f, buttonWidth, 58f, definition.Action, definition.Id);
+                ConfigureActionHover(button.gameObject, definition, null, 0);
                 if (definition.Label == "Embody")
                     _embodyButton = button;
                 else if (definition.Id == "dlss")
@@ -720,8 +762,18 @@ namespace Quest3TriggerUI
                         new QuickActionDefinition("embody.reset-navigation", "导航复位",
                             ResetEmbodyNavigation)
                     }),
-                new QuickActionDefinition("undress", "脱衣", _quickActions.OpenUiAssistClothingEditor, null,
-                    new QuickActionDefinition[] { new QuickActionDefinition("undress.manual", "手动", ClothingRegionMode.Toggle, delegate { return ClothingRegionMode.Active; }) }),
+                new QuickActionDefinition("undress", "脱衣", _quickActions.OpenUiAssistClothingEditor),
+                new QuickActionDefinition("hover-sense", "指向感应",
+                    delegate { ClothingRegionMode.Shutdown(); HairDebugMode.Shutdown(); PluginListMode.Shutdown(); },
+                    delegate { return ClothingRegionMode.Active || HairDebugMode.Active || PluginListMode.Active; },
+                    new List<QuickActionDefinition> {
+                        new QuickActionDefinition("hover.clothing", "服装", ClothingRegionMode.Toggle,
+                            delegate { return ClothingRegionMode.Active; }),
+                        new QuickActionDefinition("hover.hair", "头发", HairDebugMode.Toggle,
+                            delegate { return HairDebugMode.Active; }),
+                        new QuickActionDefinition("hover.plugins", "插件", PluginListMode.Toggle,
+                            delegate { return PluginListMode.Active; })
+                    }),
                 BuildRecordingAction(),
                 BuildPersonAction(),
                 new QuickActionDefinition("light-linker", "灯光", _quickActions.OpenLightLinker),
@@ -738,17 +790,27 @@ namespace Quest3TriggerUI
                             delegate { return PhysicsBudget.Level == 0; }),
                         new QuickActionDefinition("physics.budget.balanced", "均衡",
                             delegate { PhysicsBudget.SetLevelEntry(1); },
-                            delegate { return PhysicsBudget.Level == 1; }),
-                        new QuickActionDefinition("physics.budget.manual", "手动",
-                            delegate { HairDebugMode.Toggle(); },
-                            delegate { return HairDebugMode.Active; })
+                            delegate { return PhysicsBudget.Level == 1; })
+                    }),
+                new QuickActionDefinition("shots", "运镜", VrShotCameras.TogglePanel,
+                    delegate { return VrShotCameras.PanelVisible; },
+                    new List<QuickActionDefinition> {
+                        new QuickActionDefinition("shots.record", "记录", VrShotCameras.ToggleRecord),
+                        new QuickActionDefinition("shots.prev", "上一镜", VrShotCameras.Prev),
+                        new QuickActionDefinition("shots.next", "下一镜", VrShotCameras.Next)
+                    }),
+                new QuickActionDefinition("rescan-files", "快速扫描",
+                    BrowserAssistScanAccelerator.QuickRescan, null,
+                    new List<QuickActionDefinition> {
+                        new QuickActionDefinition("rescan-files.clothing-hair",
+                            "服装/头发",
+                            BrowserAssistScanAccelerator.RefreshClothingHair,
+                            delegate {
+                                return BrowserAssistScanAccelerator
+                                    .ClothingHairPending;
+                            })
                     }),
                 new QuickActionDefinition("optimize-memory", "优化内存", _quickActions.OptimizeMemory),
-                new QuickActionDefinition("refresh-var", "刷新VAR", RefreshVars, null,
-                    new List<QuickActionDefinition> {
-                        new QuickActionDefinition("refresh-var.incremental", "增量刷新", RefreshVars),
-                        new QuickActionDefinition("refresh-var.full", "完整扫描", delegate { _quickActions.FullRefreshVars(UpdateHelpText); })
-                    }),
                 new QuickActionDefinition("standby", "待机/恢复", ToggleStandby,
                     delegate { return _quickActions.StandbyActive; })
             };
@@ -760,6 +822,10 @@ namespace Quest3TriggerUI
                 delegate { _quickActions.OpenPersonControlPanel(); }, null,
                 new List<QuickActionDefinition> {
                     new QuickActionDefinition("person.replace", "替换", _quickActions.OpenPersonPreset),
+                    new QuickActionDefinition("person.clothing", "服装", _quickActions.OpenClothingOnlyPreset, null,
+                        new List<QuickActionDefinition> {
+                            new QuickActionDefinition("person.clothing.save", "保存", _quickActions.OpenStoreClothingIntoPreset)
+                        }),
                     new QuickActionDefinition("appearance", "外观", _quickActions.OpenAppearancePresetWithoutClothing, null,
                         new List<QuickActionDefinition> {
                             new QuickActionDefinition("appearance.save", "保存", _quickActions.SaveAppearancePreset)
@@ -771,6 +837,10 @@ namespace Quest3TriggerUI
                     new QuickActionDefinition("person.hair", "头发", _quickActions.OpenHairPreset, null,
                         new List<QuickActionDefinition> {
                             new QuickActionDefinition("person.hair.save", "保存", _quickActions.SaveHairPreset)
+                        }),
+                    new QuickActionDefinition("person.eye", "眼睛", _quickActions.OpenEyePreset, null,
+                        new List<QuickActionDefinition> {
+                            new QuickActionDefinition("person.eye.save", "保存", _quickActions.SaveEyePreset)
                         })
                 });
             return _personDefinition;
@@ -863,6 +933,11 @@ namespace Quest3TriggerUI
                 children.Add(replacement[i]);
             _playbackCatalogHierarchical = hierarchical;
             _quickActionRevision++;
+            HideActionSubmenus();
+            ClearBindingSelection();
+            foreach (GameObject menu in _actionSubmenuCache.Values)
+                if (menu != null) UnityEngine.Object.Destroy(menu);
+            _actionSubmenuCache.Clear();
             RebuildPlaybackPanel();
         }
 
@@ -907,12 +982,7 @@ namespace Quest3TriggerUI
             _playbackPanel.AddComponent<Image>().color = new Color(0.04f, 0.06f, 0.09f, 0.98f);
             for (int i = 0; i < children.Count; i++)
                 CreateBindableActionButton(rect, "播放/" + children[i].Label,
-                    10f + 255f * i, 10f, 245f, 80f, children[i].Action);
-        }
-
-        private void RefreshVars()
-        {
-            _quickActions.RefreshVars(UpdateHelpText);
+                    10f + 255f * i, 10f, 245f, 80f, children[i].Action, children[i].Id);
         }
 
         private void ToggleStandby()
@@ -1068,7 +1138,14 @@ namespace Quest3TriggerUI
 
             CreateEyeGapSlider(parent);
 
-            GameObject title = CreateUiObject("Shortcut title", parent);
+            // Page 0: gesture -> binding list. Children keep the same absolute
+            // coordinates inside a full-canvas page container so flipping is a
+            // single SetActive toggle.
+            _bindingsPage = CreateUiObject("Shortcut page bindings", parent);
+            RectTransform bp = _bindingsPage.GetComponent<RectTransform>();
+            SetTopLeft(bp, 0f, 0f, CanvasWidth, CanvasHeight);
+
+            GameObject title = CreateUiObject("Shortcut title", bp);
             RectTransform titleRect = title.GetComponent<RectTransform>();
             SetTopLeft(titleRect, 1850f, 218f, 380f, 38f);
             AddText(title.transform, "当前临时快捷键", 27, TextAnchor.MiddleCenter,
@@ -1078,7 +1155,7 @@ namespace Quest3TriggerUI
             {
                 TemporaryShortcutGesture gesture = (TemporaryShortcutGesture)i;
                 float y = 264f + i * 84f;
-                GameObject row = CreateUiObject("Shortcut " + gesture, parent);
+                GameObject row = CreateUiObject("Shortcut " + gesture, bp);
                 RectTransform rowRect = row.GetComponent<RectTransform>();
                 SetTopLeft(rowRect, 1850f, y, 300f, 76f);
                 Image rowImage = row.AddComponent<Image>();
@@ -1088,18 +1165,207 @@ namespace Quest3TriggerUI
                     TextAnchor.MiddleLeft, Color.white, 12f);
 
                 TemporaryShortcutGesture captured = gesture;
-                Image delete = CreateActionButton(parent, "×", 2160f, y + 8f, 70f, 60f,
+                Image delete = CreateActionButton(bp, "×", 2160f, y + 8f, 70f, 60f,
                     delegate { DeleteBinding(captured); });
                 _bindingDeleteButtons[i] = delete.gameObject;
             }
 
-            GameObject note = CreateUiObject("Shortcut note", parent);
+            GameObject note = CreateUiObject("Shortcut note", bp);
             RectTransform noteRect = note.GetComponent<RectTransform>();
-            SetTopLeft(noteRect, 1850f, 944f, 380f, 120f);
+            SetTopLeft(noteRect, 1850f, 944f, 380f, 70f);
             AddText(note.transform,
 				"临时绑定：先选键/功能，再连按。双击等待0.32秒；三击松手生效。× 删除。",
                 23, TextAnchor.UpperLeft, new Color(0.74f, 0.83f, 0.90f, 1f), 12f);
+
+            // Shared page flip button at the bottom of the column.
+            GameObject flip = CreateUiObject("Page flip", parent);
+            RectTransform flipRect = flip.GetComponent<RectTransform>();
+            SetTopLeft(flipRect, 1850f, 1022f, 380f, 48f);
+            Image flipImage = flip.AddComponent<Image>();
+            flipImage.color = new Color(0.11f, 0.38f, 0.48f, 1f);
+            Button flipButton = flip.AddComponent<Button>();
+            flipButton.targetGraphic = flipImage;
+            flipButton.onClick.AddListener(delegate { SetShortcutPage(!_showingPresets); });
+            _flipText = AddText(flip.transform, "", 26,
+                TextAnchor.MiddleCenter, Color.white, 4f);
+
+            CreatePresetPage(parent);
             RefreshBindingRows();
+            SetShortcutPage(false);
+        }
+
+        private void CreatePresetPage(RectTransform parent)
+        {
+            // Page 1: preset slots, same column geometry as the binding page.
+            _presetPage = CreateUiObject("Shortcut page presets", parent);
+            RectTransform pp = _presetPage.GetComponent<RectTransform>();
+            SetTopLeft(pp, 0f, 0f, CanvasWidth, CanvasHeight);
+
+            GameObject title = CreateUiObject("Preset title", pp);
+            RectTransform titleRect = title.GetComponent<RectTransform>();
+            SetTopLeft(titleRect, 1850f, 218f, 380f, 38f);
+            AddText(title.transform, "快捷键预设", 27, TextAnchor.MiddleCenter,
+                new Color(0.93f, 0.98f, 1f, 1f), 4f);
+
+            _presetWriteImage = CreateActionButton(pp, "存入槽位",
+                1850f, 264f, 380f, 50f, TogglePresetWriteMode);
+
+            _presetSlots = ShortcutPresetStore.LoadAll();
+            for (int i = 0; i < ShortcutPresetStore.SlotCount; i++)
+            {
+                int captured = i;
+                float y = 330f + i * 84f;
+                GameObject row = CreateUiObject("Preset " + i, pp);
+                RectTransform rowRect = row.GetComponent<RectTransform>();
+                SetTopLeft(rowRect, 1850f, y, 380f, 76f);
+                Image rowImage = row.AddComponent<Image>();
+                rowImage.color = new Color(0.12f, 0.16f, 0.20f, 1f);
+                Button button = row.AddComponent<Button>();
+                button.targetGraphic = rowImage;
+                button.onClick.AddListener(delegate { PresetSlotClicked(captured); });
+                _presetSlotTexts[i] = AddText(row.transform, "", 24,
+                    TextAnchor.MiddleLeft, Color.white, 12f);
+                _presetSlotImages[i] = rowImage;
+            }
+
+            RefreshPresetSlots();
+        }
+
+        private void SetShortcutPage(bool presets)
+        {
+            _showingPresets = presets;
+            if (_bindingsPage != null) _bindingsPage.SetActive(!presets);
+            if (_presetPage != null) _presetPage.SetActive(presets);
+            if (_flipText != null)
+                _flipText.text = presets ? "◀ 返回绑定列表" : "预设槽 ▶";
+            if (presets)
+            {
+                _presetSlots = ShortcutPresetStore.LoadAll();
+                RefreshPresetSlots();
+                UpdateHelpText("快捷键预设：点击槽位载入；点「存入槽位」后再点槽位保存当前绑定。");
+            }
+        }
+
+        private void TogglePresetWriteMode()
+        {
+            _presetWriteMode = !_presetWriteMode;
+            SyncPresetWriteImage();
+            UpdateHelpText(_presetWriteMode
+                ? "写入模式：点击一个槽位，当前绑定即覆盖存入。"
+                : null);
+        }
+
+        private void SyncPresetWriteImage()
+        {
+            if (_presetWriteImage != null)
+                _presetWriteImage.color = _presetWriteMode
+                    ? new Color(0.85f, 0.45f, 0.10f, 1f)
+                    : new Color(0.11f, 0.38f, 0.48f, 1f);
+        }
+
+        private void PresetSlotClicked(int slot)
+        {
+            if (_presetWriteMode)
+            {
+                ShortcutPresetStore.SaveSlot(slot, _shortcutBindings);
+                _presetSlots = ShortcutPresetStore.LoadAll();
+                _presetWriteMode = false;
+                SyncPresetWriteImage();
+                RefreshPresetSlots();
+                UpdateHelpText("当前绑定已存入 预设" + (slot + 1) + "。");
+                return;
+            }
+            LoadPresetSlot(slot);
+        }
+
+        private void LoadPresetSlot(int slot)
+        {
+            if (_presetSlots == null)
+                _presetSlots = ShortcutPresetStore.LoadAll();
+            List<ShortcutPresetStore.Entry> entries = _presetSlots[slot];
+            _shortcutBindings.Clear();
+            int restored = 0;
+            int missing = 0;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                ShortcutPresetStore.Entry e = entries[i];
+                ShortcutBindingTarget target = null;
+                if (!e.IsAction)
+                {
+                    target = ShortcutBindingTarget.Key(
+                        e.Label, e.VirtualKey, e.Extended);
+                }
+                else
+                {
+                    Action action;
+                    if (!_actionRegistry.TryGetValue(e.ActionId, out action))
+                    {
+                        QuickActionDefinition def = FindActionDefinition(
+                            e.ActionId, _quickActionDefinitions);
+                        if (def != null) action = def.Action;
+                    }
+                    if (action != null)
+                        target = ShortcutBindingTarget.ActionButton(
+                            e.Label, action, e.ActionId);
+                    else
+                        missing++;
+                }
+                if (target == null) continue;
+                TemporaryShortcutGesture gesture =
+                    (TemporaryShortcutGesture)e.Gesture;
+                List<ShortcutBindingTarget> list;
+                if (!_shortcutBindings.TryGetValue(gesture, out list))
+                {
+                    list = new List<ShortcutBindingTarget>();
+                    _shortcutBindings[gesture] = list;
+                }
+                list.Add(target);
+                restored++;
+            }
+            ClearBindingSelection();
+            RefreshBindingRows();
+            UpdateHelpText("预设" + (slot + 1) + " 已载入 " + restored +
+                " 个目标" +
+                (missing > 0 ? "；" + missing + " 个动作未找到已跳过" : "") +
+                "。");
+        }
+
+        private void RefreshPresetSlots()
+        {
+            if (_presetSlotTexts[0] == null) return;
+            if (_presetSlots == null)
+                _presetSlots = ShortcutPresetStore.LoadAll();
+            for (int i = 0; i < ShortcutPresetStore.SlotCount; i++)
+            {
+                List<ShortcutPresetStore.Entry> entries = _presetSlots[i];
+                int gestures = 0;
+                int seen = 0;
+                for (int j = 0; j < entries.Count; j++)
+                {
+                    int bit = 1 << entries[j].Gesture;
+                    if ((seen & bit) == 0) { seen |= bit; gestures++; }
+                }
+                _presetSlotTexts[i].text = "预设" + (i + 1) + "\n" +
+                    (gestures > 0 ? gestures + "组绑定" : "空");
+                _presetSlotImages[i].color = gestures > 0
+                    ? new Color(0.11f, 0.38f, 0.48f, 1f)
+                    : new Color(0.12f, 0.16f, 0.20f, 1f);
+            }
+        }
+
+        private static QuickActionDefinition FindActionDefinition(
+            string id, IList<QuickActionDefinition> defs)
+        {
+            if (string.IsNullOrEmpty(id) || defs == null) return null;
+            for (int i = 0; i < defs.Count; i++)
+            {
+                QuickActionDefinition d = defs[i];
+                if (d.Id == id) return d;
+                QuickActionDefinition child =
+                    FindActionDefinition(id, d.Children);
+                if (child != null) return child;
+            }
+            return null;
         }
 
         private void CreateEyeGapSlider(RectTransform parent)
@@ -1266,7 +1532,8 @@ namespace Quest3TriggerUI
 			float y,
 			float width,
 			float height,
-			Action action)
+			Action action,
+			string actionId = null)
 		{
 			GameObject go = CreateUiObject(label, parent);
 			RectTransform rect = go.GetComponent<RectTransform>();
@@ -1276,11 +1543,94 @@ namespace Quest3TriggerUI
 			Button button = go.AddComponent<Button>();
 			button.targetGraphic = image;
 			ShortcutActionButton bindable = go.AddComponent<ShortcutActionButton>();
-			bindable.Configure(this, label, action, image);
+			bindable.Configure(this, label, action, image, actionId);
+			if (!string.IsNullOrEmpty(actionId))
+				_actionRegistry[actionId] = action;
 			button.onClick.AddListener(bindable.Click);
 			AddText(go.transform, label, 27, TextAnchor.MiddleCenter, Color.white, 4f);
 			return bindable;
 		}
+
+        private void ConfigureActionHover(GameObject go, QuickActionDefinition definition,
+            RectTransform anchor, int depth)
+        {
+            if (go == null || definition == null || !definition.HasChildren) return;
+            KeyboardActionHover hover = go.AddComponent<KeyboardActionHover>();
+            hover.Configure(this, definition, anchor ?? go.GetComponent<RectTransform>(), depth);
+        }
+
+        internal void ShowActionChildren(QuickActionDefinition definition,
+            RectTransform anchor, int depth)
+        {
+            _actionSubmenuHideAt = -1f;
+            for (int i = _actionSubmenus.Count - 1; i >= depth; i--)
+            {
+                if (_actionSubmenus[i] != null) _actionSubmenus[i].SetActive(false);
+                _actionSubmenus.RemoveAt(i);
+            }
+            if (definition == null || !definition.HasChildren) return;
+            RectTransform parent = _canvas == null ? null : _canvas.GetComponent<RectTransform>();
+            if (parent == null) return;
+            GameObject cached;
+            if (_actionSubmenuCache.TryGetValue(definition, out cached) && cached != null)
+            {
+                cached.SetActive(true);
+                cached.transform.SetAsLastSibling();
+                _actionSubmenus.Add(cached);
+                return;
+            }
+            GameObject panel = CreateUiObject("ActionSubmenu" + depth, parent);
+            RectTransform panelRect = panel.GetComponent<RectTransform>();
+            float height = 58f * definition.Children.Count + 16f;
+            Vector3 corner = parent.InverseTransformPoint(anchor.TransformPoint(
+                new Vector3(anchor.rect.xMin, anchor.rect.yMax, 0f)));
+            float x = corner.x - parent.rect.xMin;
+            float top = parent.rect.yMax - corner.y;
+            float y = top - height - 8f;
+            if (depth > 0)
+            {
+                x += anchor.rect.width + 16f;
+                y = top - 8f;
+            }
+            x = Mathf.Clamp(x, 0f, parent.rect.width - 220f);
+            SetTopLeft(panelRect, x, y, 220f, height);
+            _actionSubmenuCache.Add(definition, panel);
+            Image background = panel.AddComponent<Image>();
+            background.color = new Color(0.04f, 0.07f, 0.10f, 0.98f);
+            background.raycastTarget = true;
+            KeyboardActionHover panelHover = panel.AddComponent<KeyboardActionHover>();
+            panelHover.ConfigurePanel(this);
+            _actionSubmenus.Add(panel);
+            for (int i = 0; i < definition.Children.Count; i++)
+            {
+                QuickActionDefinition child = definition.Children[i];
+                ShortcutActionButton button = CreateBindableActionButton(
+                    panelRect, definition.Label + "/" + child.Label, 8f, 8f + i * 58f, 204f, 50f, child.Action, child.Id);
+                ConfigureActionHover(button.gameObject, child, button.gameObject.GetComponent<RectTransform>(), depth + 1);
+            }
+            SetLayerRecursively(panel, _canvas.gameObject.layer);
+            panel.transform.SetAsLastSibling();
+        }
+
+        internal void ScheduleActionSubmenuHide()
+        {
+            if (_bindingMode) return;
+            _actionSubmenuHideAt = Time.unscaledTime + 0.55f;
+        }
+
+        internal void CancelActionSubmenuHide()
+        {
+            _actionSubmenuHideAt = -1f;
+        }
+
+        private void HideActionSubmenus()
+        {
+            _actionSubmenuHideAt = -1f;
+            for (int i = 0; i < _actionSubmenus.Count; i++)
+                if (_actionSubmenus[i] != null) _actionSubmenus[i].SetActive(false);
+            _actionSubmenus.Clear();
+            _actionHover = null;
+        }
 
         private Text AddText(
             Transform parent,
@@ -1504,6 +1854,7 @@ internal interface IShortcutBindable
 		private VrKeyboardOverlay _owner;
 		private string _label;
 		private Action _action;
+		private string _actionId;
 		private Image _image;
 		private Color _normalColor;
 		private bool _bindingSelected;
@@ -1511,9 +1862,17 @@ internal interface IShortcutBindable
 		internal void Configure(
 			VrKeyboardOverlay owner, string label, Action action, Image image)
 		{
+			Configure(owner, label, action, image, null);
+		}
+
+		internal void Configure(
+			VrKeyboardOverlay owner, string label, Action action, Image image,
+			string actionId)
+		{
 			_owner = owner;
 			_label = label;
 			_action = action;
+			_actionId = actionId;
 			_image = image;
 			_normalColor = image.color;
 		}
@@ -1532,7 +1891,7 @@ internal interface IShortcutBindable
 
 		public ShortcutBindingTarget BindingTarget
 		{
-			get { return ShortcutBindingTarget.ActionButton(_label, _action); }
+			get { return ShortcutBindingTarget.ActionButton(_label, _action, _actionId); }
 		}
 
 		public void SetBindingSelected(bool selected)
@@ -1551,6 +1910,36 @@ internal interface IShortcutBindable
 				_image.color = color;
 		}
 	}
+
+    internal sealed class KeyboardActionHover : MonoBehaviour,
+        IPointerEnterHandler, IPointerExitHandler
+    {
+        private VrKeyboardOverlay _owner;
+        private QuickActionDefinition _definition;
+        private RectTransform _anchor;
+        private int _depth;
+        private bool _panel;
+        internal void Configure(VrKeyboardOverlay owner, QuickActionDefinition definition,
+            RectTransform anchor, int depth)
+        {
+            _owner = owner; _definition = definition; _anchor = anchor; _depth = depth;
+        }
+        internal void ConfigurePanel(VrKeyboardOverlay owner)
+        {
+            _owner = owner; _panel = true;
+        }
+        public void OnPointerEnter(PointerEventData eventData)
+        {
+            if (_owner == null) return;
+            _owner.CancelActionSubmenuHide();
+            if (!_panel && _definition != null && _definition.HasChildren)
+                _owner.ShowActionChildren(_definition, _anchor, _depth);
+        }
+        public void OnPointerExit(PointerEventData eventData)
+        {
+            if (_owner != null) _owner.ScheduleActionSubmenuHide();
+        }
+    }
 
     internal sealed class KeyboardDragHandle : MonoBehaviour,
         IPointerDownHandler, IDragHandler, IPointerUpHandler
@@ -1724,6 +2113,7 @@ internal interface IShortcutBindable
         }
     }
 }
+
 
 
 

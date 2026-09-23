@@ -27,6 +27,7 @@ namespace Quest3TriggerUI
         private static readonly Color HoverColor = new Color(.96f,.62f,.10f,1f);
         private Tile _gripTile;
         private bool _dragging;
+        private TriggerStateMachine _dragHeld;
         private Vector3 _gripStart;
         private Vector3 _tileStart;
         private readonly string _layoutPath;
@@ -42,6 +43,9 @@ namespace Quest3TriggerUI
             // Awake precedes VaM's camera/UI setup. Do not create Unity UI here.
         }
         internal bool CapturingGrip { get { return _gripTile != null; } }
+        // True while the pointer hovers any tile (or its removal button) —
+        // the radial summon must yield so index long-press can drag.
+        internal bool PointerOverTile { get; private set; }
         internal void Refresh() { for (int i = _tiles.Count - 1; i >= 0; i--) Rebind(_tiles[i]); }
         internal void Dispose() { if (_disposed) return; Save(); _disposed = true; ClearSurfaces(); }
         private void ClearSurfaces()
@@ -107,25 +111,60 @@ namespace Quest3TriggerUI
                     if (next != null) VrHaptics.Hover();
                 }
             }
+            PointerOverTile = next != null;
             if (_hovered != null) SetHover(_hovered, !_dragging);
             if (index != null && index.TapFrame == Time.frameCount)
             {
                 if (remove != null) { Remove(remove.Tile); return; }
                 if (hit != null && halo == null && !_dragging) Activate(hit.Tile);
             }
-            if (grip == null) return;
-            if (grip.PressedDownFrame == Time.frameCount && hit != null && halo == null && remove == null) { _gripTile = hit.Tile; _gripStart = OVRInput.GetLocalControllerPosition(OVRInput.Controller.RTouch); _tileStart = _gripTile.Root.anchoredPosition3D; }
-            if (_gripTile != null && grip.LongPressStartFrame == Time.frameCount) { _dragging = true; _gripTile.Remove.gameObject.SetActive(false); }
-            if (_dragging && _gripTile != null && grip.LongPressActive)
+            Vector3 handLocal;
+            bool haveHand = TryHandLocal(out handLocal);
+            // Hold-to-drag accepts either trigger: index long-press over a
+            // tile drags it (the radial summon is suppressed on hover), and
+            // the original grip path stays for grab-style dragging.
+            if (index != null && index.LongPressStartFrame == Time.frameCount && hit != null && halo == null && remove == null)
+            { _gripTile = hit.Tile; _dragHeld = index; _dragging = true; _gripStart = handLocal; _tileStart = _gripTile.Root.anchoredPosition3D; _gripTile.Remove.gameObject.SetActive(false); }
+            if (grip != null && grip.PressedDownFrame == Time.frameCount && hit != null && halo == null && remove == null) { _gripTile = hit.Tile; _dragHeld = grip; _gripStart = handLocal; _tileStart = _gripTile.Root.anchoredPosition3D; }
+            if (_gripTile != null && _dragHeld == grip && grip.LongPressStartFrame == Time.frameCount) { _dragging = true; _gripTile.Remove.gameObject.SetActive(false); }
+            if (_dragging && _gripTile != null && _dragHeld != null && _dragHeld.LongPressActive && haveHand)
             {
-                Vector3 delta = OVRInput.GetLocalControllerPosition(OVRInput.Controller.RTouch) - _gripStart;
-                Vector3 position = _tileStart + delta * 3f / TileScale;
+                Vector3 delta = handLocal - _gripStart;
+                Vector3 position = _tileStart + delta * 3f;
                 Vector3 movement = position - _gripTile.Root.anchoredPosition3D;
                 _gripTile.Root.anchoredPosition3D = position;
                 for (int i=0;i<_gripTile.Children.Count;i++)
                     _gripTile.Children[i].Root.anchoredPosition3D += movement;
             }
-            if (_gripTile != null && grip.ReleasedFrame == Time.frameCount) { bool changed = _dragging; _gripTile = null; _dragging = false; if (changed) Save(); }
+            if (_gripTile != null && _dragHeld != null && _dragHeld.ReleasedFrame == Time.frameCount) { bool changed = _dragging; _gripTile = null; _dragHeld = null; _dragging = false; if (changed) Save(); }
+        }
+        // Right controller position in this canvas's local units. VaM's
+        // rightHand transform exists under both OVR and OpenVR; OVRInput
+        // only reports under the Oculus runtime so it cannot drive the drag.
+        private bool TryHandLocal(out Vector3 local)
+        {
+            local = Vector3.zero;
+            if (_canvas == null) return false;
+            if (SuperController.singleton != null && SuperController.singleton.rightHand != null)
+            {
+                local = _canvas.transform.InverseTransformPoint(
+                    SuperController.singleton.rightHand.transform.position);
+                return true;
+            }
+            Transform anchor = null;
+            if (SuperController.singleton != null && SuperController.singleton.OVRRig != null)
+            {
+                OVRCameraRig rig = SuperController.singleton.OVRRig.GetComponent<OVRCameraRig>();
+                if (rig != null) anchor = rig.trackingSpace;
+            }
+            if (anchor != null)
+            {
+                Vector3 world = anchor.TransformPoint(
+                    OVRInput.GetLocalControllerPosition(OVRInput.Controller.RTouch));
+                local = _canvas.transform.InverseTransformPoint(world);
+                return true;
+            }
+            return false;
         }
         private void SetHover(Tile tile, bool hovered)
         {

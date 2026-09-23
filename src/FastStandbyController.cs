@@ -31,8 +31,15 @@ namespace Quest3TriggerUI
         private int _origPixelLightCount;
         private int _origAsyncSlice;
         private int _origAsyncBuffer;
+        // VramDiet gates the deferred compress stages (texture re-upload +
+        // asset sweep hitch for seconds on enter). Set from config.
+        internal static bool VramDiet = true;
+        // The full-GC sweep is by far the longest stall — off by default;
+        // texture downscale already frees the bulk of VRAM.
+        internal static bool SweepUnusedAssets = false;
         private float _restoreAsyncAt = -1f;
         private float _pendingCompressAt = -1f;
+        private float _pendingSweepAt = -1f;
         private readonly List<KeyValuePair<HairSimControl, bool>> _hairFrozen =
             new List<KeyValuePair<HairSimControl, bool>>();
         private readonly List<KeyValuePair<ClothSimControl, bool>> _clothFrozen =
@@ -73,6 +80,11 @@ namespace Quest3TriggerUI
                 _pendingCompressAt = -1f;
                 CompressMemory();
             }
+            if (_pendingSweepAt > 0f && Time.unscaledTime >= _pendingSweepAt)
+            {
+                _pendingSweepAt = -1f;
+                SweepMemory();
+            }
             if (!_active)
             {
                 _frameLimiter.Reset();
@@ -98,10 +110,14 @@ namespace Quest3TriggerUI
             _origAsyncBuffer = QualitySettings.asyncUploadBufferSize;
 
             // VRAM diet is deferred ~0.8s: the texture-limit change re-uploads
-            // every texture and UnloadUnusedAssets is a full GC, so running
-            // them on the button press froze the world for seconds.  The
-            // screen is already black by the time the hitch lands.
-            _pendingCompressAt = Time.unscaledTime + 0.8f;
+            // every texture, so running it on the button press froze the world
+            // for seconds.  The screen is already black by the time the hitch
+            // lands.  The full-GC sweep is deferred further (~2.2s) so the two
+            // stalls don't stack in a single frame.
+            if (VramDiet)
+                _pendingCompressAt = Time.unscaledTime + 0.8f;
+            if (SweepUnusedAssets)
+                _pendingSweepAt = Time.unscaledTime + 2.2f;
 
             _cameraStates.Clear();
             Camera[] cameras = Camera.allCameras;
@@ -152,13 +168,27 @@ namespace Quest3TriggerUI
         // unreferenced assets.  Runtime-only, all restored on exit.
         private void CompressMemory()
         {
+            Stopwatch sw = Stopwatch.StartNew();
             QualitySettings.masterTextureLimit = 3;
             QualitySettings.shadows = ShadowQuality.Disable;
             QualitySettings.antiAliasing = 0;
             QualitySettings.pixelLightCount = 0;
+            long texMs = sw.ElapsedMilliseconds;
             FreezeGpuSims();
+            if (Quest3TriggerUIPlugin.Log != null)
+                Quest3TriggerUIPlugin.Log.LogInfo(
+                    "待机压缩阶段1：纹理/画质降级 " + texMs + " ms，GPU模拟冻结 " +
+                    (sw.ElapsedMilliseconds - texMs) + " ms");
+        }
+
+        private void SweepMemory()
+        {
+            Stopwatch sw = Stopwatch.StartNew();
             try { Resources.UnloadUnusedAssets(); }
             catch { }
+            if (Quest3TriggerUIPlugin.Log != null)
+                Quest3TriggerUIPlugin.Log.LogInfo(
+                    "待机压缩阶段2：UnloadUnusedAssets " + sw.ElapsedMilliseconds + " ms");
         }
 
         // pauseAutoSimulation only stops PhysX — GPUTools hair/cloth still
@@ -210,6 +240,7 @@ namespace Quest3TriggerUI
         {
             Stopwatch timer = Stopwatch.StartNew();
             _pendingCompressAt = -1f;
+            _pendingSweepAt = -1f;
             for (int i = 0; i < _cameraStates.Count; i++)
             {
                 CameraState state = _cameraStates[i];

@@ -23,7 +23,6 @@ namespace Quest3TriggerUI
         private bool _embodyBusy;
         private Coroutine _embodyActivationCoroutine;
         private float _nextEmbodyResolve;
-        private readonly IncrementalVarRefresh _varRefresh;
         private readonly PhysicsPluginApplicator _physicsPlugins;
         private bool _appearanceLoadBusy;
         private Atom _expressionTarget;
@@ -74,7 +73,6 @@ namespace Quest3TriggerUI
             _standby = new FastStandbyController();
             _softRestart = new SoftRestartController(host, _standby);
             _lastExpressionIndex = -1;
-            _varRefresh = new IncrementalVarRefresh(host, NotifyPackageRefreshHandlers);
             _physicsPlugins = new PhysicsPluginApplicator(host);
         }
 
@@ -132,6 +130,16 @@ namespace Quest3TriggerUI
         internal bool StandbyActive
         {
             get { return _standby.Active; }
+        }
+
+        // Called by the scene-load accelerator: a load under the standby frame
+        // limiter and paused simulation would stall, so standby is dropped
+        // first. Returns false when it was not active.
+        internal bool RestoreStandbyForSceneLoad()
+        {
+            if (!_standby.Active) return false;
+            _standby.RestoreImmediately();
+            return true;
         }
 
         internal bool EmbodyActive
@@ -308,6 +316,32 @@ internal void OpenPersonPreset()
             ShowAppearancePresetDialog(target, true);
         }
 
+        internal void OpenClothingOnlyPreset()
+        {
+            Atom target = FindClosestPerson(PersonGenderFilter.Female);
+            if (target == null)
+            {
+                LogError("Clothing preset: no female Person atom is in front of the VR view.");
+                return;
+            }
+
+            SelectTargetAndShowHUD(target);
+            ShowAppearancePresetDialog(target, false, true);
+        }
+
+        internal void OpenStoreClothingIntoPreset()
+        {
+            Atom target = FindClosestPerson(PersonGenderFilter.Female);
+            if (target == null)
+            {
+                LogError("Clothing preset: no female Person atom is in front of the VR view.");
+                return;
+            }
+
+            SelectTargetAndShowHUD(target);
+            ShowAppearancePresetDialog(target, false, false, true);
+        }
+
         internal void OpenSkinPreset()
         {
             Atom target = FindClosestPerson(PersonGenderFilter.Female);
@@ -318,21 +352,21 @@ internal void OpenPersonPreset()
             }
 
             SelectTargetAndShowHUD(target);
-            JSONStorable skinPresets = target.GetStorableByID("SkinPresets");
-            JSONStorableActionPresetFilePath loadAction = skinPresets == null
-                ? null
-                : skinPresets.GetPresetFilePathAction("LoadPresetWithPath");
-            if (loadAction == null)
-            {
-                LogError("Skin preset: SkinPresets.LoadPresetWithPath is unavailable.");
-                return;
-            }
+            VrPresetBrowser.ShowDialogFull("加载皮肤预设", PluginPaths.SkinPresetDir,
+                "vap", false, null,
+                delegate(string path, bool didClose) {
+                    if (target != null && !string.IsNullOrEmpty(path))
+                        LoadSkinPreset(target, path);
+                });
+        }
 
-            loadAction.Browse(delegate(string path)
-            {
-                if (!string.IsNullOrEmpty(path))
-                    skinPresets.CallPresetFileAction("LoadPresetWithPath", path);
-            });
+        // Same unified model as hair: a pure skin .vap IS a skin-only preset,
+        // so the whitelist extraction passes it through unchanged while a
+        // person preset is filtered down to its skin storables.
+        private void LoadSkinPreset(Atom target, string path)
+        {
+            LoadExtractedPreset(target, path, "SkinPresets", "Skin preset",
+                ExtractSkinPreset);
         }
 
         internal void OpenHairPreset()
@@ -344,6 +378,9 @@ internal void OpenPersonPreset()
                 return;
             }
             SelectTargetAndShowHUD(target);
+            // Start in the hair preset library — the unified loader also
+            // accepts a person preset's hair section if the user browses
+            // over to Appearance, but the default view stays hair-focused.
             VrPresetBrowser.ShowDialogFull("加载头发预设", PluginPaths.HairPresetDir,
                 "vap", false, null,
                 delegate(string path, bool didClose) {
@@ -352,46 +389,78 @@ internal void OpenPersonPreset()
                 });
         }
 
+        // Unified hair load: a pure hair .vap IS a hair-only section, so the
+        // same extraction that pulls hair out of a person preset passes a
+        // hair preset through unchanged. No file-type dispatch needed.
         private void LoadHairPreset(Atom target, string path)
         {
-            MeshVR.PresetManagerControl hair =
-                target.GetStorableByID("HairPresets") as MeshVR.PresetManagerControl;
-            JSONStorableUrl selected = hair == null ? null : hair.GetUrlJSONParam("presetBrowsePath");
-            if (selected == null)
+            LoadExtractedPreset(target, path, "HairPresets", "Hair preset",
+                delegate(JSONClass source) {
+                    return ExtractSectionPreset(source, "hair");
+                });
+        }
+
+        // Shared spine of the section loads: read the picked .vap, shrink it
+        // to one section's storables, then feed that JSON straight into the
+        // section's own PresetManager — presetBrowsePath points at the source
+        // file first so relative/package refs inside the section resolve.
+        private void LoadExtractedPreset(Atom target, string path,
+            string managerId, string label,
+            Func<JSONClass, JSONClass> extract)
+        {
+            if (_appearanceLoadBusy)
             {
-                LogError("Hair preset: HairPresets.presetBrowsePath is unavailable.");
+                LogError(label + ": a preset load is already running.");
                 return;
             }
-            bool wasLocked = hair.lockParams;
-            string previousPath = selected.val;
-            JSONStorableBool loadOnSelect = hair.GetBoolJSONParam("loadPresetOnSelect");
-            if (loadOnSelect == null)
-            {
-                LogError("Hair preset: loadPresetOnSelect is unavailable.");
-                return;
-            }
-            bool previousLoadOnSelect = loadOnSelect.val;
+            _appearanceLoadBusy = true;
+            MeshVR.PresetManagerControl ctl = null;
+            JSONStorableUrl url = null;
+            JSONStorableBool auto = null;
+            bool oldAuto = false, oldLock = false;
+            string oldPath = null;
             try
             {
-                hair.lockParams = false;
-                loadOnSelect.val = false;
-                // UIAssist uses the callback setter: it initializes PresetManager's
-                // directory/name parameters, not just the visible URL value.
-                selected.val = SuperController.singleton.NormalizePath(path);
-                // Explicit LoadPreset replaces hair; never MergeLoadPreset. Repeated
-                // selection of the same file still executes the load exactly once.
-                hair.CallAction("LoadPreset");
-                LogInfo("Hair preset replaced: " + path);
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text))
+                    throw new InvalidOperationException(
+                        "preset file is unreadable: " + path);
+                JSONClass extracted = extract(JSON.Parse(text).AsObject);
+                if (extracted == null)
+                    throw new InvalidOperationException(
+                        "preset has no matching section: " + path);
+
+                ctl = target.GetStorableByID(managerId)
+                    as MeshVR.PresetManagerControl;
+                if (ctl == null)
+                    throw new InvalidOperationException(
+                        "target Person has no " + managerId + " manager.");
+                MeshVR.PresetManager pm = PresetManagerOf(ctl);
+                url = ctl.GetUrlJSONParam("presetBrowsePath");
+                auto = ctl.GetBoolJSONParam("loadPresetOnSelect");
+                if (pm == null || url == null || auto == null)
+                    throw new InvalidOperationException(
+                        managerId + " preset parameters are unavailable.");
+
+                oldAuto = auto.val;
+                oldLock = ctl.lockParams;
+                oldPath = url.val;
+                auto.val = false;
+                ctl.lockParams = false;
+                url.val = SuperController.singleton.NormalizePath(path);
+                pm.LoadPresetFromJSON(extracted, false);
+                LogInfo(label + " applied: " + path);
             }
             catch (Exception exception)
             {
-                LogError("Hair preset load failed: " + exception);
+                LogError(label + " load failed: " + exception);
             }
             finally
             {
-                selected.val = previousPath;
-                loadOnSelect.val = previousLoadOnSelect;
-                hair.lockParams = wasLocked;
+                if (url != null) url.val = oldPath;
+                if (auto != null) auto.val = oldAuto;
+                if (ctl != null) ctl.lockParams = oldLock;
+                _appearanceLoadBusy = false;
             }
         }
 
@@ -404,13 +473,232 @@ internal void OpenPersonPreset()
         internal void SaveSkinPreset()
         {
             SavePersonPresetDialog("SkinPresets",
-                PluginPaths.SkinPresetDir, "皮肤");
+                PluginPaths.SkinPresetDir, "皮肤",
+                delegate(Atom target, string path) {
+                    if (FileManager.IsPackagePath(path))
+                    {
+                        LogError("皮肤 save: presets inside VAR packages cannot be rewritten.");
+                        return true;
+                    }
+                    if (!File.Exists(path))
+                        return false; // new name → native store
+                    int kind = ClassifyPresetFile(path, "character");
+                    if (kind == 2)
+                    {
+                        // Person preset: merge the live skin storables into it.
+                        StoreSkinIntoPreset(target, path);
+                        return true;
+                    }
+                    if (kind == 0)
+                    {
+                        LogError("皮肤 save: selected file is neither a person nor a skin preset: " + path);
+                        return true;
+                    }
+                    return false; // pure skin preset → native store (+thumbnail)
+                });
+        }
+
+        internal void OpenEyePreset()
+        {
+            Atom target = FindClosestPerson(PersonGenderFilter.Female);
+            if (target == null)
+            {
+                LogError("Eye preset: no female Person atom is in front of the VR view.");
+                return;
+            }
+            SelectTargetAndShowHUD(target);
+            VrPresetBrowser.ShowDialogFull("加载眼睛预设", PluginPaths.EyePresetDir,
+                "vap", false, null,
+                delegate(string path, bool didClose) {
+                    if (target != null && !string.IsNullOrEmpty(path))
+                        LoadEyePreset(target, path);
+                });
+        }
+
+        private void LoadEyePreset(Atom target, string path)
+        {
+            LoadExtractedPreset(target, path, "AppearancePresets",
+                "Eye preset", ExtractEyePreset);
+        }
+
+        internal void SaveEyePreset()
+        {
+            Atom target = FindClosestPerson(PersonGenderFilter.Female);
+            if (target == null)
+            {
+                LogError("Eye preset: no female Person atom is in front of the VR view.");
+                return;
+            }
+            SelectTargetAndShowHUD(target);
+            Directory.CreateDirectory(PluginPaths.EyePresetDir);
+            string startDir = PresetSaveDirs.Get("EyePresets",
+                PluginPaths.EyePresetDir);
+            string defaultName = "Preset_" +
+                DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".vap";
+            VrPresetBrowser.ShowDialogFull("保存眼睛预设", startDir,
+                "vap", true, defaultName,
+                delegate(string path, bool didClose) {
+                    if (string.IsNullOrEmpty(path)) return;
+                    if (FileManager.IsPackagePath(path))
+                    {
+                        LogError("Eye preset: presets inside VAR packages cannot be rewritten.");
+                        return;
+                    }
+                    if (!File.Exists(path))
+                    {
+                        StoreEyePresetFile(target, path);
+                        return;
+                    }
+                    int kind = ClassifyPresetFile(path, "character");
+                    if (kind == 2)
+                    {
+                        // Person preset: merge the live eye storables into it.
+                        StoreStorableSetIntoPreset(target, path,
+                            EyeStorableIds, false, "eye");
+                        return;
+                    }
+                    if (FileContainsStorable(path, "irises"))
+                    {
+                        // Existing eye preset: overwrite + fresh thumbnail.
+                        StoreEyePresetFile(target, path);
+                        return;
+                    }
+                    LogError("Eye preset: selected file is neither a person nor an eye preset: " + path);
+                });
+        }
+
+        private static bool FileContainsStorable(string path, string id)
+        {
+            try
+            {
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text)) return false;
+                JSONArray storables =
+                    JSON.Parse(text).AsObject["storables"].AsArray;
+                if (storables == null) return false;
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable != null && storable["id"].Value == id)
+                        return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        // Write a standalone eye preset (.vap + .jpg). The thumbnail goes
+        // through SuperController.DoSaveScreenshot — the same lo-res capture
+        // native StorePreset uses.
+        private void StoreEyePresetFile(Atom target, string path)
+        {
+            if (_appearanceLoadBusy)
+            {
+                LogError("Eye preset: a preset load is already running.");
+                return;
+            }
+            _appearanceLoadBusy = true;
+            string tempPath = null;
+            try
+            {
+                string normalized = SuperController.singleton.NormalizePath(path);
+                Directory.CreateDirectory(
+                    Path.GetDirectoryName(normalized));
+                string fileName = Path.GetFileName(normalized);
+                if (!fileName.StartsWith("Preset_",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    normalized = Path.Combine(
+                        Path.GetDirectoryName(normalized),
+                        "Preset_" + fileName);
+                }
+
+                var root = new JSONClass();
+                root["setUnlistedParamsToDefault"] = new JSONData(true);
+                var outStorables = new JSONArray();
+                for (int i = 0; i < EyeStorableIds.Length; i++)
+                {
+                    string id = EyeStorableIds[i];
+                    JSONStorable storable = target.GetStorableByID(id);
+                    JSONClass sub = storable == null
+                        ? null
+                        : storable.GetJSON(true, true, true);
+                    if (sub == null) continue;
+                    sub["id"] = new JSONData(id);
+                    outStorables.Add(sub);
+                }
+                if (outStorables.Count == 0)
+                    throw new InvalidOperationException(
+                        "target Person exposes no eye storables.");
+                root["storables"] = outStorables;
+
+                tempPath = normalized + ".q3tmp";
+                File.WriteAllText(tempPath, root.ToString(),
+                    new System.Text.UTF8Encoding(false));
+                if (File.Exists(normalized))
+                    File.Replace(tempPath, normalized, null);
+                else
+                    File.Move(tempPath, normalized);
+                tempPath = null;
+
+                string jpg = normalized.Substring(0,
+                    normalized.Length - ".vap".Length) + ".jpg";
+                try
+                {
+                    SuperController.singleton.DoSaveScreenshot(jpg,
+                        new SuperController.ScreenShotCallback(
+                            delegate(string s) { }));
+                }
+                catch (Exception shotEx)
+                {
+                    LogError("Eye preset thumbnail failed (file saved): " +
+                        shotEx.Message);
+                }
+                PresetSaveDirs.Set("EyePresets",
+                    Path.GetDirectoryName(normalized));
+                LogInfo("Eye preset saved: " + normalized);
+            }
+            catch (Exception exception)
+            {
+                LogError("Eye preset save failed: " + exception);
+            }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+                _appearanceLoadBusy = false;
+            }
         }
 
         internal void SaveHairPreset()
         {
             SavePersonPresetDialog("HairPresets",
-                PluginPaths.HairPresetDir, "头发");
+                PluginPaths.HairPresetDir, "头发",
+                delegate(Atom target, string path) {
+                    if (FileManager.IsPackagePath(path))
+                    {
+                        LogError("头发 save: presets inside VAR packages cannot be rewritten.");
+                        return true;
+                    }
+                    if (!File.Exists(path))
+                        return false; // new name → native store
+                    int kind = ClassifyPresetFile(path, "hair");
+                    if (kind == 2)
+                    {
+                        // Person preset: merge the live hair section into it.
+                        StoreSectionIntoPreset(target, path, "hair");
+                        return true;
+                    }
+                    if (kind == 0)
+                    {
+                        LogError("头发 save: selected file is neither a person nor a hair preset: " + path);
+                        return true;
+                    }
+                    return false; // pure hair preset → native store (+thumbnail)
+                });
         }
 
         // Mirrors UIAssist's save-mode file pick: the SAME media browser is
@@ -421,7 +709,8 @@ internal void OpenPersonPreset()
         // own preset list is bound to loadPresetOnSelect, and clicking a
         // file there performs a load while our save dialog is open.
         private void SavePersonPresetDialog(
-            string storableId, string suggestedDir, string label)
+            string storableId, string suggestedDir, string label,
+            Func<Atom, string, bool> interceptPath = null)
         {
             Atom target = FindClosestPerson(PersonGenderFilter.Female);
             if (target == null)
@@ -450,6 +739,9 @@ internal void OpenPersonPreset()
                     LogInfo(label + " save dialog returned path=" +
                         (path ?? "<null>"));
                     if (string.IsNullOrEmpty(path))
+                        return;
+                    if (interceptPath != null &&
+                        interceptPath(target, path))
                         return;
                     StorePresetToPath(presets, path, storableId, label);
                 });
@@ -745,8 +1037,6 @@ internal void OpenPersonPreset()
                 morph.morphValue = value;
         }
 
-        internal void RefreshVars(Action<string> completed) { _varRefresh.Begin(false, completed); }
-        internal void FullRefreshVars(Action<string> completed) { _varRefresh.Begin(true, completed); }
         internal void SoftRestart(Action<string> completed)
         {
             _softRestart.Begin(completed);
@@ -804,7 +1094,6 @@ internal void OpenPersonPreset()
         internal void Dispose()
         {
             _lightLinker.Dispose();
-            _varRefresh.Dispose();
             RestoreEyeLookMorphs(true);
             _eyeGapSliderValue = 0.5f;
             _eyeGapBaseline = 0.5f;
@@ -1385,33 +1674,6 @@ internal void OpenPersonPreset()
             return result;
         }
 
-        private static void NotifyPackageRefreshHandlers()
-        {
-            FieldInfo handlersField = typeof(FileManager).GetField(
-                "onRefreshHandlers", BindingFlags.NonPublic | BindingFlags.Static);
-            Delegate handlers = handlersField == null
-                ? null
-                : handlersField.GetValue(null) as Delegate;
-            if (handlers == null)
-                return;
-
-            Delegate[] invocationList = handlers.GetInvocationList();
-            for (int i = 0; i < invocationList.Length; i++)
-            {
-                try
-                {
-                    invocationList[i].DynamicInvoke();
-                }
-                catch (Exception exception)
-                {
-                    LogError("VAR refresh handler failed: " +
-                        (exception.InnerException == null
-                            ? exception.Message
-                            : exception.InnerException.Message));
-                }
-            }
-        }
-
         private void OpenPersonTab(string tab)
         {
             Atom target = FindClosestPerson(false);
@@ -1660,7 +1922,9 @@ internal void OpenPersonPreset()
             LogError(tab + ": the selected Person has no " + tab + " tab.");
         }
 
-        private void ShowAppearancePresetDialog(Atom target, bool keepCurrentClothing)
+        private void ShowAppearancePresetDialog(Atom target,
+            bool keepCurrentClothing, bool clothingOnly = false,
+            bool storeClothing = false)
         {
             JSONStorable appearancePresets = target.GetStorableByID("AppearancePresets");
             if (appearancePresets == null)
@@ -1692,11 +1956,18 @@ internal void OpenPersonPreset()
             loadAction.Browse(
                 delegate(string path)
                 {
-                    LoadAppearancePreset(target, path, keepCurrentClothing);
+                    if (storeClothing)
+                    {
+                        StoreSectionIntoPreset(target, path, "clothing");
+                        return;
+                    }
+                    LoadAppearancePreset(target, path, keepCurrentClothing,
+                        clothingOnly);
                 });
         }
 
-        private void LoadAppearancePreset(Atom target, string path, bool keepCurrentClothing)
+        private void LoadAppearancePreset(Atom target, string path,
+            bool keepCurrentClothing, bool clothingOnly = false)
         {
             if (target == null || string.IsNullOrEmpty(path))
                 return;
@@ -1705,6 +1976,17 @@ internal void OpenPersonPreset()
             if (appearancePresets == null)
             {
                 LogError("Appearance preset: target Person has no AppearancePresets manager.");
+                return;
+            }
+
+            if (clothingOnly)
+            {
+                if (_appearanceLoadBusy)
+                {
+                    LogError("Clothing preset: a preset load is already running.");
+                    return;
+                }
+                LoadClothingOnlyPreset(target, path);
                 return;
             }
 
@@ -1721,6 +2003,465 @@ internal void OpenPersonPreset()
             }
 
             LoadAppearanceWithoutClothing(target, appearancePresets, path);
+        }
+
+        // Clothing presets live inside the person .vap itself: the
+        // "geometry" storable's clothing list plus one storable set per worn
+        // item. Extract exactly those into an in-memory clothing preset and
+        // feed it to the native ClothingPresets manager — morphs, hair, skin
+        // and physics are never part of the replay, so nothing else can move.
+        private void LoadClothingOnlyPreset(Atom target, string path)
+        {
+            LoadExtractedPreset(target, path, "ClothingPresets",
+                "Clothing preset",
+                delegate(JSONClass source) {
+                    return ExtractSectionPreset(source, "clothing");
+                });
+        }
+
+        // Item storable tails: clothing items use Sim/ItemControl/WrapControl/
+        // Material*; hair adds a per-item "Preset" storable and vendor
+        // material/wrap names like KrayonScalpMaterial/CustomScalpWrapControl,
+        // so the fragment set covers anything containing WrapControl/Material.
+        private static readonly string[] ItemStorablePrefixes =
+            { "Sim", "ItemControl", "Preset" };
+        private static readonly string[] ItemStorableFragments =
+            { "WrapControl", "Material" };
+
+        // Eyes: VaM has no EyePresets manager, but AppearancePresets' restore
+        // domain covers these storables (they ride along in every person
+        // .vap), so feeding it a 3-storable JSON restores only the eyes.
+        private static readonly string[] EyeStorableIds =
+            { "irises", "sclera", "lacrimals" };
+
+        private static JSONClass ExtractEyePreset(JSONClass source)
+        {
+            JSONArray storables = source == null
+                ? null
+                : source["storables"].AsArray;
+            if (storables == null) return null;
+
+            var outStorables = new JSONArray();
+            bool found = false;
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass storable = storables[i].AsObject;
+                if (storable == null) continue;
+                if (Array.IndexOf(EyeStorableIds,
+                        storable["id"].Value) < 0)
+                    continue;
+                outStorables.Add(storable);
+                found = true;
+            }
+            if (!found) return null;
+
+            var output = new JSONClass();
+            output["setUnlistedParamsToDefault"] = new JSONData(true);
+            output["storables"] = outStorables;
+            return output;
+        }
+
+        // Skin is whitelist-shaped, not list-shaped: every native skin preset
+        // carries exactly these storables plus a geometry stub that only holds
+        // "character". irises/sclera/lacrimals live in person presets but are
+        // NOT part of the native skin-preset contract, so they stay out.
+        private static readonly string[] SkinStorableIds =
+            { "skin", "textures", "teeth", "tongue", "mouth" };
+
+        private static JSONClass ExtractSkinPreset(JSONClass source)
+        {
+            JSONArray storables = source == null
+                ? null
+                : source["storables"].AsArray;
+            if (storables == null) return null;
+
+            var outStorables = new JSONArray();
+            bool foundSkin = false;
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass storable = storables[i].AsObject;
+                if (storable == null) continue;
+                string id = storable["id"].Value;
+                if (id == "geometry")
+                {
+                    // Only "character" may pass — morphs/clothing/hair in a
+                    // person preset's geometry must not reach the skin load.
+                    var stub = new JSONClass();
+                    stub["id"] = new JSONData("geometry");
+                    JSONNode character = storable["character"];
+                    if (character != null &&
+                        !string.IsNullOrEmpty(character.Value))
+                        stub["character"] = character;
+                    outStorables.Add(stub);
+                }
+                else if (Array.IndexOf(SkinStorableIds, id) >= 0)
+                {
+                    outStorables.Add(storable);
+                    if (id == "skin") foundSkin = true;
+                }
+            }
+            if (!foundSkin) return null;
+
+            var output = new JSONClass();
+            output["setUnlistedParamsToDefault"] = new JSONData(true);
+            output["storables"] = outStorables;
+            return output;
+        }
+
+        // Reverse of a whitelist load: replace the target .vap's whitelisted
+        // storables with the live ones; skin additionally refreshes
+        // geometry.character. Every other section stays byte-identical.
+        private void StoreStorableSetIntoPreset(Atom target, string path,
+            string[] storableIds, bool syncCharacter, string label)
+        {
+            if (target == null || string.IsNullOrEmpty(path)) return;
+            if (_appearanceLoadBusy)
+            {
+                LogError(label + " preset: a preset load is already running.");
+                return;
+            }
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError(label + " preset: presets inside VAR packages cannot be rewritten.");
+                return;
+            }
+            _appearanceLoadBusy = true;
+            string tempPath = null;
+            try
+            {
+                var newStorables = new JSONArray();
+                for (int i = 0; i < storableIds.Length; i++)
+                {
+                    string id = storableIds[i];
+                    JSONStorable storable = target.GetStorableByID(id);
+                    JSONClass sub = storable == null
+                        ? null
+                        : storable.GetJSON(true, true, true);
+                    if (sub == null) continue;
+                    sub["id"] = new JSONData(id);
+                    newStorables.Add(sub);
+                }
+                if (newStorables.Count == 0)
+                    throw new InvalidOperationException(
+                        "target Person exposes no " + label + " storables.");
+
+                JSONNode character = null;
+                if (syncCharacter)
+                {
+                    JSONStorable geometryStorable =
+                        target.GetStorableByID("geometry");
+                    JSONClass geometryJson = geometryStorable == null
+                        ? null
+                        : geometryStorable.GetJSON(true, true, true);
+                    character = geometryJson == null
+                        ? null
+                        : geometryJson["character"];
+                }
+
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text))
+                    throw new InvalidOperationException(
+                        "preset file is unreadable: " + path);
+                JSONClass person = JSON.Parse(text).AsObject;
+                JSONArray storables = person == null
+                    ? null
+                    : person["storables"].AsArray;
+                if (storables == null)
+                    throw new InvalidOperationException(
+                        "not a person preset (no storables): " + path);
+
+                var kept = new JSONArray();
+                bool geometrySeen = false;
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable == null) continue;
+                    string id = storable["id"].Value;
+                    if (Array.IndexOf(storableIds, id) >= 0)
+                        continue; // dropped, live copies appended below
+                    if (id == "geometry")
+                    {
+                        geometrySeen = true;
+                        if (character != null &&
+                            !string.IsNullOrEmpty(character.Value))
+                            storable["character"] = character;
+                    }
+                    kept.Add(storable);
+                }
+                if (!geometrySeen)
+                    throw new InvalidOperationException(
+                        "preset has no geometry storable: " + path);
+                for (int i = 0; i < newStorables.Count; i++)
+                    kept.Add(newStorables[i]);
+                person["storables"] = kept;
+
+                tempPath = path + ".q3tmp";
+                File.WriteAllText(tempPath, person.ToString(),
+                    new System.Text.UTF8Encoding(false));
+                if (File.Exists(path))
+                    File.Replace(tempPath, path, null);
+                else
+                    File.Move(tempPath, path);
+                tempPath = null;
+                if (Quest3TriggerUIPlugin.Log != null)
+                    Quest3TriggerUIPlugin.Log.LogInfo(
+                        label + " written into person preset: " + path);
+            }
+            catch (Exception exception)
+            {
+                LogError(label + " write into person preset failed: " +
+                    exception);
+            }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+                _appearanceLoadBusy = false;
+            }
+        }
+
+        private void StoreSkinIntoPreset(Atom target, string path)
+        {
+            StoreStorableSetIntoPreset(target, path, SkinStorableIds,
+                true, "skin");
+        }
+
+        private static JSONClass ExtractSectionPreset(JSONClass personPreset,
+            string sectionKey)
+        {
+            JSONArray storables = personPreset == null
+                ? null
+                : personPreset["storables"].AsArray;
+            if (storables == null) return null;
+
+            JSONNode section = null;
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass storable = storables[i].AsObject;
+                if (storable != null && storable["id"].Value == "geometry")
+                {
+                    section = storable[sectionKey];
+                    break;
+                }
+            }
+            List<string> itemIds = CollectItemIds(section);
+            if (itemIds == null) return null;
+
+            var output = new JSONClass();
+            output["setUnlistedParamsToDefault"] = new JSONData(true);
+            var geometry = new JSONClass();
+            geometry["id"] = new JSONData("geometry");
+            geometry[sectionKey] = section;
+            var outStorables = new JSONArray();
+            outStorables.Add(geometry);
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass storable = storables[i].AsObject;
+                if (storable == null) continue;
+                string id = storable["id"].Value;
+                if (IsItemStorable(id, itemIds))
+                    outStorables.Add(storable);
+            }
+            output["storables"] = outStorables;
+            return output;
+        }
+
+        private static List<string> CollectItemIds(JSONNode clothing)
+        {
+            JSONArray clothingList = clothing == null ? null : clothing.AsArray;
+            if (clothingList == null) return null;
+            var itemIds = new List<string>();
+            for (int i = 0; i < clothingList.Count; i++)
+            {
+                JSONClass item = clothingList[i].AsObject;
+                // A missing key yields a lazy placeholder whose Value is "".
+                string iid = item == null ? null : item["internalId"].Value;
+                if (string.IsNullOrEmpty(iid))
+                    iid = item == null ? null : item["id"].Value;
+                if (!string.IsNullOrEmpty(iid))
+                    itemIds.Add(iid);
+            }
+            return itemIds;
+        }
+
+        private static bool IsItemStorable(string id, List<string> itemIds)
+        {
+            if (string.IsNullOrEmpty(id) || itemIds == null) return false;
+            for (int i = 0; i < itemIds.Count; i++)
+            {
+                string prefix = itemIds[i];
+                if (id.Length <= prefix.Length ||
+                    !id.StartsWith(prefix, StringComparison.Ordinal))
+                    continue;
+                string tail = id.Substring(prefix.Length);
+                for (int j = 0; j < ItemStorablePrefixes.Length; j++)
+                    if (tail.StartsWith(ItemStorablePrefixes[j],
+                            StringComparison.Ordinal))
+                        return true;
+                for (int j = 0; j < ItemStorableFragments.Length; j++)
+                    if (tail.Contains(ItemStorableFragments[j]))
+                        return true;
+            }
+            return false;
+        }
+
+        // Reverse of the section load: serialize the target's live section
+        // (clothing/hair) exactly like a native section preset, then merge it
+        // into the chosen person .vap — its geometry.<section> list is
+        // replaced and its old item storables are swapped for the current
+        // ones; every other section is left byte-identical.
+        private void StoreSectionIntoPreset(Atom target, string path,
+            string sectionKey)
+        {
+            if (target == null || string.IsNullOrEmpty(path)) return;
+            if (_appearanceLoadBusy)
+            {
+                LogError(sectionKey + " preset: a preset load is already running.");
+                return;
+            }
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError(sectionKey + " preset: presets inside VAR packages cannot be rewritten.");
+                return;
+            }
+            _appearanceLoadBusy = true;
+            string tempPath = null;
+            try
+            {
+                JSONStorable geometryStorable =
+                    target.GetStorableByID("geometry");
+                JSONClass geometryJson = geometryStorable == null
+                    ? null
+                    : geometryStorable.GetJSON(true, true, true);
+                JSONNode section = geometryJson == null
+                    ? null
+                    : geometryJson[sectionKey];
+                List<string> itemIds = CollectItemIds(section);
+                if (section == null || itemIds == null)
+                    throw new InvalidOperationException(
+                        "target Person exposes no " + sectionKey + " list.");
+
+                var newStorables = new JSONArray();
+                List<string> storableIds = target.GetStorableIDs();
+                for (int i = 0; storableIds != null && i < storableIds.Count; i++)
+                {
+                    string id = storableIds[i];
+                    if (!IsItemStorable(id, itemIds)) continue;
+                    JSONStorable storable = target.GetStorableByID(id);
+                    JSONClass sub = storable == null
+                        ? null
+                        : storable.GetJSON(true, true, true);
+                    if (sub == null) continue;
+                    sub["id"] = new JSONData(id);
+                    newStorables.Add(sub);
+                }
+
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text))
+                    throw new InvalidOperationException(
+                        "preset file is unreadable: " + path);
+                JSONClass person = JSON.Parse(text).AsObject;
+                JSONArray storables = person == null
+                    ? null
+                    : person["storables"].AsArray;
+                if (storables == null)
+                    throw new InvalidOperationException(
+                        "not a person preset (no storables): " + path);
+
+                JSONClass fileGeometry = null;
+                JSONNode oldSection = null;
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable != null && storable["id"].Value == "geometry")
+                    {
+                        fileGeometry = storable;
+                        oldSection = storable[sectionKey];
+                        break;
+                    }
+                }
+                if (fileGeometry == null)
+                    throw new InvalidOperationException(
+                        "preset has no geometry storable: " + path);
+                List<string> oldItemIds = CollectItemIds(oldSection);
+                fileGeometry[sectionKey] = section;
+
+                var kept = new JSONArray();
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable == null) continue;
+                    if (!IsItemStorable(storable["id"].Value, oldItemIds))
+                        kept.Add(storable);
+                }
+                for (int i = 0; i < newStorables.Count; i++)
+                    kept.Add(newStorables[i]);
+                person["storables"] = kept;
+
+                tempPath = path + ".q3tmp";
+                File.WriteAllText(tempPath, person.ToString(),
+                    new System.Text.UTF8Encoding(false));
+                if (File.Exists(path))
+                    File.Replace(tempPath, path, null);
+                else
+                    File.Move(tempPath, path);
+                tempPath = null;
+                if (Quest3TriggerUIPlugin.Log != null)
+                    Quest3TriggerUIPlugin.Log.LogInfo(
+                        sectionKey + " written into person preset: " + path);
+            }
+            catch (Exception exception)
+            {
+                LogError(sectionKey + " write into person preset failed: " +
+                    exception);
+            }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+                _appearanceLoadBusy = false;
+            }
+        }
+
+        // 0 = not a usable target, 1 = section-only preset (e.g. a pure hair
+        // preset whose geometry carries just its own list), 2 = person preset.
+        private static int ClassifyPresetFile(string path, string sectionKey)
+        {
+            try
+            {
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text)) return 0;
+                JSONClass root = JSON.Parse(text).AsObject;
+                JSONArray storables = root == null
+                    ? null
+                    : root["storables"].AsArray;
+                if (storables == null) return 0;
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable == null ||
+                        storable["id"].Value != "geometry")
+                        continue;
+                    int sectionCount = 0;
+                    bool hasSection = false;
+                    foreach (KeyValuePair<string, JSONNode> pair in storable)
+                    {
+                        if (pair.Key == "id") continue;
+                        sectionCount++;
+                        if (pair.Key == sectionKey) hasSection = true;
+                    }
+                    if (sectionCount > 1) return 2;
+                    return hasSection ? 1 : 0;
+                }
+            }
+            catch { }
+            return 0;
         }
 
         private void LoadFullAppearancePreset(
@@ -2168,6 +2909,7 @@ internal void OpenPersonPreset()
         internal static string ClothingPresetDir = "Custom/Atom/Person/Clothing";
         internal static string AppearancePresetDir = "Custom/Atom/Person/Appearance";
         internal static string SkinPresetDir = "Custom/Atom/Person/Skin";
+        internal static string EyePresetDir = "Custom/Atom/Person/Eye";
         internal static string LightLinkerUrl = "Custom/Scripts/LightLinker/LightLinker.cslist";
     }
 

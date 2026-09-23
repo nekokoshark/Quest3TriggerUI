@@ -929,6 +929,9 @@ namespace Quest3TriggerUI
         private readonly List<string> _targets = new List<string>();
         private readonly List<JSONStorable> _players = new List<JSONStorable>();
         private readonly HashSet<int> _conflictingNumbers = new HashSet<int>();
+        // Remembers the last stepped stage so a finished (no longer playing)
+        // clip does not collapse the position back to the first stage.
+        private int _cursor = -1;
         private static readonly Regex Numbered = new Regex(@"^Play (.+?)(\d+)$");
 
         internal static List<NumberedPlayback> Find(JSONClass scene)
@@ -979,7 +982,10 @@ namespace Quest3TriggerUI
                     else if (story)
                         group._targets.RemoveAll(delegate(string target) { return !targets.Contains(target); });
                     Stage existing = group.Stages.Find(delegate(Stage s) { return s.Number == number; });
-                    string signature = trigger.ToString();
+                    // Only the invoked action chain identifies a stage; cosmetic
+                    // fields such as displayName make identical duplicates look
+                    // different and would reject the whole group as a conflict.
+                    string signature = ActionSignature(trigger);
                     int triggerScore = ActionCoverage(trigger);
                     if (existing != null)
                     {
@@ -1120,6 +1126,27 @@ namespace Quest3TriggerUI
             return count;
         }
 
+        private static string ActionSignature(JSONNode node)
+        {
+            var parts = new List<string>();
+            CollectSignature(node, parts);
+            return string.Join("\n", parts.ToArray());
+        }
+
+        private static void CollectSignature(JSONNode node, List<string> parts)
+        {
+            if (node == null || (node.AsObject == null && node.AsArray == null)) return;
+            if (node.AsObject != null)
+            {
+                string receiver = node["receiver"];
+                string target = node["receiverTargetName"];
+                string recvAtom = node["receiverAtom"];
+                if (!string.IsNullOrEmpty(receiver) && !string.IsNullOrEmpty(target))
+                    parts.Add((recvAtom ?? "") + "\t" + receiver + "\t" + target);
+            }
+            foreach (JSONNode child in node.Childs) CollectSignature(child, parts);
+        }
+
         private static MethodInfo ClickMethod(JSONStorable button)
         {
             return button.GetType().GetMethod("OnButtonClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
@@ -1177,6 +1204,7 @@ namespace Quest3TriggerUI
                     }
                 }
             }
+            if (current < 0) current = _cursor;
             if (current < 0 && !next) { status("播放：尚无当前阶段，请用下一个启动首阶段。"); return; }
             int selected = current < 0 ? 0 : current + (next ? 1 : -1);
             if (selected < 0 || selected >= Stages.Count) { status("播放：已到阶段边界。"); return; }
@@ -1196,6 +1224,7 @@ namespace Quest3TriggerUI
                 if (action == null || action.actionCallback == null) throw new InvalidOperationException("原插件按钮动作已变化");
                 action.actionCallback();
             }
+            _cursor = selected;
             status("播放：已调用原按钮，阶段 " + target.Number + "。");
         }
     }

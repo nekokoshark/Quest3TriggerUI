@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using BepInEx;
 using SimpleJSON;
 using UnityEngine;
@@ -15,6 +16,12 @@ namespace Quest3TriggerUI
         internal string Uid;
         internal RawImage Thumb;
         internal RawImage Dim;
+    }
+
+    // Marks a favorites tag row so a dropped thumbnail is filed under that tag.
+    internal sealed class AceFavTagRowTag : MonoBehaviour
+    {
+        internal int GroupIndex = -1;
     }
 
     internal sealed class AceFavDragSource
@@ -37,6 +44,12 @@ namespace Quest3TriggerUI
         private const float FavCellH = 112f;
         private const float FavSpacing = 6f;
         private const float FavPad = 8f;
+        private const float FavColW = FavCellW * 2f + FavSpacing + FavPad * 2f;
+        private const float FavTagStripW = 176f;
+        private const float FavTagBackW = 92f;
+        private const float FavTagRowH = 34f;
+        private const float FavTagGap = 4f;
+        private const float TagCaptionH = 26f;
 
         private static GameObject _favList;
         private static Canvas _favCanvas;
@@ -66,6 +79,19 @@ namespace Quest3TriggerUI
         private static float _favListHeight;
         private static GameObject _favNav;
         private static Text _favPageText;
+        // Named clothing tag groups. The untagged default list stays in the
+        // original favorites file; every tag owns its own list.
+        private static readonly List<string> _favTagNames = new List<string>();
+        private static readonly Dictionary<string, List<string[]>> _favTagItems =
+            new Dictionary<string, List<string[]>>();
+        private static string _favTagActiveName = "";
+        private static int _favTagIndex = -1;
+        private static bool _favTagView = true;
+        private static bool _favTagsLoaded;
+        private static RectTransform _favTagStrip;
+        private static int _favTagTop;
+        private static string _favTagEditing;
+        private static InputField _favTagInput;
 
         private static string FavPath
         {
@@ -110,7 +136,25 @@ namespace Quest3TriggerUI
             catch (Exception e) { Error(e); }
         }
 
-        private static void ApplyFavoriteState(DAZClothingItem item)
+        // Wearing makes VaM load the preset named by the item's
+        // storePresetName storable a few frames later — an immediate restore
+        // is overwritten by that load, which is why favorited items used to
+        // come back with the default preset. Restore in two phases instead:
+        // phase 1 applies only the Preset storables (selects the drag-time
+        // preset), phase 2 layers every other storable on top after the
+        // preset load settles.
+        private static IEnumerator ApplyFavoriteStateDeferred(DAZClothingItem item)
+        {
+            yield return new WaitForSecondsRealtime(0.15f);
+            if (item == null || !item.active) yield break;
+            ApplyFavoriteState(item, true);
+            yield return new WaitForSecondsRealtime(0.5f);
+            if (item == null || !item.active) yield break;
+            ApplyFavoriteState(item, false);
+        }
+
+        private static void ApplyFavoriteState(DAZClothingItem item,
+            bool presetPhase)
         {
             try
             {
@@ -124,12 +168,15 @@ namespace Quest3TriggerUI
                 {
                     if (storable == null || string.IsNullOrEmpty(storable.storeId))
                         continue;
+                    bool isPreset = storable.storeId.EndsWith("Preset",
+                        StringComparison.OrdinalIgnoreCase);
+                    if (isPreset != presetPhase) continue;
                     JSONClass sub = json[storable.storeId] as JSONClass;
                     if (sub == null) continue;
                     storable.RestoreFromJSON(sub, true, true, new JSONArray(), false);
                     applied++;
                 }
-                if (applied > 0)
+                if (!presetPhase && applied > 0)
                     Log("已恢复收藏状态：" + (item.displayName ?? item.uid) +
                         "（" + applied + " 组参数）");
             }
@@ -152,6 +199,9 @@ namespace Quest3TriggerUI
             _favAtom = null;
             _favNav = null;
             _favPageText = null;
+            _favTagStrip = null;
+            _favTagInput = null;
+            _favTagEditing = null;
             _favPage = 0;
             _favPages = 1;
             _favPositionLogged = false;
@@ -189,6 +239,636 @@ namespace Quest3TriggerUI
             catch (Exception e) { if (Quest3TriggerUIPlugin.Log != null) Quest3TriggerUIPlugin.Log.LogWarning("Clothing favorites save failed: " + e.Message); }
         }
 
+        private static string FavTagsPath
+        {
+            get { return Path.Combine(Paths.ConfigPath, "Quest3TriggerUI.clothing-favtags.txt"); }
+        }
+
+        // Pure text codec for the tag store: "#name" opens a group,
+        // "uid|display|creator" adds an entry to the open group, "!key=value"
+        // carries the remembered view. The untagged default list keeps using
+        // the original favorites file, so old installs load unchanged.
+        internal static void ParseFavoriteTagLines(string[] lines)
+        {
+            _favTagNames.Clear();
+            _favTagItems.Clear();
+            _favTagActiveName = "";
+            _favTagView = true;
+            List<string[]> current = null;
+            if (lines != null)
+            {
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = lines[i];
+                    if (line == null) continue;
+                    line = line.TrimEnd('\r', '\n', ' ', '\t');
+                    if (line.Length == 0) continue;
+                    if (line[0] == '!')
+                    {
+                        const string viewKey = "!view=";
+                        const string activeKey = "!active=";
+                        if (line.StartsWith(viewKey, StringComparison.Ordinal))
+                            _favTagView = line.Substring(viewKey.Length).Trim() != "tag";
+                        else if (line.StartsWith(activeKey, StringComparison.Ordinal))
+                            _favTagActiveName = line.Substring(activeKey.Length).Trim();
+                        continue;
+                    }
+                    if (line[0] == '#')
+                    {
+                        string name = SanitizeTagName(line.Substring(1));
+                        if (name.Length == 0) { current = null; continue; }
+                        List<string[]> existing;
+                        if (_favTagItems.TryGetValue(name, out existing))
+                            current = existing;   // repeated header merges
+                        else
+                        {
+                            current = new List<string[]>();
+                            _favTagNames.Add(name);
+                            _favTagItems[name] = current;
+                        }
+                        continue;
+                    }
+                    if (current == null) continue;
+                    string[] parts = line.Split('|');
+                    for (int p = 0; p < parts.Length; p++) parts[p] = parts[p].Trim();
+                    if (parts[0].Length == 0) continue;
+                    current.Add(new string[] {
+                        parts[0],
+                        parts.Length > 1 ? parts[1] : "",
+                        parts.Length > 2 ? parts[2] : "" });
+                }
+            }
+            _favTagIndex = _favTagNames.IndexOf(_favTagActiveName);
+            if (!_favTagView && _favTagIndex < 0)
+                _favTagView = true;   // a view needs a tag that still exists
+        }
+
+        internal static string[] FormatFavoriteTagLines()
+        {
+            List<string> lines = new List<string>();
+            lines.Add("!active=" + (_favTagActiveName ?? ""));
+            lines.Add("!view=" + (_favTagView ? "root" : "tag"));
+            for (int i = 0; i < _favTagNames.Count; i++)
+            {
+                string name = _favTagNames[i];
+                lines.Add("#" + name);
+                List<string[]> items;
+                if (!_favTagItems.TryGetValue(name, out items) || items == null)
+                    continue;
+                for (int j = 0; j < items.Count; j++)
+                    lines.Add(items[j][0] + "|" + items[j][1] + "|" + items[j][2]);
+            }
+            return lines.ToArray();
+        }
+
+        // Tag names live on a single line and open a group, so the reserved
+        // markers are stripped rather than escaped.
+        private static string SanitizeTagName(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            string s = raw.Trim();
+            s = s.Replace('|', '-').Replace('#', '-').Replace('!', '-');
+            s = s.Replace('\r', '-').Replace('\n', '-');
+            if (s.Length > 16) s = s.Substring(0, 16);
+            return s.Trim();
+        }
+
+        private static void LoadFavoriteTags()
+        {
+            if (_favTagsLoaded) return;
+            _favTagsLoaded = true;
+            try
+            {
+                ParseFavoriteTagLines(File.Exists(FavTagsPath)
+                    ? File.ReadAllLines(FavTagsPath)
+                    : new string[0]);
+            }
+            catch (Exception e) { Error(e); }
+        }
+
+        private static void SaveFavoriteTags()
+        {
+            try
+            {
+                _favTagActiveName = ActiveTagName ?? "";
+                File.WriteAllLines(FavTagsPath, FormatFavoriteTagLines());
+            }
+            catch (Exception e)
+            {
+                if (Quest3TriggerUIPlugin.Log != null)
+                    Quest3TriggerUIPlugin.Log.LogWarning(
+                        "Clothing favorite tags save failed: " + e.Message);
+            }
+        }
+
+        private static void SaveFavoriteStores()
+        {
+            SaveFavorites();
+            SaveFavoriteTags();
+        }
+
+        private static string ActiveTagName
+        {
+            get
+            {
+                return _favTagIndex >= 0 && _favTagIndex < _favTagNames.Count
+                    ? _favTagNames[_favTagIndex] : null;
+            }
+        }
+
+        private static List<string[]> TagFavorites(int index)
+        {
+            if (index < 0 || index >= _favTagNames.Count) return _favorites;
+            string name = _favTagNames[index];
+            List<string[]> items;
+            if (!_favTagItems.TryGetValue(name, out items) || items == null)
+            {
+                items = new List<string[]>();
+                _favTagItems[name] = items;
+            }
+            return items;
+        }
+
+        // Column contents: the tag view roots the default (untagged) list, a
+        // tag view shows that tag's own list.
+        private static List<string[]> VisibleFavorites
+        {
+            get { return _favTagView ? _favorites : TagFavorites(_favTagIndex); }
+        }
+
+        private static int FindFavoriteIndex(List<string[]> items, string uid)
+        {
+            if (items == null || string.IsNullOrEmpty(uid)) return -1;
+            string key = BanKey(uid);
+            for (int i = 0; i < items.Count; i++)
+                if (items[i][0] == uid || BanKey(items[i][0]) == key) return i;
+            return -1;
+        }
+
+        private static bool IsFavoriteAnywhere(string uid)
+        {
+            if (FindFavoriteIndex(_favorites, uid) >= 0) return true;
+            foreach (List<string[]> items in _favTagItems.Values)
+                if (FindFavoriteIndex(items, uid) >= 0) return true;
+            return false;
+        }
+
+        private static bool RemoveFavoriteFrom(List<string[]> items, string uid)
+        {
+            int index = FindFavoriteIndex(items, uid);
+            if (index < 0) return false;
+            items.RemoveAt(index);
+            return true;
+        }
+
+        // Tag rows that fit above the create row, leaving room for the pager.
+        private static int FavTagCapacity
+        {
+            get
+            {
+                float listH = _favListHeight > 0f ? _favListHeight : 400f;
+                float usable = listH - FavPad * 2f - FavTagRowH - TagCaptionH;
+                int cap = Mathf.FloorToInt(usable / (FavTagRowH + FavTagGap));
+                if (_favTagNames.Count > cap) cap -= 1;
+                return Mathf.Max(1, cap);
+            }
+        }
+
+        private static int FavTagVisibleCount
+        {
+            get { return Mathf.Min(_favTagNames.Count, FavTagCapacity); }
+        }
+
+        private static bool FavTagPager
+        {
+            get { return _favTagNames.Count > FavTagCapacity; }
+        }
+
+        private static float CurrentTagStripWidth
+        {
+            get { return _favTagView ? FavTagStripW : FavTagBackW; }
+        }
+
+        private static float RequiredTagStripHeight()
+        {
+            if (!_favTagView)
+                return FavPad * 2f + FavTagRowH + FavTagGap + TagCaptionH;
+            int rows = 1 + FavTagVisibleCount + 1 + (FavTagPager ? 1 : 0);
+            return FavPad * 2f + rows * (FavTagRowH + FavTagGap);
+        }
+
+        private static void ApplyFavoritesDockWidth()
+        {
+            if (_favDock == null) return;
+            _favDock.sizeDelta = new Vector2(
+                FavColW + FavTagGap + CurrentTagStripWidth, _favDock.sizeDelta.y);
+        }
+
+        private static void SetFavoriteTagView(bool root)
+        {
+            if (_favTagView == root) return;
+            _favTagView = root;
+            _favPage = 0;
+            _favDirty = true;
+            SaveFavoriteTags();
+            RefreshTagRows();
+        }
+
+        private static void EnterFavoriteTag(int index)
+        {
+            if (index < 0 || index >= _favTagNames.Count) return;
+            if (_favTagEditing != null) CommitTagRename();
+            _favTagIndex = index;
+            SetFavoriteTagView(false);
+            Log("收藏标签：" + _favTagNames[index]);
+        }
+
+        private static void ExitFavoriteTagView()
+        {
+            SetFavoriteTagView(true);
+            Log("已返回标签视图。");
+        }
+
+        private static void CreateFavoriteTag()
+        {
+            LoadFavoriteTags();
+            if (_favTagEditing != null) CommitTagRename();
+            int n = _favTagNames.Count + 1;
+            string name = "标签" + n;
+            while (_favTagItems.ContainsKey(name))
+                name = "标签" + n + "-" + (++n);
+            _favTagItems[name] = new List<string[]>();
+            _favTagNames.Add(name);
+            _favTagTop = Mathf.Max(0, _favTagNames.Count - FavTagCapacity);
+            _favTagEditing = name;
+            _favTagView = true;
+            _favPage = 0;
+            _favDirty = true;
+            SaveFavoriteTags();
+            RefreshTagRows();
+            Log("已新建收藏标签 " + name + "：输入名称后点 ✓ 确认。");
+        }
+
+        private static void BeginTagRename(int index)
+        {
+            if (index < 0 || index >= _favTagNames.Count) return;
+            if (_favTagEditing != null) CommitTagRename();
+            _favTagEditing = _favTagNames[index];
+            RefreshTagRows();
+        }
+
+        private static void CommitTagRename()
+        {
+            if (_favTagEditing == null) return;
+            string old = _favTagEditing;
+            InputField input = _favTagInput;
+            _favTagEditing = null;
+            _favTagInput = null;
+            int index = _favTagNames.IndexOf(old);
+            if (index >= 0)
+            {
+                string name = SanitizeTagName(input == null ? "" : input.text);
+                if (name.Length > 0 && name != old && !_favTagItems.ContainsKey(name))
+                {
+                    List<string[]> items = _favTagItems[old];
+                    _favTagItems.Remove(old);
+                    _favTagItems[name] = items;
+                    _favTagNames[index] = name;
+                    if (_favTagIndex == index) _favTagActiveName = name;
+                    Log("收藏标签已命名为：" + name);
+                }
+            }
+            SaveFavoriteTags();
+            RefreshTagRows();
+        }
+
+        private static void DeleteFavoriteTag(int index)
+        {
+            if (index < 0 || index >= _favTagNames.Count) return;
+            string name = _favTagNames[index];
+            List<string[]> items = _favTagItems.ContainsKey(name)
+                ? _favTagItems[name] : new List<string[]>();
+            // Deleting a tag never destroys curated entries: they return to the
+            // default list instead.
+            int moved = 0;
+            for (int i = 0; i < items.Count; i++)
+            {
+                if (FindFavoriteIndex(_favorites, items[i][0]) >= 0) continue;
+                _favorites.Add(items[i]);
+                moved++;
+            }
+            _favTagItems.Remove(name);
+            _favTagNames.RemoveAt(index);
+            if (_favTagEditing == name) { _favTagEditing = null; _favTagInput = null; }
+            if (_favTagIndex == index) { _favTagIndex = -1; _favTagView = true; }
+            else if (_favTagIndex > index) _favTagIndex--;
+            _favPage = 0;
+            _favDirty = true;
+            SaveFavoriteStores();
+            RefreshTagRows();
+            Log("已删除收藏标签：" + name +
+                (moved > 0 ? "（" + moved + " 项已移回默认）" : ""));
+        }
+        private static void CreateFavTagStrip()
+        {
+            GameObject strip = new GameObject("FavTagStrip", typeof(RectTransform));
+            _favTagStrip = (RectTransform)strip.transform;
+            _favTagStrip.SetParent(_favDock, false);
+            _favTagStrip.anchorMin = new Vector2(1f, 1f);
+            _favTagStrip.anchorMax = new Vector2(1f, 1f);
+            _favTagStrip.pivot = new Vector2(1f, 1f);
+            _favTagStrip.anchoredPosition = new Vector2(-FavTagGap, -FavPad);
+            _favTagStrip.sizeDelta = new Vector2(CurrentTagStripWidth, 64f);
+            RefreshTagRows();
+        }
+
+        // The tag view lists the tags; a tag view collapses the strip down to a
+        // small back button, the way a submenu replaces its parent list.
+        private static void RefreshTagRows()
+        {
+            ApplyFavoritesDockWidth();
+            if (_favTagStrip == null) return;
+            for (int i = _favTagStrip.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(_favTagStrip.GetChild(i).gameObject);
+            if (!_favTagView) { BuildTagBackRows(); return; }
+            _favTagTop = Mathf.Clamp(_favTagTop, 0,
+                Mathf.Max(0, _favTagNames.Count - FavTagCapacity));
+            float y = 0f;
+            AddTagCaption("收藏标签", y);
+            y += TagCaptionH + FavTagGap;
+            int visible = FavTagVisibleCount;
+            for (int i = 0; i < visible; i++)
+            {
+                CreateTagRow(_favTagNames[_favTagTop + i], _favTagTop + i, y);
+                y += FavTagRowH + FavTagGap;
+            }
+            CreateTagCreateRow(y);
+            y += FavTagRowH + FavTagGap;
+            if (FavTagPager) { CreateTagPagerRow(y); y += FavTagRowH + FavTagGap; }
+            _favTagStrip.sizeDelta = new Vector2(FavTagStripW, y);
+        }
+
+        private static void BuildTagBackRows()
+        {
+            GameObject back = new GameObject("TagBack", typeof(RectTransform));
+            RectTransform rect = (RectTransform)back.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(FavTagBackW, FavTagRowH);
+            Image bg = back.AddComponent<Image>();
+            bg.color = new Color(0.11f, 0.38f, 0.48f, 1f);
+            bg.raycastTarget = true;
+            Button button = back.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate { VrHaptics.Press(); ExitFavoriteTagView(); });
+            AddTagLabel(rect, "◀ 返回", 14, TextAnchor.MiddleCenter, Color.white);
+            AddTagCaption(ActiveTagName ?? "默认", FavTagRowH + FavTagGap);
+            _favTagStrip.sizeDelta = new Vector2(FavTagBackW,
+                FavTagRowH + FavTagGap + TagCaptionH);
+        }
+
+        private static void CreateTagRow(string label, int index, float y)
+        {
+            bool editing = _favTagEditing != null && _favTagNames[index] == _favTagEditing;
+            GameObject row = new GameObject("Tag " + label, typeof(RectTransform));
+            RectTransform rect = (RectTransform)row.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -y);
+            rect.sizeDelta = new Vector2(FavTagStripW, FavTagRowH);
+            row.AddComponent<AceFavTagRowTag>().GroupIndex = index;
+
+            float nameWidth = editing
+                ? FavTagStripW - FavTagRowH - FavTagGap
+                : FavTagStripW - 2f * (FavTagRowH + FavTagGap);
+            GameObject nameGo = new GameObject("Name", typeof(RectTransform));
+            RectTransform nameRect = (RectTransform)nameGo.transform;
+            nameRect.SetParent(rect, false);
+            nameRect.anchorMin = new Vector2(0f, 0f);
+            nameRect.anchorMax = new Vector2(0f, 1f);
+            nameRect.pivot = new Vector2(0f, 0.5f);
+            nameRect.anchoredPosition = Vector2.zero;
+            nameRect.sizeDelta = new Vector2(nameWidth, -4f);
+            Image bg = nameGo.AddComponent<Image>();
+            bg.color = new Color(0.11f, 0.20f, 0.27f, 1f);
+            bg.raycastTarget = true;
+            Button button = nameGo.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            int capturedIndex = index;
+            button.onClick.AddListener(delegate { VrHaptics.Press(); EnterFavoriteTag(capturedIndex); });
+            AddTagLabel(nameRect, label, 14, TextAnchor.MiddleLeft, Color.white);
+            if (editing)
+            {
+                button.interactable = false;
+                bg.color = new Color(0.08f, 0.10f, 0.14f, 1f);
+                InputField input = CreateTagNameInput(rect, nameWidth);
+                _favTagInput = input;
+                input.text = label;
+                input.ActivateInputField();
+                input.Select();
+                VrTextInputBridge.Select(input);
+                // No onEndEdit auto-commit: opening the VR keyboard steals
+                // focus, which would commit and destroy the field before a
+                // single keystroke arrives. Commit lives on ✓ only.
+                AddTagAction(rect, "✓", FavTagStripW - FavTagRowH,
+                    new Color(0.12f, 0.42f, 0.24f, 1f),
+                    delegate { CommitTagRename(); });
+            }
+            else
+            {
+                AddTagAction(rect, "✎", FavTagStripW - 2f * FavTagRowH - FavTagGap,
+                    new Color(0.16f, 0.24f, 0.36f, 1f),
+                    delegate { BeginTagRename(capturedIndex); });
+                AddTagAction(rect, "✕", FavTagStripW - FavTagRowH,
+                    new Color(0.30f, 0.14f, 0.14f, 1f),
+                    delegate { DeleteFavoriteTag(capturedIndex); });
+            }
+        }
+
+        private static void CreateTagCreateRow(float y)
+        {
+            GameObject row = new GameObject("TagCreate", typeof(RectTransform));
+            RectTransform rect = (RectTransform)row.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -y);
+            rect.sizeDelta = new Vector2(FavTagStripW, FavTagRowH);
+            Image bg = row.AddComponent<Image>();
+            bg.color = new Color(0.13f, 0.30f, 0.20f, 1f);
+            bg.raycastTarget = true;
+            Button button = row.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate { VrHaptics.Press(); CreateFavoriteTag(); });
+            AddTagLabel(rect, "＋ 新建标签", 14, TextAnchor.MiddleCenter, Color.white);
+        }
+
+        private static void CreateTagPagerRow(float y)
+        {
+            GameObject row = new GameObject("TagPager", typeof(RectTransform));
+            RectTransform rect = (RectTransform)row.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -y);
+            rect.sizeDelta = new Vector2(FavTagStripW, FavTagRowH);
+            float x = FavTagStripW * 0.25f;
+            CreateFavNavButton(rect, "▲", -x, delegate { FavTagPageStep(-1); });
+            CreateFavNavButton(rect, "▼", x, delegate { FavTagPageStep(1); });
+        }
+
+        private static InputField CreateTagNameInput(RectTransform row, float width)
+        {
+            GameObject go = new GameObject("TagNameInput", typeof(RectTransform));
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(row, false);
+            rect.anchorMin = new Vector2(0f, 0f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 0.5f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(width, -4f);
+            Image bg = go.AddComponent<Image>();
+            bg.color = new Color(0.16f, 0.18f, 0.24f, 1f);
+            InputField input = go.AddComponent<InputField>();
+            input.targetGraphic = bg;
+            input.lineType = InputField.LineType.SingleLine;
+            input.characterLimit = 16;
+            GameObject textGo = new GameObject("Text", typeof(RectTransform));
+            RectTransform textRect = (RectTransform)textGo.transform;
+            textRect.SetParent(rect, false);
+            textRect.anchorMin = Vector2.zero;
+            textRect.anchorMax = Vector2.one;
+            textRect.offsetMin = new Vector2(6f, 1f);
+            textRect.offsetMax = new Vector2(-6f, -1f);
+            Text text = textGo.AddComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.fontSize = 14;
+            text.alignment = TextAnchor.MiddleLeft;
+            text.color = Color.white;
+            text.supportRichText = false;
+            text.raycastTarget = false;
+            input.textComponent = text;
+            return input;
+        }
+
+        private static Text AddTagLabel(RectTransform parent, string value,
+            int fontSize, TextAnchor align, Color color)
+        {
+            GameObject go = new GameObject("Label", typeof(RectTransform));
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = Vector2.zero;
+            rect.anchorMax = Vector2.one;
+            rect.offsetMin = new Vector2(6f, 1f);
+            rect.offsetMax = new Vector2(-6f, -1f);
+            Text text = go.AddComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.fontSize = fontSize;
+            text.alignment = align;
+            text.color = color;
+            text.raycastTarget = false;
+            text.text = value;
+            return text;
+        }
+
+        private static Text AddTagCaption(string value, float y)
+        {
+            GameObject go = new GameObject("TagCaption", typeof(RectTransform));
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -y);
+            rect.sizeDelta = new Vector2(CurrentTagStripWidth, TagCaptionH);
+            Text text = go.AddComponent<Text>();
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.fontSize = 14;
+            text.alignment = TextAnchor.MiddleLeft;
+            text.color = new Color(1f, 1f, 1f, 0.55f);
+            text.raycastTarget = false;
+            text.text = value;
+            return text;
+        }
+
+        private static void AddTagAction(RectTransform row, string label, float x,
+            Color color, UnityEngine.Events.UnityAction action)
+        {
+            GameObject go = new GameObject("TagAction " + label, typeof(RectTransform));
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(row, false);
+            rect.anchorMin = new Vector2(0f, 0f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 0.5f);
+            rect.anchoredPosition = new Vector2(x, 0f);
+            rect.sizeDelta = new Vector2(FavTagRowH, -4f);
+            Image bg = go.AddComponent<Image>();
+            bg.color = color;
+            bg.raycastTarget = true;
+            Button button = go.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate { VrHaptics.Press(); action(); });
+            AddTagLabel(rect, label, 15, TextAnchor.MiddleCenter, Color.white);
+        }
+
+        private static void FavTagPageStep(int delta)
+        {
+            int cap = FavTagCapacity;
+            int max = Mathf.Max(0, _favTagNames.Count - cap);
+            int next = Mathf.Clamp(_favTagTop + delta * cap, 0, max);
+            if (next == _favTagTop) return;
+            _favTagTop = next;
+            RefreshTagRows();
+        }
+
+        // Drag routing: the tag row under the pointer names the group a dropped
+        // thumbnail is filed under.
+        private static bool TryGetTagRowGroup(out int group)
+        {
+            group = -1;
+            GameObject target = VrPointerPresentation.CurrentLookTarget(true);
+            AceFavTagRowTag row = target == null
+                ? null : target.GetComponentInParent<AceFavTagRowTag>();
+            if (row == null)
+            {
+                target = VrPointerPresentation.CurrentLookTarget(false);
+                row = target == null ? null : target.GetComponentInParent<AceFavTagRowTag>();
+            }
+            if (row == null) return false;
+            group = row.GroupIndex;
+            return true;
+        }
+
+        private static bool MoveFavorite(AceFavDragSource source, int group)
+        {
+            if (source == null || group < 0 || group >= _favTagNames.Count) return false;
+            List<string[]> from = VisibleFavorites;
+            List<string[]> to = TagFavorites(group);
+            if (ReferenceEquals(from, to)) return false;
+            if (FindFavoriteIndex(to, source.Uid) >= 0)
+                return RemoveFavoriteFrom(from, source.Uid);
+            int at = FindFavoriteIndex(from, source.Uid);
+            if (at < 0) return false;
+            string[] entry = from[at];
+            from.RemoveAt(at);
+            to.Add(entry);
+            SaveFavoriteStores();
+            _favDirty = true;
+            Log("已移动到标签 " + _favTagNames[group] + "：" + entry[1]);
+            return true;
+        }
+
         private static void UpdateFavoritesBar(Snapshot state, GameObject list)
         {
             if (!_favProbeLogged)
@@ -201,6 +881,7 @@ namespace Quest3TriggerUI
                     " asmHash=" + typeof(UiAssistHudLink).Assembly.GetHashCode());
             }
             LoadFavorites();
+            LoadFavoriteTags();
             if (_favList != list || _favDock == null)
             {
                 ClearFavoritesBar();
@@ -229,7 +910,8 @@ namespace Quest3TriggerUI
                 go.AddComponent<AceFavBarTag>();
                 go.layer = list.layer;
                 _favDock = (RectTransform)go.transform;
-                _favDock.sizeDelta = new Vector2(FavCellW * 2f + FavSpacing + FavPad * 2f, 64f);
+                _favDock.sizeDelta = new Vector2(
+                    FavColW + FavTagGap + CurrentTagStripWidth, 64f);
                 _favDock.pivot = new Vector2(0.5f, 0.5f);
                 _favCanvas = go.AddComponent<Canvas>();
                 _favCanvas.renderMode = RenderMode.WorldSpace;
@@ -244,9 +926,10 @@ namespace Quest3TriggerUI
                 _favCells = (RectTransform)cellsGo.transform;
                 _favCells.SetParent(_favDock, false);
                 _favCells.anchorMin = new Vector2(0f, 1f);
-                _favCells.anchorMax = new Vector2(1f, 1f);
-                _favCells.pivot = new Vector2(0.5f, 1f);
+                _favCells.anchorMax = new Vector2(0f, 1f);
+                _favCells.pivot = new Vector2(0f, 1f);
                 _favCells.anchoredPosition = new Vector2(0f, -FavPad);
+                _favCells.sizeDelta = new Vector2(FavColW, 0f);
                 GridLayoutGroup grid = cellsGo.AddComponent<GridLayoutGroup>();
                 grid.cellSize = new Vector2(FavCellW, FavCellH);
                 grid.spacing = new Vector2(FavSpacing, FavSpacing);
@@ -257,11 +940,15 @@ namespace Quest3TriggerUI
                 fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
 
                 _favListHeight = ((RectTransform)list.transform).rect.height;
+                LoadFavoriteTags();
                 CreateFavNav();
+                CreateFavTagStrip();
+                ApplyFavoritesDockWidth();
 
                 SuperController.singleton.AddCanvas(_favCanvas);
                 _favDirty = true;
-                Log("服装收藏栏已创建（" + _favorites.Count + " 项），等待定位。");
+                Log("服装收藏栏已创建（默认 " + _favorites.Count + " 项，" +
+                    _favTagNames.Count + " 个标签），等待定位。");
             }
             catch (Exception e) { ClearFavoritesBar(); Error(e); }
         }
@@ -309,10 +996,10 @@ namespace Quest3TriggerUI
             GameObject nav = new GameObject("FavNav", typeof(RectTransform));
             RectTransform navRect = (RectTransform)nav.transform;
             navRect.SetParent(_favDock, false);
-            navRect.anchorMin = new Vector2(0.5f, 0f);
-            navRect.anchorMax = new Vector2(0.5f, 0f);
+            navRect.anchorMin = new Vector2(0f, 0f);
+            navRect.anchorMax = new Vector2(0f, 0f);
             navRect.pivot = new Vector2(0.5f, 0f);
-            navRect.anchoredPosition = new Vector2(0f, 4f);
+            navRect.anchoredPosition = new Vector2(FavColW * 0.5f, 4f);
             navRect.sizeDelta = new Vector2(190f, FavNavH);
             nav.AddComponent<AceFavBarTag>();
 
@@ -383,7 +1070,8 @@ namespace Quest3TriggerUI
             if (_favCells == null) return;
             foreach (Transform child in _favCells)
                 UnityEngine.Object.Destroy(child.gameObject);
-            int count = _favorites.Count;
+            List<string[]> favorites = VisibleFavorites;
+            int count = favorites.Count;
             // Rows that fit the list height with and without the nav row; the
             // nav row is only shown when entries exceed the no-nav capacity.
             float listH = _favListHeight > 0f ? _favListHeight : 400f;
@@ -399,7 +1087,7 @@ namespace Quest3TriggerUI
             int start = _favPage * capacity;
             int end = Mathf.Min(count, start + capacity);
             for (int i = start; i < end; i++)
-                CreateFavoriteSlot(_favorites[i][0]);
+                CreateFavoriteSlot(favorites[i][0]);
             if (count == 0)
                 CreateEmptyHintSlot();
             if (_favNav != null && _favNav.activeSelf != nav)
@@ -410,8 +1098,10 @@ namespace Quest3TriggerUI
                 Mathf.CeilToInt(Mathf.Max(1, end - start) / 2f));
             float height = FavPad * 2f + rowsShown * (FavCellH + FavSpacing) +
                 (nav ? FavNavH + 4f : 0f);
+            ApplyFavoritesDockWidth();
             _favDock.sizeDelta = new Vector2(_favDock.sizeDelta.x,
-                Mathf.Min(listH, Mathf.Max(64f, height)));
+                Mathf.Min(listH, Mathf.Max(64f,
+                    Mathf.Max(height, RequiredTagStripHeight()))));
         }
 
         // An empty bar must still be findable: one dashed-feel placeholder cell
@@ -570,7 +1260,9 @@ namespace Quest3TriggerUI
                 }
                 item.characterSelector.SetActiveClothingItem(item, !item.active);
                 Log((item.active ? "已穿戴：" : "已脱下：") + item.displayName);
-                if (item.active) ApplyFavoriteState(item);
+                if (item.active && Quest3TriggerUIPlugin.Instance != null)
+                    Quest3TriggerUIPlugin.Instance.StartCoroutine(
+                        ApplyFavoriteStateDeferred(item));
             }
             catch (Exception e) { Error(e); }
         }
@@ -604,12 +1296,17 @@ namespace Quest3TriggerUI
                         Texture = lockSlot.Thumb == null ? null : lockSlot.Thumb.texture as Texture2D };
                 }
                 // UIAssist's scroll-list rows are the authoritative source for
-                // the clothing editor.  Resolve that row before looking at
-                // generic VUI.MouseCallbacks: a callback can live on a shared
-                // ancestor and expose one stale ClothingPanel, which makes
-                // every row drag the same clothing item.
+                // the clothing editor.  ACEIDPlus rows bind a
+                // DCIButtonPointerBehaviour holding the exact DAZClothingItem
+                // — read it before any text matching: the name label shows a
+                // BrowserAssist alias (GetDisplayNameWithAvailableBAAlias),
+                // not item.displayName, so text probes miss at row level and
+                // the shared content root then resolves every drag to the
+                // same first-scoring item.
                 if (_favList != null && target.transform.IsChildOf(_favList.transform))
                 {
+                    AceFavDragSource bound = ResolvePointerBehaviour(target);
+                    if (bound != null) return bound;
                     AceFavDragSource row = ResolveScrollListRow(target);
                     if (row != null) return row;
                 }
@@ -661,6 +1358,41 @@ namespace Quest3TriggerUI
             }
             bool underList = _favList != null && target.transform.IsChildOf(_favList.transform);
             return path + "{ace=" + underList + ",comps=" + names + "}";
+        }
+
+        // ACEIDPlus rows attach DCIButtonPointerBehaviour to both the
+        // thumbnail button and the name button; its private 'dci' field IS
+        // the row's DAZClothingItem — the authoritative binding. When the
+        // behaviour sits on the image button, that button's sprite is the
+        // exact thumbnail the user sees, so the drag ghost matches what was
+        // grabbed instead of a re-fetched texture.
+        private static AceFavDragSource ResolvePointerBehaviour(GameObject target)
+        {
+            try
+            {
+                foreach (Component c in target.GetComponentsInParent<Component>())
+                {
+                    if (c == null || c.GetType().Name != "DCIButtonPointerBehaviour") continue;
+                    FieldInfo f = c.GetType().GetField("dci",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    DAZClothingItem item = f == null
+                        ? null : f.GetValue(c) as DAZClothingItem;
+                    if (item == null) continue;
+                    Texture2D tex = null;
+                    UIDynamicButton dyn = c.GetComponent<UIDynamicButton>();
+                    if (dyn != null && dyn.button != null &&
+                        dyn.button.image != null &&
+                        dyn.button.image.sprite != null)
+                        tex = dyn.button.image.sprite.texture as Texture2D;
+                    return new AceFavDragSource {
+                        FromBar = false, Uid = item.uid, Item = item,
+                        Texture = tex,
+                        DisplayName = item.displayName,
+                        CreatorName = item.creatorName };
+                }
+            }
+            catch (Exception e) { Error(e); }
+            return null;
         }
 
         private static void MatchScrollRow(
@@ -893,6 +1625,8 @@ namespace Quest3TriggerUI
                 bool overBan = PointerOverBanBar();
                 bool overLock = PointerOverLockBar();
                 bool acted = false;
+                int dropGroup;
+                bool onTagRow = TryGetTagRowGroup(out dropGroup);
                 if (!source.FromBar && !source.FromBan && !source.FromLock)
                 {
                     // Dragged out of the editor list.
@@ -902,19 +1636,24 @@ namespace Quest3TriggerUI
                         acted = AddBan(source);
                     else if (overFav)
                     {
-                        AddFavorite(source);
-                        acted = true;
+                        if (onTagRow) EnterFavoriteTag(dropGroup);
+                        acted = AddFavorite(source);
                     }
                 }
                 else if (source.FromBar)
                 {
-                    // Favorites-bar slot: dropping back on its own bar keeps it,
-                    // another bar moves it, anywhere else removes it.
+                    // Favorites-bar slot: dropping on a tag row files it under
+                    // that tag, back on its own bar it stays, anywhere else it
+                    // is removed.
                     if (overLock)
                         acted = AddLock(source);
                     else if (overBan)
                         acted = AddBan(source);
-                    else if (!overFav)
+                    else if (overFav)
+                    {
+                        if (onTagRow) acted = MoveFavorite(source, dropGroup);
+                    }
+                    else
                         acted = RemoveFavorite(source.Uid, true);
                 }
                 else if (source.FromBan)
@@ -924,8 +1663,8 @@ namespace Quest3TriggerUI
                         acted = AddLock(source);
                     else if (overFav)
                     {
-                        AddFavorite(source);
-                        acted = true;
+                        if (onTagRow) EnterFavoriteTag(dropGroup);
+                        acted = AddFavorite(source);
                     }
                     else if (!overBan)
                         acted = RemoveBan(source.Uid);
@@ -937,8 +1676,8 @@ namespace Quest3TriggerUI
                     // moves it, anywhere else removes it.
                     if (overFav)
                     {
-                        AddFavorite(source);
-                        acted = true;
+                        if (onTagRow) EnterFavoriteTag(dropGroup);
+                        acted = AddFavorite(source);
                     }
                     else if (overBan)
                     {
@@ -965,15 +1704,15 @@ namespace Quest3TriggerUI
             }
         }
 
-        private static void AddFavorite(AceFavDragSource source)
+        private static bool AddFavorite(AceFavDragSource source)
         {
-            string key = BanKey(source.Uid);
-            foreach (string[] f in _favorites)
-                if (f[0] == source.Uid || BanKey(f[0]) == key) return;
-            // Ban contradicts favorite (favorite click tries to wear and
+            if (source == null) return false;
+            List<string[]> items = VisibleFavorites;
+            if (FindFavoriteIndex(items, source.Uid) >= 0) return true;
+            // Ban contradicts favorite (a favorite click tries to wear and
             // would be vetoed); lock coexists — wearing is allowed.
             RemoveBan(source.Uid);
-            _favorites.Add(new string[] {
+            items.Add(new string[] {
                 source.Uid,
                 source.DisplayName ?? "",
                 source.CreatorName ?? "" });
@@ -985,29 +1724,33 @@ namespace Quest3TriggerUI
                 { if (tex != null) _favThumbs[item.uid] = tex; });
             }
             CaptureFavoriteState(source);
-            SaveFavorites();
+            SaveFavoriteStores();
             // Land on the page the new entry was appended to.
             _favPage = int.MaxValue;
             _favDirty = true;
-            Log("已收藏服装：" + (source.DisplayName ?? source.Uid));
+            Log("已收藏服装：" + (source.DisplayName ?? source.Uid) +
+                " → " + (ActiveTagName ?? "默认"));
+            return true;
         }
 
         private static bool RemoveFavorite(string uid, bool log)
         {
-            string key = BanKey(uid);
-            for (int i = 0; i < _favorites.Count; i++)
+            List<string[]> items = VisibleFavorites;
+            int index = FindFavoriteIndex(items, uid);
+            if (index < 0) return false;
+            if (log) Log("已移除收藏：" + items[index][1]);
+            items.RemoveAt(index);
+            // The cached thumbnail and the saved wear-state are dropped only
+            // once no group references the item any more.
+            if (!IsFavoriteAnywhere(uid))
             {
-                if (_favorites[i][0] != uid && BanKey(_favorites[i][0]) != key) continue;
-                if (log) Log("已移除收藏：" + _favorites[i][1]);
-                _favorites.RemoveAt(i);
                 _favThumbs.Remove(uid);
                 try { string sp = FavStatePath(uid); if (File.Exists(sp)) File.Delete(sp); }
                 catch { }
-                SaveFavorites();
-                _favDirty = true;
-                return true;
             }
-            return false;
+            SaveFavoriteStores();
+            _favDirty = true;
+            return true;
         }
     }
 

@@ -181,7 +181,7 @@ namespace Quest3TriggerUI
             typeof(MeshVR.PresetManagerControl).GetField("pm",
                 BindingFlags.NonPublic | BindingFlags.Instance);
 
-        private static MeshVR.PresetManager PresetManagerOf(
+        internal static MeshVR.PresetManager PresetManagerOf(
             MeshVR.PresetManagerControl presets)
         {
             try

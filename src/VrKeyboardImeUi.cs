@@ -37,10 +37,11 @@ namespace Quest3TriggerUI
             _imeModeText = AddText(mode.transform, "中/英：英文", 25,
                 TextAnchor.MiddleCenter, Color.white, 4f);
 
-            // Left-wing vertical candidate window — docks to the keyboard's
-            // left edge (negative x sits outside the canvas rect, same trick
-            // as the old above-keyboard strip) so it never collides with the
-            // file browser panel overlapping the top edge.
+            // Candidate window position depends on keyboard docking: when the
+            // keyboard is pinned under the preset browser the browser panel
+            // occupies the top edge, so the bar stays on the left wing; when
+            // the keyboard follows the view the bar moves directly above it.
+            // SyncImeUi repositions on dock-state change.
             _imePanel = CreateUiObject("VR Chinese IME candidates", parent);
             RectTransform panelRect = _imePanel.GetComponent<RectTransform>();
             SetTopLeft(panelRect, -320f, 150f, 304f, 442f);
@@ -131,11 +132,25 @@ namespace Quest3TriggerUI
             if (_imePanel == null) return;
             bool enabled = VrTextInputBridge.ImeEnabled;
             bool bridged = DoubaoImeBridge.Active;
+            // Docked under the preset browser → keep the left wing (the
+            // browser panel sits over the keyboard's top edge). Floating /
+            // view-following → directly above the keyboard.
+            bool docked = _canvas != null &&
+                _canvas.transform.parent != null &&
+                _canvas.transform.parent == VrPresetBrowser.KeyboardDock;
             ImeCandidateSnapshot snapshot = bridged
                 ? DoubaoImeBridge.Snapshot : PinyinEngine.Snapshot;
-            string signature = BuildImeSignature(enabled, snapshot);
+            string signature = BuildImeSignature(enabled, docked, snapshot);
             if (!force && signature == _imeUiSignature) return;
             _imeUiSignature = signature;
+
+            RectTransform panelRect =
+                _imePanel == null ? null : (RectTransform)_imePanel.transform;
+            if (panelRect != null)
+                SetTopLeft(panelRect,
+                    docked ? -320f : 978f,
+                    docked ? 150f : -450f,
+                    304f, 442f);
 
             // Show the IME's real conversion mode (its internal Shift
             // toggle), not just whether the bridge is engaged.
@@ -203,11 +218,13 @@ namespace Quest3TriggerUI
         }
 
         private static readonly StringBuilder SignatureBuilder = new StringBuilder();
-        private static string BuildImeSignature(bool enabled, ImeCandidateSnapshot snapshot)
+        private static string BuildImeSignature(bool enabled, bool docked,
+            ImeCandidateSnapshot snapshot)
         {
             StringBuilder value = SignatureBuilder;
             value.Length = 0;
             value.Append(enabled ? '1' : '0').Append('|')
+                .Append(docked ? '1' : '0').Append('|')
                 .Append(VrTextInputBridge.Active ? '1' : '0').Append('|')
                 .Append(snapshot.ChineseMode ? '1' : '0').Append('|')
                 .Append(snapshot.ImageMode ? '1' : '0').Append('|')
