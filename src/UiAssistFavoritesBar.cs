@@ -29,11 +29,19 @@ namespace Quest3TriggerUI
         internal bool FromBar;
         internal bool FromBan;
         internal bool FromLock;
+        // Preset-dock slot drags: PresetPath is the .vap filed under
+        // PresetTab (the tab it was picked up from).
+        internal bool FromPresetDock;
+        internal string PresetPath;
+        internal int PresetTab;
         internal string Uid;
         internal string DisplayName;
         internal string CreatorName;
         internal DAZClothingItem Item;
         internal Texture2D Texture;
+        // Which hand's laser pressed this slot — the drag then tracks that
+        // pointer's cursor (cursorRight vs cursor).
+        internal bool RightPointer = true;
     }
 
     internal static partial class UiAssistHudLink
@@ -66,6 +74,9 @@ namespace Quest3TriggerUI
         // diagnostics.
         private static readonly BepInEx.Logging.ManualLogSource _diagLog =
             BepInEx.Logging.Logger.CreateLogSource("Q3FavDiag");
+        // Shared scratch buffer for dock placement (favorites bar, preset
+        // dock, ban/lock bars all position against the ACE list's corners).
+        private static readonly Vector3[] _dockCorners = new Vector3[4];
         private static RawImage _favGhost;
         private static GameObject _favGhostRoot;
         private static readonly List<string[]> _favorites = new List<string[]>();
@@ -185,6 +196,8 @@ namespace Quest3TriggerUI
 
         private static void ClearFavoritesBar()
         {
+            ClearFavoriteReorder();
+            _favoritePageTargets.Clear();
             if (_favCanvas != null && SuperController.singleton != null)
                 SuperController.singleton.RemoveCanvas(_favCanvas);
             if (_favGhostRoot != null) UnityEngine.Object.Destroy(_favGhostRoot);
@@ -837,16 +850,32 @@ namespace Quest3TriggerUI
         private static bool TryGetTagRowGroup(out int group)
         {
             group = -1;
+            // Cursor first: the laser point tracks mid-drag even when the
+            // look target is stale after a press.
+            if (_favTagStrip != null)
+            {
+                Vector2 local;
+                foreach (AceFavTagRowTag row in _favTagStrip
+                    .GetComponentsInChildren<AceFavTagRowTag>())
+                {
+                    if (row != null && PointerOnRect(
+                        row.transform as RectTransform, out local))
+                    {
+                        group = row.GroupIndex;
+                        return true;
+                    }
+                }
+            }
             GameObject target = VrPointerPresentation.CurrentLookTarget(true);
-            AceFavTagRowTag row = target == null
+            AceFavTagRowTag look = target == null
                 ? null : target.GetComponentInParent<AceFavTagRowTag>();
-            if (row == null)
+            if (look == null)
             {
                 target = VrPointerPresentation.CurrentLookTarget(false);
-                row = target == null ? null : target.GetComponentInParent<AceFavTagRowTag>();
+                look = target == null ? null : target.GetComponentInParent<AceFavTagRowTag>();
             }
-            if (row == null) return false;
-            group = row.GroupIndex;
+            if (look == null) return false;
+            group = look.GroupIndex;
             return true;
         }
 
@@ -1040,7 +1069,17 @@ namespace Quest3TriggerUI
             bg.color = new Color(0.11f, 0.38f, 0.48f, 1f);
             Button button = go.AddComponent<Button>();
             button.targetGraphic = bg;
-            button.onClick.AddListener(delegate { VrHaptics.Press(); action(); });
+            if (parent.gameObject.name == "FavNav")
+            {
+                FavoritePageTarget target = go.AddComponent<FavoritePageTarget>();
+                target.Direction = x < 0f ? -1 : 1;
+                _favoritePageTargets.Add(target);
+            }
+            button.onClick.AddListener(delegate {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                VrHaptics.Press(); action();
+            });
             Text text = new GameObject("Label", typeof(RectTransform)).AddComponent<Text>();
             RectTransform textRect = (RectTransform)text.transform;
             textRect.SetParent(rect, false);
@@ -1070,18 +1109,16 @@ namespace Quest3TriggerUI
             if (_favCells == null) return;
             foreach (Transform child in _favCells)
                 UnityEngine.Object.Destroy(child.gameObject);
-            List<string[]> favorites = VisibleFavorites;
+            List<string[]> favorites = FavoriteDisplayOrder();
             int count = favorites.Count;
-            // Rows that fit the list height with and without the nav row; the
-            // nav row is only shown when entries exceed the no-nav capacity.
+            // Page capacity is always rowsNoNav*2 — the nav row sits BELOW
+            // the cells (the dock grows one nav-row taller than the list)
+            // instead of stealing a cell row, so every page stays 4x2.
             float listH = _favListHeight > 0f ? _favListHeight : 400f;
             int rowsNoNav = Mathf.Max(1, Mathf.FloorToInt(
                 (listH - FavPad * 2f + FavSpacing) / (FavCellH + FavSpacing)));
-            int rowsNav = Mathf.Max(1, Mathf.FloorToInt(
-                (listH - FavPad * 2f - FavNavH - 4f + FavSpacing) /
-                (FavCellH + FavSpacing)));
             bool nav = count > rowsNoNav * 2;
-            int capacity = Mathf.Max(2, (nav ? rowsNav : rowsNoNav) * 2);
+            int capacity = Mathf.Max(2, rowsNoNav * 2);
             _favPages = Mathf.Max(1, Mathf.CeilToInt(count / (float)capacity));
             _favPage = Mathf.Clamp(_favPage, 0, _favPages - 1);
             int start = _favPage * capacity;
@@ -1099,8 +1136,11 @@ namespace Quest3TriggerUI
             float height = FavPad * 2f + rowsShown * (FavCellH + FavSpacing) +
                 (nav ? FavNavH + 4f : 0f);
             ApplyFavoritesDockWidth();
+            // The dock may grow past the list height by exactly the nav row
+            // so paging never shrinks the 4x2 cell grid.
+            float cap = listH + (nav ? FavNavH + 4f : 0f);
             _favDock.sizeDelta = new Vector2(_favDock.sizeDelta.x,
-                Mathf.Min(listH, Mathf.Max(64f,
+                Mathf.Min(cap, Mathf.Max(64f,
                     Mathf.Max(height, RequiredTagStripHeight()))));
         }
 
@@ -1167,7 +1207,11 @@ namespace Quest3TriggerUI
             tag.Thumb = thumb;
             tag.Dim = dim;
             string captured = uid;
-            button.onClick.AddListener(delegate { WearFavorite(captured); });
+            button.onClick.AddListener(delegate {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                WearFavorite(captured);
+            });
             RefreshSlotVisual(tag);
         }
 
@@ -1269,7 +1313,15 @@ namespace Quest3TriggerUI
 
         // ---- drag plumbing ----
 
-        internal static AceFavDragSource BeginFavoriteCandidate(GameObject target)
+        internal static AceFavDragSource BeginFavoriteCandidate(
+            GameObject target, bool right)
+        {
+            AceFavDragSource source = ResolveFavoriteCandidate(target);
+            if (source != null) source.RightPointer = right;
+            return source;
+        }
+
+        private static AceFavDragSource ResolveFavoriteCandidate(GameObject target)
         {
             if (target == null) return null;
             try
@@ -1294,6 +1346,14 @@ namespace Quest3TriggerUI
                     return new AceFavDragSource {
                         FromLock = true, Uid = lockSlot.Uid,
                         Texture = lockSlot.Thumb == null ? null : lockSlot.Thumb.texture as Texture2D };
+                }
+                PdSlotTag pdSlot = target.GetComponentInParent<PdSlotTag>();
+                if (pdSlot != null)
+                {
+                    return new AceFavDragSource {
+                        FromPresetDock = true, PresetPath = pdSlot.Path,
+                        PresetTab = _pdTab,
+                        Texture = pdSlot.Thumb == null ? null : pdSlot.Thumb.texture as Texture2D };
                 }
                 // UIAssist's scroll-list rows are the authoritative source for
                 // the clothing editor.  ACEIDPlus rows bind a
@@ -1503,20 +1563,24 @@ namespace Quest3TriggerUI
 
         internal static bool BeginFavoriteDrag(AceFavDragSource source)
         {
-            if (source == null || _favDock == null) return false;
+            if (source == null || (_favDock == null && _pdDock == null))
+                return false;
+            BeginFavoriteReorder(source);
+            BeginPdReorder(source);
             VrHaptics.Press();
             try
             {
                 // The ghost needs its own world-space canvas: a RawImage with
                 // no Canvas ancestor never renders, so it cannot just be a
                 // detached child of the bar.
+                Canvas srcCanvas = _favCanvas != null ? _favCanvas : _pdCanvas;
                 GameObject go = new GameObject("AceFavDragGhost", typeof(RectTransform));
                 Canvas ghostCanvas = go.AddComponent<Canvas>();
                 ghostCanvas.renderMode = RenderMode.WorldSpace;
-                if (_favCanvas != null)
+                if (srcCanvas != null)
                 {
-                    ghostCanvas.worldCamera = _favCanvas.worldCamera;
-                    go.transform.localScale = _favCanvas.transform.localScale;
+                    ghostCanvas.worldCamera = srcCanvas.worldCamera;
+                    go.transform.localScale = srcCanvas.transform.localScale;
                 }
                 else
                 {
@@ -1559,25 +1623,22 @@ namespace Quest3TriggerUI
             if (_favGhost == null || _favGhostRoot == null) return;
             SuperController sc = SuperController.singleton;
             Camera viewer = sc == null ? null : sc.lookCamera;
-            // Follow the laser cursor (its world position is the exact UI hit
-            // point) of whichever pointer holds a look target; fall back to the
-            // right hand when the laser is over empty space mid-drag.
-            RectTransform cursor = null;
-            if (VrPointerPresentation.CurrentLookTarget(true) != null)
-                cursor = VrPointerPresentation.CurrentCursor(true);
-            else if (VrPointerPresentation.CurrentLookTarget(false) != null)
-                cursor = VrPointerPresentation.CurrentCursor(false);
             Transform root = _favGhostRoot.transform;
-            if (cursor != null)
+            // The ghost rides the laser cursor's world position — the exact
+            // UI hit point that keeps tracking under a held press (the old
+            // event ray froze mid-drag, which parked the ghost off-view).
+            Vector3 cursorPos;
+            if (DragCursorWorld(out cursorPos))
             {
                 Vector3 away = viewer == null
-                    ? -cursor.forward
-                    : (cursor.position - viewer.transform.position).normalized;
-                root.position = cursor.position + away * 0.03f;
+                    ? Vector3.back
+                    : (cursorPos - viewer.transform.position).normalized;
+                root.position = cursorPos + away * 0.03f;
             }
             else
             {
-                Transform hand = VrPointerPresentation.MotionController(sc, true);
+                Transform hand = VrPointerPresentation.MotionController(
+                    sc, DragRight());
                 if (hand != null)
                     root.position = hand.position + hand.forward * 0.18f;
             }
@@ -1605,6 +1666,9 @@ namespace Quest3TriggerUI
                     ? new Color(0.3f, 0.85f, 0.35f, 0.3f)
                     : new Color(0f, 0.28f, 0.08f, 0.22f);
             }
+            // Live reorder preview (phone-icon reflow) on both docks.
+            TickPdReorder();
+            TickFavoriteReorder();
         }
 
         private static bool PointerOverFavoritesBar()
@@ -1613,7 +1677,12 @@ namespace Quest3TriggerUI
             if (target != null && target.GetComponentInParent<AceFavBarTag>() != null)
                 return true;
             target = VrPointerPresentation.CurrentLookTarget(false);
-            return target != null && target.GetComponentInParent<AceFavBarTag>() != null;
+            if (target != null && target.GetComponentInParent<AceFavBarTag>() != null)
+                return true;
+            // Preview rebuilds swap slot objects under the pointer — test the
+            // persistent dock rect so a stale look target cannot misread.
+            Vector2 local;
+            return PointerOnRect(_favDock, out local);
         }
 
         internal static void EndFavoriteDrag(AceFavDragSource source)
@@ -1621,9 +1690,49 @@ namespace Quest3TriggerUI
             try
             {
                 if (source == null) return;
+                if (source.FromPresetDock)
+                {
+                    // Preset-dock slot: drop on a different tab copies the
+                    // preset into that tab (acceptance rules still apply,
+                    // silently); drop on the dock's cell area commits the
+                    // previewed reorder; drop outside removes it.
+                    int dropTab = PresetDockTabUnderPointer();
+                    bool overDock = PointerOverPresetDock();
+                    bool pdActed = false;
+                    if (dropTab >= 0 && dropTab != source.PresetTab)
+                    {
+                        if (FileDockPreset(dropTab, source.PresetPath))
+                        {
+                            PdSelectTab(dropTab);
+                            _pdPage = Mathf.Max(0,
+                                Mathf.CeilToInt(_pdSlots[dropTab].Count /
+                                    (float)PdPageCapacity) - 1);
+                            _pdDirty = true;
+                        }
+                        pdActed = true;
+                    }
+                    else if (overDock && source.PresetTab == _pdTab)
+                    {
+                        pdActed = CommitPdReorder(source);
+                    }
+                    else if (!overDock)
+                    {
+                        pdActed = RemoveDockSlot(source.PresetTab,
+                            source.PresetPath);
+                    }
+                    Log("pd drop tab=" + dropTab + " over=" + overDock +
+                        " idx=" + _pdDropIndex + " acted=" + pdActed);
+                    if (pdActed) VrHaptics.Confirm();
+                    return;
+                }
                 bool overFav = PointerOverFavoritesBar();
                 bool overBan = PointerOverBanBar();
                 bool overLock = PointerOverLockBar();
+                Vector2 favoriteDropPoint;
+                // Preview rebuilds replace slot objects. Hit the persistent
+                // dock plane so a stale LookTarget cannot turn a reorder into deletion.
+                if (source.FromBar && PointerOnRect(_favDock, out favoriteDropPoint))
+                    overFav = true;
                 bool acted = false;
                 int dropGroup;
                 bool onTagRow = TryGetTagRowGroup(out dropGroup);
@@ -1652,6 +1761,7 @@ namespace Quest3TriggerUI
                     else if (overFav)
                     {
                         if (onTagRow) acted = MoveFavorite(source, dropGroup);
+                        else acted = CommitFavoriteReorder(source);
                     }
                     else
                         acted = RemoveFavorite(source.Uid, true);
@@ -1692,6 +1802,9 @@ namespace Quest3TriggerUI
             catch (Exception e) { Error(e); }
             finally
             {
+                _favoriteClickAfter = Time.unscaledTime + 0.2f;
+                ClearFavoriteReorder();
+                ClearPdReorder();
                 if (_favGhostRoot != null) UnityEngine.Object.Destroy(_favGhostRoot);
                 _favGhost = null;
                 _favGhostRoot = null;

@@ -8,7 +8,7 @@ namespace Quest3TriggerUI
 {
     internal static partial class UiAssistHudLink
     {
-        private static UIDynamicButton _addPreset, _replacePreset, _savePreset;
+        private static UIDynamicButton _savePreset;
         private static GameObject _presetList;
         private static object _presetEditor;
         private static float _nextPresetCheck;
@@ -16,10 +16,8 @@ namespace Quest3TriggerUI
 
         private static void ClearPresetButtons()
         {
-            if (_addPreset != null) UnityEngine.Object.Destroy(_addPreset.gameObject);
-            if (_replacePreset != null) UnityEngine.Object.Destroy(_replacePreset.gameObject);
             if (_savePreset != null) UnityEngine.Object.Destroy(_savePreset.gameObject);
-            _addPreset = _replacePreset = _savePreset = null;
+            _savePreset = null;
             _presetList = null;
             _presetEditor = null;
         }
@@ -28,28 +26,25 @@ namespace Quest3TriggerUI
         {
             if (Time.unscaledTime < _nextPresetCheck) return;
             _nextPresetCheck = Time.unscaledTime + 0.5f;
-            if (sc.isLoading || !sc.MainHUDVisible) { ClearAlternateDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
             {
                 Snapshot state = FindEditor(sc);
-                if (state == null) { ClearAlternateDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (state == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 GameObject list = Read(state.Editor.GetType(), state.Editor, "aceScrollListGO") as GameObject;
-                if (list == null) { ClearAlternateDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
-                UpdateAlternateDock(state, list);
+                if (list == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                UpdatePresetDock(state, list);
                 UpdateFavoritesBar(state, list);
                 UpdateBanBar(state, list);
                 UpdateLockBar(state, list);
                 if (_presetList == list && ReferenceEquals(_presetEditor, state.Editor) &&
-                    _addPreset != null && _replacePreset != null &&
                     _savePreset != null) return;
                 ClearPresetButtons();
                 object canvas = Read(state.Editor.GetType(), state.Editor, "_uiButtonCanvas");
                 _presetList = list;
                 _presetEditor = state.Editor;
-                _addPreset = CreatePresetButton(canvas, list, "新增", -112f,
-                    delegate { BrowseClothingPreset(true); });
-                _replacePreset = CreatePresetButton(canvas, list, "替换", -38f,
-                    delegate { BrowseClothingPreset(false); });
+                // 新增/替换 live on the left preset dock now — the editor
+                // header keeps only 保存.
                 _savePreset = CreatePresetButton(canvas, list, "保存", 36f,
                     BrowseClothingPresetSave);
             }
@@ -76,36 +71,6 @@ namespace Quest3TriggerUI
             rect.SetAsLastSibling();
             button.button.onClick.AddListener(delegate { onClick(); });
             return button;
-        }
-
-        private static void BrowseClothingPreset(bool merge)
-        {
-            if (_presetBrowsing) return;
-            SuperController sc = SuperController.singleton;
-            Snapshot state = FindEditor(sc);
-            if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
-            string scene = sc.LoadedSceneName;
-            _presetBrowsing = true;
-            try
-            {
-                VrPresetBrowser.ShowDialogFull("加载服装预设",
-                    PluginPaths.ClothingPresetDir, "vap", false, null,
-                    delegate(string path, bool closed) {
-                    try
-                    {
-                        if (sc.isLoading || sc.LoadedSceneName != scene || state.Owner == null ||
-                            state.Target == null || sc.GetAtomByUid(state.Target.uid) != state.Target) return;
-                        if (!string.IsNullOrEmpty(path)) LoadEditorClothingPreset(state.Target, path, merge);
-                    }
-                    catch (Exception e) { Error(e); }
-                    finally
-                    {
-                        if (closed)
-                            Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetEditor(state, scene));
-                    }
-                });
-            }
-            catch (Exception e) { _presetBrowsing = false; Error(e); }
         }
 
         private static void BrowseClothingPresetSave()
@@ -193,24 +158,46 @@ namespace Quest3TriggerUI
             catch { return null; }
         }
 
-        private static void LoadEditorClothingPreset(Atom target, string path, bool merge)
+
+        // The preset dock's 新增 button: open the browser in pick mode —
+        // every .vap click files it under the dock's active tab without
+        // closing, so a whole batch can be saved in one session. The
+        // browser docks over the editor (right of the dock); the favorites
+        // bar and other side strips hide for the duration via
+        // _presetBrowsing.
+        private static void OpenPresetDockPicker()
         {
-            MeshVR.PresetManagerControl presets = target.GetStorableByID("ClothingPresets") as MeshVR.PresetManagerControl;
-            if (presets == null) throw new InvalidOperationException("ClothingPresets is unavailable.");
-            JSONStorableUrl url = presets.GetUrlJSONParam("presetBrowsePath");
-            JSONStorableBool auto = presets.GetBoolJSONParam("loadPresetOnSelect");
-            if (url == null || auto == null) throw new InvalidOperationException("Clothing preset parameters are unavailable.");
-            bool oldAuto = auto.val, oldLock = presets.lockParams;
-            string oldPath = url.val;
+            if (_presetBrowsing) return;
+            SuperController sc = SuperController.singleton;
+            Snapshot state = FindEditor(sc);
+            if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
+            string scene = sc.LoadedSceneName;
+            _presetBrowsing = true;
+            _pdPicking = true;
             try
             {
-                auto.val = false;
-                presets.lockParams = false;
-                url.val = SuperController.singleton.NormalizePath(path);
-                presets.CallAction(merge ? "MergeLoadPreset" : "LoadPreset");
-                Log((merge ? "新增服装预设：" : "替换服装预设：") + target.uid + " / " + path);
+                VrPresetBrowser.ShowDialogFull("收藏预设到「" +
+                    PdTabNames[_pdTab] + "」", PdTabDir(_pdTab),
+                    "vap", false, null,
+                    delegate(string path, bool closed) {
+                    try
+                    {
+                        if (sc.isLoading || sc.LoadedSceneName != scene || state.Owner == null ||
+                            state.Target == null || sc.GetAtomByUid(state.Target.uid) != state.Target) return;
+                        if (!string.IsNullOrEmpty(path)) FileDockPreset(_pdTab, path);
+                    }
+                    catch (Exception e) { Error(e); }
+                    finally
+                    {
+                        if (closed)
+                        {
+                            _pdPicking = false;
+                            Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetEditor(state, scene));
+                        }
+                    }
+                }, pickMode: true);
             }
-            finally { url.val = oldPath; auto.val = oldAuto; presets.lockParams = oldLock; }
+            catch (Exception e) { _presetBrowsing = false; _pdPicking = false; Error(e); }
         }
 
         private static IEnumerator RestorePresetEditor(Snapshot state, string scene)

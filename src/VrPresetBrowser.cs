@@ -20,6 +20,10 @@ namespace Quest3TriggerUI
         private const float CanvasHeight = 1100f;
         private const float PanelDistance = 1.15f;
         private const float PanelScale = 0.0009f;
+        // Pick mode (preset-dock 新增): smaller panel pushed right so the
+        // left dock remains visible/clickable underneath.
+        private const float PickModeScale = 0.7f;
+        private const float PickModeShift = 0.2f;
         private const float CardW = 176f;
         private const float CardH = 216f;
         private const string TabsFileName = "Quest3TriggerUI.browser-tabs.txt";
@@ -39,6 +43,27 @@ namespace Quest3TriggerUI
         {
             get { return _instance != null && _instance._canvas != null
                      && _instance._canvas.gameObject.activeSelf; }
+        }
+
+        // Header dropdown pick: which Person atom the next browser-
+        // launched preset applies to. Survives reopening; clears when
+        // the atom leaves the scene. Callers read it at apply time and
+        // fall back to their own captured target when null.
+        private static Atom _targetOverride;
+        internal static Atom LoadTarget
+        {
+            get
+            {
+                Atom t = _targetOverride;
+                SuperController sc = SuperController.singleton;
+                if (t == null || sc == null ||
+                    sc.GetAtomByUid(t.uid) != t)
+                {
+                    _targetOverride = null;
+                    return null;
+                }
+                return t;
+            }
         }
 
         // True while the pointer rests on the panel — used to keep the
@@ -104,10 +129,10 @@ namespace Quest3TriggerUI
                     case 1:
                         inst.LoadTabs();
                         if (inst._tabs.Count == 0)
-                            inst._tabs.Add("Custom");
+                            inst._tabs.Add(new BrowserTabState("Custom"));
                         inst._activeTab = 0;
-                        inst._dir = inst._tabs[0];
-                        _warmDirs = new List<string>(inst._tabs);
+                        inst._dir = inst._tabs[0].Dir;
+                        _warmDirs = inst._tabs.ConvertAll(t => t.Dir);
                         foreach (string r in WarmRoots)
                             if (!_warmDirs.Contains(r)) _warmDirs.Add(r);
                         break;
@@ -167,10 +192,12 @@ namespace Quest3TriggerUI
         internal static void ShowDialogFull(
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
-            Action<string, bool> onResult, bool dirPick = false)
+            Action<string, bool> onResult, bool dirPick = false,
+            bool pickMode = false, Atom loadTarget = null)
         {
             Instance.Open(title, suggestedDir, filter, saveMode,
-                defaultSaveName, null, onResult, dirPick);
+                defaultSaveName, null, onResult, dirPick, pickMode,
+                loadTarget);
         }
 
         // "vap|vab" / "*.jpg" / "vap,json" style filters → ext array.
@@ -200,7 +227,13 @@ namespace Quest3TriggerUI
         // ---- state ----
         private Canvas _canvas;
         private Font _font;
-        private readonly List<string> _tabs = new List<string>();
+        // A tab owns its directory AND its view state (grid/tree/fav scroll,
+        // search text, sort mode) — two tabs pointing at the same directory
+        // stay fully independent; listings always rebuild from disk, so
+        // file changes still sync across them. BrowserTabState adds a
+        // stable ID so persistence never keys or dedupes tabs by path.
+        private readonly List<BrowserTabState> _tabs =
+            new List<BrowserTabState>();
         private int _activeTab;
         private string _dir = "";
         private string _filter = "";
@@ -212,6 +245,7 @@ namespace Quest3TriggerUI
         // selectDirectory=true callers get "pick a folder" semantics —
         // files are hidden and 打开 commits the current directory.
         private bool _dirPickMode;
+        private bool _pickMode;
         private string _title = "";
         private Action<string> _cb;
         private Action<string, bool> _cbFull;
@@ -225,6 +259,15 @@ namespace Quest3TriggerUI
         private RectTransform _gridContent;
         private ScrollRect _scroll;
         private InputField _searchInput;
+        private bool _suppressSearchRefresh;
+        private Text _sortLabel;
+        // Load-target selector (header, top-right corner).
+        private Atom _dialogTarget;
+        private Button _targetBtn;
+        private Text _targetLabel;
+        private GameObject _targetPopup;
+        private RectTransform _targetListRect;
+        private RectTransform _targetListContent;
         private InputField _fileNameInput;
         private Text _pathText;
         private RectTransform _pathBar;
@@ -288,12 +331,14 @@ namespace Quest3TriggerUI
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string> cb, Action<string, bool> cbFull,
-            bool dirPick = false)
+            bool dirPick = false, bool pickMode = false,
+            Atom loadTarget = null)
         {
             try
             {
                 OpenInternal(title, suggestedDir, filter, saveMode,
-                    defaultSaveName, cb, cbFull, dirPick);
+                    defaultSaveName, cb, cbFull, dirPick, pickMode,
+                    loadTarget);
             }
             catch (Exception ex)
             {
@@ -307,7 +352,7 @@ namespace Quest3TriggerUI
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string> cb, Action<string, bool> cbFull,
-            bool dirPick)
+            bool dirPick, bool pickMode, Atom loadTarget)
         {
             if (_canvas == null)
                 Build();
@@ -329,6 +374,8 @@ namespace Quest3TriggerUI
             _filter = _filterExts != null ? _filterExts[0] : "";
             _saveMode = saveMode;
             _dirPickMode = dirPick;
+            _pickMode = pickMode;
+            _dialogTarget = loadTarget;
             _cb = cb;
             _cbFull = cbFull;
             _selectedPath = "";
@@ -353,19 +400,19 @@ namespace Quest3TriggerUI
                     _activeTab = match;
                 else
                 {
-                    _tabs.Add(req);
+                    _tabs.Add(new BrowserTabState(req));
                     _activeTab = _tabs.Count - 1;
                     SaveTabs();
                 }
             }
             else if (_tabs.Count == 0)
             {
-                _tabs.Add("Custom");
+                _tabs.Add(new BrowserTabState("Custom"));
                 _activeTab = 0;
             }
             if (_activeTab < 0 || _activeTab >= _tabs.Count)
                 _activeTab = 0;
-            _dir = _tabs[_activeTab];
+            _dir = _tabs[_activeTab].Dir;
             if (!ValidDir(_dir))
                 _dir = req ?? "Custom";
 
@@ -375,9 +422,12 @@ namespace Quest3TriggerUI
                 _fileNameInput.text = defaultSaveName ?? "";
             if (_dirPickMode)
                 SetStatus("选择目录：进入目标文件夹后点「打开」");
-            if (_searchInput != null)
-                _searchInput.text = "";
-            _sortByDate = false;
+            else if (_pickMode)
+                SetStatus("点选预设即存入收藏栏，可连续点选多个");
+            RefreshTargetControl();
+            // Reopening must not wipe the active tab's saved view — a
+            // person swap (or any close/open) restores scroll/search/sort.
+            ApplyView(_tabs[_activeTab]);
 
             Recenter();
             _canvas.gameObject.SetActive(true);
@@ -397,6 +447,7 @@ namespace Quest3TriggerUI
                 HideHudAround();
             RebuildTabs();
             RefreshGrid();
+            RestoreScroll(_tabs[_activeTab]);
             LogErr("Q3 browser shown: dir=" + _dir);
         }
 
@@ -406,26 +457,13 @@ namespace Quest3TriggerUI
                    FileManager.DirectoryExists(dir, false, false);
         }
 
-        // Index of the tab equal to req or located inside it; deepest
-        // (longest path) match wins. -1 when no tab covers the directory.
+        // Index of the tab equal to req or located inside it; the active
+        // tab wins first so reopening a category never jumps between two
+        // same-address tabs, then deepest (longest path) match. -1 when
+        // no tab covers the directory.
         private int FindTabUnder(string req)
         {
-            int best = -1;
-            int bestLen = -1;
-            string prefix = req + "/";
-            for (int i = 0; i < _tabs.Count; i++)
-            {
-                string t = _tabs[i];
-                bool hit = string.Equals(t, req,
-                    StringComparison.OrdinalIgnoreCase) ||
-                    t.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
-                if (hit && t.Length > bestLen)
-                {
-                    best = i;
-                    bestLen = t.Length;
-                }
-            }
-            return best;
+            return BrowserTabStore.FindTabUnder(_tabs, _activeTab, req);
         }
 
         // ---------- persistence ----------
@@ -443,16 +481,10 @@ namespace Quest3TriggerUI
                 string f = TabsPath();
                 if (!File.Exists(f))
                     return;
-                string[] lines = File.ReadAllLines(f);
-                if (lines.Length == 0)
-                    return;
-                int.TryParse(lines[0], out _activeTab);
-                for (int i = 1; i < lines.Length && _tabs.Count < 12; i++)
-                {
-                    string d = lines[i].Trim().Replace('\\', '/');
-                    if (d.Length > 0 && ValidDir(d) && !_tabs.Contains(d))
-                        _tabs.Add(d);
-                }
+                int active;
+                _tabs.AddRange(BrowserTabStore.Read(
+                    File.ReadAllText(f), ValidDir, out active));
+                _activeTab = active;
                 if (_activeTab >= _tabs.Count)
                     _activeTab = 0;
             }
@@ -478,9 +510,13 @@ namespace Quest3TriggerUI
             _tabsDirtyAt = -1f;
             try
             {
-                List<string> lines = new List<string> { _activeTab.ToString() };
-                lines.AddRange(_tabs);
-                File.WriteAllLines(TabsPath(), lines.ToArray());
+                // Live widgets hold the freshest scroll/search/sort —
+                // capture them so debounced mid-session writes persist the
+                // current view, not the last tab-switch snapshot.
+                if (IsOpen && _activeTab >= 0 && _activeTab < _tabs.Count)
+                    CaptureView(_tabs[_activeTab]);
+                File.WriteAllText(TabsPath(),
+                    BrowserTabStore.Write(_tabs, _activeTab));
             }
             catch (Exception ex)
             {
@@ -913,10 +949,234 @@ namespace Quest3TriggerUI
             hlg.childControlWidth = false;
             hlg.childControlHeight = true;
 
+            // load-target selector — the top-right corner control; the
+            // search box shifts left to leave it room.
+            _targetBtn = NewButton(root.transform, "人物");
+            _targetBtn.name = "TargetBtn";
+            _targetLabel = _targetBtn.GetComponentInChildren<Text>();
+            if (_targetLabel != null) _targetLabel.fontSize = 20;
+            PlaceRight(_targetBtn.GetComponent<RectTransform>(),
+                8f, 6f, 236f, 36f);
+            _targetBtn.onClick.AddListener(ToggleTargetPopup);
+            BuildTargetPopup(root);
+
             // search box (top-right overlay)
             _searchInput = NewInput(root, "🔍 搜索本目录…");
-            PlaceRight(_searchInput.GetComponent<RectTransform>(), 8f, 6f, 300f, 36f);
-            _searchInput.onValueChanged.AddListener(_ => RefreshGrid());
+            PlaceRight(_searchInput.GetComponent<RectTransform>(), 252f, 6f, 300f, 36f);
+            _searchInput.onValueChanged.AddListener(_ =>
+            {
+                if (!_suppressSearchRefresh) RefreshGrid();
+            });
+        }
+
+        // Full-canvas popup: click-away backdrop + a top-right list of
+        // scene Person atoms. Rows pick the atom the next browser
+        // preset load applies to.
+        private void BuildTargetPopup(RectTransform root)
+        {
+            _targetPopup = NewObj("TargetPopup", root.transform);
+            Anchor(_targetPopup.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+            Image bd = _targetPopup.AddComponent<Image>();
+            bd.color = new Color(0f, 0f, 0f, 0.001f);
+            Button bdb = _targetPopup.AddComponent<Button>();
+            bdb.targetGraphic = bd;
+            bdb.onClick.AddListener(
+                delegate { _targetPopup.SetActive(false); });
+
+            GameObject list = NewObj("List", _targetPopup.transform);
+            list.transform.SetAsLastSibling();
+            list.AddComponent<Image>().color =
+                new Color(0.10f, 0.12f, 0.16f, 1f);
+            _targetListRect = list.GetComponent<RectTransform>();
+            PlaceRight(_targetListRect, 8f, 46f, 236f, 300f);
+            ScrollRect sr = list.AddComponent<ScrollRect>();
+            sr.horizontal = false;
+            sr.movementType = ScrollRect.MovementType.Clamped;
+            sr.scrollSensitivity = 30f;
+            sr.inertia = false;
+
+            GameObject view = NewObj("Viewport", list.transform);
+            Anchor(view.GetComponent<RectTransform>(), 0f, 0f, 0f, 0f);
+            view.AddComponent<RectMask2D>();
+            sr.viewport = view.GetComponent<RectTransform>();
+            GameObject content = NewObj("Content", view.transform);
+            _targetListContent = content.GetComponent<RectTransform>();
+            _targetListContent.anchorMin = new Vector2(0f, 1f);
+            _targetListContent.anchorMax = new Vector2(1f, 1f);
+            _targetListContent.pivot = new Vector2(0.5f, 1f);
+            VerticalLayoutGroup vlg =
+                content.AddComponent<VerticalLayoutGroup>();
+            vlg.spacing = 4f;
+            vlg.padding = new RectOffset(4, 4, 4, 4);
+            vlg.childForceExpandWidth = true;
+            vlg.childForceExpandHeight = false;
+            vlg.childControlWidth = true;
+            // Must control height: rows are NewObj RectTransforms with a
+            // default 100px sizeDelta — without it each row renders 100px
+            // tall and every row past the first falls below the ~96px
+            // viewport, masked out and unreachable.
+            vlg.childControlHeight = true;
+            content.AddComponent<ContentSizeFitter>().verticalFit =
+                ContentSizeFitter.FitMode.PreferredSize;
+            sr.content = _targetListContent;
+            _targetPopup.SetActive(false);
+        }
+
+        private void ToggleTargetPopup()
+        {
+            if (_targetPopup == null) return;
+            bool show = !_targetPopup.activeSelf;
+            _targetPopup.SetActive(show);
+            if (show)
+            {
+                _targetPopup.transform.SetAsLastSibling();
+                RebuildTargetPopup();
+            }
+        }
+
+        private void RebuildTargetPopup()
+        {
+            if (_targetListContent == null) return;
+            for (int i = _targetListContent.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(
+                    _targetListContent.GetChild(i).gameObject);
+            Atom eff = EffectiveTarget();
+            // The dialog's own target and a live override must stay
+            // pickable even when GetAtoms skips them, and one bad atom
+            // must not truncate the list mid-enumeration. Persons are
+            // matched by type only — an atom that is off/hidden is still
+            // a valid preset target.
+            var persons = new List<Atom>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                if (_dialogTarget != null && seen.Add(_dialogTarget.uid))
+                    persons.Add(_dialogTarget);
+            }
+            catch { }
+            Atom ov = LoadTarget;
+            try
+            {
+                if (ov != null && seen.Add(ov.uid)) persons.Add(ov);
+            }
+            catch { }
+            SuperController sc = SuperController.singleton;
+            List<Atom> atoms = null;
+            string getAtomsErr = null;
+            try { atoms = sc != null ? sc.GetAtoms() : null; }
+            catch (Exception ex) { getAtomsErr = ex.GetType().Name; }
+            int total = atoms != null ? atoms.Count : -1;
+            var skip = new System.Text.StringBuilder();
+            if (atoms != null)
+            {
+                for (int i = 0; i < atoms.Count; i++)
+                {
+                    Atom a;
+                    try
+                    {
+                        a = atoms[i];
+                        if (a == null) continue;
+                        if (a.type != "Person")
+                        {
+                            if (skip.Length < 400)
+                                skip.Append(a.type).Append(':')
+                                    .Append(a.uid).Append(',');
+                            continue;
+                        }
+                        if (!seen.Add(a.uid)) continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        if (skip.Length < 400)
+                            skip.Append(ex.GetType().Name).Append(',');
+                        continue;
+                    }
+                    persons.Add(a);
+                }
+            }
+            try
+            {
+                Atom d = _dialogTarget;
+                LogErr("Q3 target popup: atoms=" + total +
+                    " persons=" + persons.Count +
+                    " tgt=" + (d == null ? "-" : d.uid) +
+                    " eff=" + (eff == null ? "-" : eff.uid) +
+                    (getAtomsErr != null ? " getAtoms=" + getAtomsErr : "") +
+                    (skip.Length > 0 ? " skip=" + skip : ""));
+            }
+            catch { }
+            int count = 0;
+            for (int i = 0; i < persons.Count; i++)
+            {
+                Atom a = persons[i];
+                Atom pick = a;
+                Button rb = NewButton(_targetListContent,
+                    (a == eff ? "● " : "") + a.uid);
+                Text rt = rb.GetComponentInChildren<Text>();
+                if (rt != null) rt.fontSize = 20;
+                rb.gameObject.AddComponent<LayoutElement>()
+                    .preferredHeight = 40f;
+                rb.onClick.AddListener(delegate
+                {
+                    _targetOverride = pick;
+                    _targetPopup.SetActive(false);
+                    RefreshTargetControl();
+                });
+                count++;
+            }
+            float h = Mathf.Min(360f, 8f + count * 44f);
+            _targetListRect.sizeDelta =
+                new Vector2(236f, Mathf.Max(48f, h));
+            // Diag: verify every built row is laid out and hittable —
+            // dumps each child's position/size after one layout pass.
+            if (count > 0 && Quest3TriggerUIPlugin.Instance != null)
+                Quest3TriggerUIPlugin.Instance.StartCoroutine(
+                    DumpTargetRows(count));
+        }
+
+        private IEnumerator DumpTargetRows(int expect)
+        {
+            yield return null;
+            yield return null;
+            if (_targetListContent == null) yield break;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("Q3 target rows: expect=").Append(expect)
+                .Append(" children=").Append(_targetListContent.childCount)
+                .Append(" contentH=")
+                .Append(_targetListContent.rect.height.ToString("0"));
+            for (int i = 0; i < _targetListContent.childCount; i++)
+            {
+                RectTransform cr =
+                    _targetListContent.GetChild(i) as RectTransform;
+                if (cr == null) continue;
+                sb.Append(" [").Append(cr.name).Append(" y=")
+                    .Append(cr.anchoredPosition.y.ToString("0"))
+                    .Append(" h=").Append(cr.rect.height.ToString("0"))
+                    .Append(cr.gameObject.activeInHierarchy ? "" : " OFF")
+                    .Append("]");
+            }
+            LogErr(sb.ToString());
+        }
+
+        private Atom EffectiveTarget()
+        {
+            return LoadTarget != null ? LoadTarget : _dialogTarget;
+        }
+
+        private void RefreshTargetControl()
+        {
+            bool show = _dialogTarget != null && !_saveMode &&
+                !_dirPickMode && !_pickMode;
+            if (_targetBtn != null)
+                _targetBtn.gameObject.SetActive(show);
+            if (!show && _targetPopup != null)
+                _targetPopup.SetActive(false);
+            if (_targetLabel != null)
+            {
+                Atom eff = EffectiveTarget();
+                _targetLabel.text =
+                    "人物: " + (eff != null ? eff.uid : "—");
+            }
         }
 
         private void BuildPathBar(RectTransform root)
@@ -936,12 +1196,14 @@ namespace Quest3TriggerUI
 
             Button sort = NewButton(bar.transform, "排序:名称");
             sort.name = "SortBtn";
+            _sortLabel = sort.GetComponentInChildren<Text>();
             PlaceRight(sort.GetComponent<RectTransform>(), 10f, 4f, 140f, 40f);
             sort.onClick.AddListener(() =>
             {
                 _sortByDate = !_sortByDate;
-                sort.GetComponentInChildren<Text>().text =
-                    _sortByDate ? "排序:时间" : "排序:名称";
+                if (_sortLabel != null)
+                    _sortLabel.text =
+                        _sortByDate ? "排序:时间" : "排序:名称";
                 RefreshGrid();
             });
         }
@@ -1107,7 +1369,7 @@ namespace Quest3TriggerUI
                 }
                 used++;
                 v.Index = i;
-                string d = _tabs[i];
+                string d = _tabs[i].Dir;
                 string name = d.Length == 0 ? "根目录"
                     : d.TrimEnd('/').Substring(d.LastIndexOf('/') + 1);
                 v.Txt.text = (i == _activeTab ? "● " : "") + name;
@@ -1130,7 +1392,9 @@ namespace Quest3TriggerUI
                 {
                     if (_tabs.Count >= 12)
                         return;
-                    _tabs.Add(_dir);          // duplicate paths allowed —
+                    BrowserTabState nt = new BrowserTabState(_dir);
+                    CaptureView(nt);          // duplicates inherit the live view
+                    _tabs.Add(nt);            // duplicate paths allowed —
                     _activeTab = _tabs.Count - 1; // navigate inside the new tab
                     SaveTabs();
                     RebuildTabs();
@@ -1140,25 +1404,74 @@ namespace Quest3TriggerUI
             _tabPlus.transform.SetAsLastSibling();
         }
 
+        // View state is per-tab: capture the live widgets into the outgoing
+        // tab before switching, re-apply onto the incoming one after rebuild.
+        private void CaptureView(BrowserTabState t)
+        {
+            t.Dir = _dir;
+            t.GridY = _gridContent != null
+                ? _gridContent.anchoredPosition.y : 0f;
+            t.TreeY = _treeContent != null
+                ? _treeContent.anchoredPosition.y : 0f;
+            t.FavY = _favContent != null
+                ? _favContent.anchoredPosition.y : 0f;
+            t.Search = _searchInput != null ? _searchInput.text : "";
+            t.SortByDate = _sortByDate;
+        }
+
+        private void ApplyView(BrowserTabState t)
+        {
+            // Search must land before RefreshGrid — the filter reads it inside.
+            if (_searchInput != null)
+            {
+                _suppressSearchRefresh = true;
+                try { _searchInput.text = t.Search ?? ""; }
+                finally { _suppressSearchRefresh = false; }
+            }
+            _sortByDate = t.SortByDate;
+            if (_sortLabel != null)
+                _sortLabel.text = _sortByDate ? "排序:时间" : "排序:名称";
+        }
+
+        private void RestoreScroll(BrowserTabState t)
+        {
+            RestoreY(_gridContent, _scroll, t.GridY);
+            RestoreY(_treeContent, _treeScroll, t.TreeY);
+            RestoreY(_favContent, _favScroll, t.FavY);
+        }
+
+        private static void RestoreY(RectTransform content, ScrollRect scroll,
+            float y)
+        {
+            if (content == null || scroll == null || scroll.viewport == null)
+                return;
+            float maxY = Mathf.Max(0f,
+                content.rect.height - scroll.viewport.rect.height);
+            content.anchoredPosition = new Vector2(
+                content.anchoredPosition.x, Mathf.Clamp(y, 0f, maxY));
+        }
+
         private void SwitchTab(int idx)
         {
             if (idx < 0 || idx >= _tabs.Count || idx == _activeTab)
                 return;
-            _tabs[_activeTab] = _dir;
+            CaptureView(_tabs[_activeTab]);
             _activeTab = idx;
-            _dir = _tabs[idx];
+            _dir = _tabs[idx].Dir;
             if (!ValidDir(_dir))
             {
                 _tabs.RemoveAt(idx);
                 if (_tabs.Count == 0)
-                    _tabs.Add("Custom");
+                    _tabs.Add(new BrowserTabState("Custom"));
                 _activeTab = 0;
-                _dir = _tabs[0];
+                _dir = _tabs[0].Dir;
             }
             _selectedPath = "";
+            ApplyView(_tabs[_activeTab]);
             SaveTabs();
             RebuildTabs();
             RefreshGrid();
+            RestoreScroll(_tabs[_activeTab]);
         }
 
         private void CloseTab(int idx)
@@ -1167,13 +1480,16 @@ namespace Quest3TriggerUI
                 return;
             _tabs.RemoveAt(idx);
             if (_tabs.Count == 0)
-                _tabs.Add(_dir);
+                _tabs.Add(new BrowserTabState(_dir));
             if (_activeTab >= _tabs.Count)
                 _activeTab = _tabs.Count - 1;
-            _dir = _tabs[_activeTab];
+            _dir = _tabs[_activeTab].Dir;
+            _selectedPath = "";
+            ApplyView(_tabs[_activeTab]);
             SaveTabs();
             RebuildTabs();
             RefreshGrid();
+            RestoreScroll(_tabs[_activeTab]);
         }
 
         // Directory listings are cached per dir — FileManager.GetFiles/
@@ -1249,7 +1565,7 @@ namespace Quest3TriggerUI
             _thumbJobs.Clear();
             _gridGen++;
             _pathText.text = "  " + (_dir.Length == 0 ? "(根目录)" : _dir);
-            _tabs[_activeTab] = _dir;
+            _tabs[_activeTab].Dir = _dir;
 
             string search = _searchInput != null ? _searchInput.text : "";
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -1756,6 +2072,17 @@ namespace Quest3TriggerUI
                 if (_fileNameInput != null)
                     _fileNameInput.text = it.FileName;
                 SetStatus("将覆盖: " + it.FileName);
+            }
+            else if (_pickMode)
+            {
+                // Pick mode (preset dock 新增): report the click but keep the
+                // browser open so the user can file several presets in a row;
+                // the close callback still arrives with closed=true.
+                Action<string, bool> cbf = _cbFull;
+                if (cbf != null)
+                    cbf(it.Path, false);
+                else
+                    Commit(it.Path);
             }
             else
             {
@@ -2948,7 +3275,7 @@ namespace Quest3TriggerUI
             if (_activeTab >= 0 && _activeTab < _tabs.Count &&
                 _dir.Length > 0)
             {
-                _tabs[_activeTab] = _dir;
+                _tabs[_activeTab].Dir = _dir;
                 SaveTabs();
                 RebuildTabs();
             }
@@ -3030,8 +3357,10 @@ namespace Quest3TriggerUI
 
         private void Close()
         {
-            _tabs[_activeTab] = _dir;
+            CaptureView(_tabs[_activeTab]);
             FlushTabs();
+            if (_targetPopup != null)
+                _targetPopup.SetActive(false);
             _pointerInside = false;
             ResetGesture();
             RestoreNavigation();
@@ -3103,10 +3432,22 @@ namespace Quest3TriggerUI
                 win.GetWorldCorners(corners);
                 Vector3 center = (corners[0] + corners[2]) * 0.5f;
                 _canvas.transform.SetParent(host, false);
+                float scaleMul = 1f;
+                if (_pickMode)
+                {
+                    // Preset-dock picking (左栏「新增」): shrink and shift
+                    // right so the left preset dock stays visible and
+                    // clickable while presets are filed into it.
+                    scaleMul = PickModeScale;
+                    float winW = win.rect.width * win.lossyScale.x;
+                    center += win.right * (winW * PickModeShift);
+                }
                 _canvas.transform.position = center;
                 _canvas.transform.rotation = win.rotation;
                 float ps = host.lossyScale.x;
-                float ls = ps > 1e-6f ? PanelScale / ps : PanelScale;
+                float ls = ps > 1e-6f
+                    ? PanelScale * scaleMul / ps
+                    : PanelScale * scaleMul;
                 _canvas.transform.localScale = new Vector3(ls, ls, ls);
                 return;
             }
@@ -3117,7 +3458,8 @@ namespace Quest3TriggerUI
             _canvas.transform.SetParent(anchor, false);
             _canvas.transform.localPosition = new Vector3(0f, 0f, PanelDistance);
             _canvas.transform.localRotation = Quaternion.identity;
-            _canvas.transform.localScale = Vector3.one * PanelScale;
+            _canvas.transform.localScale = Vector3.one * PanelScale *
+                (_pickMode ? PickModeScale : 1f);
         }
 
         // Hide the control panel visuals around this panel: deactivate every
@@ -3204,19 +3546,22 @@ namespace Quest3TriggerUI
             {
                 if (c == null || c == _canvas || !c.isActiveAndEnabled)
                     continue;
-                // Render mode / EventSystem / InputModule / name are all
-                // static per canvas — cache the verdict so the periodic
-                // sweep doesn't rescan every subtree each time.
+                // Our own panels must stay interactive — check by name
+                // BEFORE the verdict cache so a canvas hidden by an older
+                // payload build is still exempt.
+                string n = c.gameObject.name;
+                if (n == "Quest3 Radial Quick Menu" ||
+                    n == "Quest3 Full VR Keyboard" ||
+                    n == "Quest3 Preset Dock" ||
+                    c.transform.IsChildOf(_canvas.transform))
+                    continue;
+                // Render mode / EventSystem / InputModule are all static
+                // per canvas — cache the verdict so the periodic sweep
+                // doesn't rescan every subtree each time.
                 bool skip;
                 if (!_foreignSkip.TryGetValue(c, out skip))
                 {
-                    string n = c.gameObject.name;
-                    // Keep our own essentials usable: the radial menu and
-                    // an undocked keyboard must stay interactive.
                     skip = c.renderMode != RenderMode.WorldSpace ||
-                        c.transform.IsChildOf(_canvas.transform) ||
-                        n == "Quest3 Radial Quick Menu" ||
-                        n == "Quest3 Full VR Keyboard" ||
                         c.GetComponentInChildren<EventSystem>(true) != null ||
                         c.GetComponentInChildren<BaseInputModule>(true) !=
                             null;

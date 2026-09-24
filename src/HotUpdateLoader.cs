@@ -12,15 +12,18 @@ namespace Quest3TriggerUI.HotLoader
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui.hot-loader";
         public const string PluginName = "Quest 3 Trigger UI Hot Loader";
-        public const string PluginVersion = "1.0.0";
+        public const string PluginVersion = "1.1.0";
         private const string PayloadFileName = "Quest3TriggerUI.payload.dll.disabled";
         private const string RuntimeTypeName = "Quest3TriggerUI.Quest3TriggerUIPlugin";
+        private const string RuntimeLeafName = "Quest3TriggerUIPlugin";
+        private const string RuntimeNamespacePrefix = "Quest3TriggerUI";
         private const float PollSeconds = 0.50f;
 
         private string _payloadPath;
         private MonoBehaviour _runtime;
         private Type _runtimeType;
         private string _loadedHash;
+        private string _failedHash;
         private long _observedLength = -1;
         private long _observedWriteTicks = -1;
         private int _stableObservations;
@@ -92,7 +95,7 @@ namespace Quest3TriggerUI.HotLoader
                     string fn = t.FullName ?? "?";
                     int n;
                     payloadTypes[fn] = payloadTypes.TryGetValue(fn, out n) ? n + 1 : 1;
-                    if (fn == RuntimeTypeName && !ReferenceEquals(b, _runtime))
+                    if (IsRuntimeComponentName(fn) && !ReferenceEquals(b, _runtime))
                     {
                         Logger.LogWarning("[Hot Loader] destroying stale runtime asm=" +
                             t.Assembly.GetHashCode() + " on '" +
@@ -117,19 +120,69 @@ namespace Quest3TriggerUI.HotLoader
             }
         }
 
+        private static bool IsRuntimeComponentName(string fullName)
+        {
+            if (String.IsNullOrEmpty(fullName)) return false;
+            if (fullName == RuntimeTypeName) return true;
+            // Versioned payloads live under Quest3TriggerUI.v<tag>; match
+            // "Quest3TriggerUI*.Quest3TriggerUIPlugin".
+            return fullName.EndsWith("." + RuntimeLeafName) &&
+                fullName.StartsWith(RuntimeNamespacePrefix + ".");
+        }
+
+        private static bool IsRuntimeCandidate(Type t)
+        {
+            return t != null && t.Name == RuntimeLeafName &&
+                t.Namespace != null &&
+                (t.Namespace == RuntimeNamespacePrefix ||
+                    t.Namespace.StartsWith(RuntimeNamespacePrefix + ".")) &&
+                typeof(MonoBehaviour).IsAssignableFrom(t);
+        }
+
+        // Versioned-namespace payloads (Quest3TriggerUI.v<tag>.Quest3TriggerUIPlugin)
+        // exist so Unity's script-class registry never sees a duplicate full
+        // name: every build registers a fresh component class and the new code
+        // actually runs. Prefer a versioned type over the legacy-name bridge
+        // shim; fall back to the flat name for pre-versioning payloads.
+        private static Type ResolveRuntimeType(Assembly assembly)
+        {
+            Type versioned = null;
+            Type legacy = null;
+            Type[] types;
+            try { types = assembly.GetTypes(); }
+            catch (ReflectionTypeLoadException e) { types = e.Types; }
+            if (types != null)
+            {
+                for (int i = 0; i < types.Length; i++)
+                {
+                    Type t = types[i];
+                    if (!IsRuntimeCandidate(t)) continue;
+                    if (t.Namespace == RuntimeNamespacePrefix) legacy = t;
+                    else if (versioned == null ||
+                        String.CompareOrdinal(t.FullName, versioned.FullName) > 0)
+                        versioned = t;
+                }
+            }
+            Type found = versioned ?? legacy;
+            if (found == null)
+                throw new InvalidOperationException(
+                    "No " + RuntimeLeafName + " MonoBehaviour found under the " +
+                    RuntimeNamespacePrefix + " namespace.");
+            return found;
+        }
+
         private void TryLoadPayload(bool initialLoad)
         {
             try
             {
                 byte[] bytes = File.ReadAllBytes(_payloadPath);
                 string hash = ComputeHash(bytes);
-                if (String.Equals(hash, _loadedHash, StringComparison.Ordinal))
+                if (String.Equals(hash, _loadedHash, StringComparison.Ordinal) ||
+                    String.Equals(hash, _failedHash, StringComparison.Ordinal))
                     return;
 
                 Assembly assembly = Assembly.Load(bytes);
-                Type nextType = assembly.GetType(RuntimeTypeName, true);
-                if (!typeof(MonoBehaviour).IsAssignableFrom(nextType))
-                    throw new InvalidOperationException(RuntimeTypeName + " is not a MonoBehaviour.");
+                Type nextType = ResolveRuntimeType(assembly);
 
                 Type previousType = _runtimeType;
                 if (_runtime != null)
@@ -180,10 +233,12 @@ namespace Quest3TriggerUI.HotLoader
                 _observedLength = file.Length;
                 _observedWriteTicks = file.LastWriteTimeUtc.Ticks;
                 Logger.LogInfo((initialLoad ? "Loaded" : "Hot-reloaded") +
-                    " Quest3TriggerUI payload SHA256=" + hash + ".");
+                    " Quest3TriggerUI payload SHA256=" + hash +
+                    " active=" + _runtimeType.FullName + ".");
             }
             catch (Exception exception)
             {
+                _failedHash = ComputeHash(File.ReadAllBytes(_payloadPath));
                 Logger.LogError("Quest3TriggerUI payload update failed; previous runtime restored: " + exception);
             }
         }

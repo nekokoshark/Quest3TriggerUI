@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.172";
+        public const string PluginVersion = "4.6.196";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -57,6 +57,9 @@ namespace Quest3TriggerUI
         private ConfigEntry<int> _physicsHairCollEntry;
         private ConfigEntry<float> _physicsClothScaleEntry;
         private ConfigEntry<int> _physicsClothOffEntry;
+        private ConfigEntry<bool> _memSnapshotEntry;
+        private float _cfgWatchT;
+        private DateTime _cfgLastWrite;
         private int _handledToggleFrame = -1;
         private int _handledRecenterFrame = -1;
         private int _targetedInputSelfTestPhase;
@@ -338,6 +341,21 @@ namespace Quest3TriggerUI
                 "Preheat", "PreClonePersons", true,
                 "Experimental: after the scene preheat realizes prefabs, also pre-Instantiate dormant clones of the scene's Person atoms (measured ~10s and ~100MB each, paid while browsing instead of during the load) and let scene atom creation adopt them via AddAtom's native no-instantiate path. false = preheat only realizes assets.");
             AtomClonePool.Enabled = preClonePersons.Value;
+            AudioCacheJanitor.Enabled = Config.Bind(
+                "Audio", "CacheEviction", true,
+                "Evict audio clips that no AudioSource has referenced for CacheGraceSeconds — VaM caches every decoded clip forever in URLAudioClipManager/EmbeddedAudioClipManager (~2GB observed). Evicted URL clips re-decode lazily if needed again.");
+            AudioCacheJanitor.GraceSeconds = Config.Bind(
+                "Audio", "CacheGraceSeconds", 180f,
+                "Seconds a clip may stay unreferenced before the audio cache janitor evicts it.");
+            AudioCacheJanitor.IncludeEmbedded = Config.Bind(
+                "Audio", "CacheEvictEmbedded", false,
+                "Also evict EmbeddedAudioClipManager clips (bigger pool; embedded clip data may not be re-loadable until VaM restarts — off by default).");
+            AudioCacheJanitor.EvictNow = Config.Bind(
+                "Diagnostics", "AudioCacheEvictNow", false,
+                "One-shot: evict all currently-unreferenced audio clips immediately (ignores grace window), then resets to false.");
+            _memSnapshotEntry = Config.Bind(
+                "Diagnostics", "MemorySnapshot", false,
+                "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
 
             Instance = this;
             Log = Logger;
@@ -407,9 +425,20 @@ namespace Quest3TriggerUI
             for (int i = 0; i < behaviours.Length; i++)
             {
                 MonoBehaviour candidate = behaviours[i];
-                if (candidate == null || ReferenceEquals(candidate, this) ||
-                    candidate.GetType().FullName != GetType().FullName)
+                if (candidate == null || ReferenceEquals(candidate, this))
                     continue;
+                Type t = candidate.GetType();
+                // Versioned payloads name the runtime
+                // Quest3TriggerUI.v<tag>.Quest3TriggerUIPlugin; byte-loaded
+                // duplicates of any generation must die, including the
+                // legacy flat-name class and the same-name bridge shim
+                // emitted by other assemblies.
+                if (t.Name != "Quest3TriggerUIPlugin" || t.Namespace == null ||
+                    !t.Namespace.StartsWith("Quest3TriggerUI") ||
+                    t.Assembly == GetType().Assembly)
+                    continue;
+                try { if (!string.IsNullOrEmpty(t.Assembly.Location)) continue; }
+                catch { }
 
                 UnityEngine.Object.DestroyImmediate(candidate);
                 removed++;
@@ -483,7 +512,37 @@ namespace Quest3TriggerUI
 
             HairPerfProbe.Tick();
             AtomClonePool.Tick();
+            // Config file self-watch: the hot-loaded payload can't rely on
+            // BepInEx's FileSystemWatcher (observed not firing for live
+            // edits), so poll the cfg mtime and scan the flag directly —
+            // no dependence on Config.Reload() working in this context.
+            _cfgWatchT -= Time.unscaledDeltaTime;
+            if (_cfgWatchT <= 0f)
+            {
+                _cfgWatchT = 0.5f;
+                try
+                {
+                    DateTime mtime = System.IO.File.GetLastWriteTimeUtc(
+                        Config.ConfigFilePath);
+                    if (mtime != _cfgLastWrite)
+                    {
+                        bool first = _cfgLastWrite == DateTime.MinValue;
+                        _cfgLastWrite = mtime;
+                        if (!first)
+                            Logger.LogInfo(
+                                "[MemProbe] cfg mtime changed, scanning flag");
+                        CheckMemorySnapshotFlag();
+                    }
+                }
+                catch { }
+            }
+            if (_memSnapshotEntry != null && _memSnapshotEntry.Value)
+            {
+                _memSnapshotEntry.Value = false;
+                MemoryProbe.Dump();
+            }
             AudioDeviceFollower.Tick();
+            AudioCacheJanitor.Tick();
 
             if (!InputRuntimeActive || SuperController.singleton == null)
                 return;
@@ -585,6 +644,43 @@ namespace Quest3TriggerUI
                 _handledRecenterFrame = frame;
                 _keyboard.Recenter();
                 Logger.LogInfo("VR keyboard recentered by left+right grip tap.");
+            }
+        }
+
+        // Reads the trigger flag straight from the cfg text: if a live
+        // edit set MemorySnapshot=true, dump and write the flag back to
+        // false so it is one-shot. Encoding/BOM preserved.
+        private void CheckMemorySnapshotFlag()
+        {
+            try
+            {
+                string path = Config.ConfigFilePath;
+                byte[] raw = System.IO.File.ReadAllBytes(path);
+                string text = System.Text.Encoding.UTF8.GetString(raw);
+                bool snap = text.Contains("MemorySnapshot = true");
+                bool evict = text.Contains("AudioCacheEvictNow = true");
+                if (!snap && !evict)
+                {
+                    Logger.LogInfo("[MemProbe] flag not set in cfg");
+                    return;
+                }
+                text = text.Replace(
+                    "MemorySnapshot = true", "MemorySnapshot = false");
+                text = text.Replace(
+                    "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
+                // GetBytes re-emits the BOM because the decoded string
+                // still carries the \uFEFF character.
+                System.IO.File.WriteAllBytes(
+                    path, System.Text.Encoding.UTF8.GetBytes(text));
+                _cfgLastWrite =
+                    System.IO.File.GetLastWriteTimeUtc(path);
+                if (snap) MemoryProbe.Dump();
+                if (evict) AudioCacheJanitor.SweepNow();
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("MemorySnapshot flag check failed: " +
+                    ex.Message);
             }
         }
 
@@ -928,8 +1024,8 @@ namespace Quest3TriggerUI
                 GameObject pressLookRight = VrPointerPresentation.CurrentLookTarget(true);
                 GameObject pressLookLeft = VrPointerPresentation.CurrentLookTarget(false);
                 ClothingDragCandidate =
-                    UiAssistHudLink.BeginFavoriteCandidate(pressLookRight) ??
-                    UiAssistHudLink.BeginFavoriteCandidate(pressLookLeft);
+                    UiAssistHudLink.BeginFavoriteCandidate(pressLookRight, true) ??
+                    UiAssistHudLink.BeginFavoriteCandidate(pressLookLeft, false);
                 if (ClothingDragCandidate == null)
                     UiAssistHudLink.LogPressMiss(pressLookRight, pressLookLeft);
             }
@@ -1313,8 +1409,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
-
 
 
 

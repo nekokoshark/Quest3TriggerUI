@@ -2155,7 +2155,8 @@ namespace Quest3TriggerUI
                     if (fr == null) continue;
                     MethodBase mi = fr.GetMethod();
                     if (mi == null || mi.DeclaringType == null) continue;
-                    if (mi.DeclaringType.Namespace == "Quest3TriggerUI")
+                    if (mi.DeclaringType.Namespace != null &&
+                        mi.DeclaringType.Namespace.StartsWith("Quest3TriggerUI"))
                         continue;
                     if (mi.Name == "Resync" || mi.Name == "ResyncUI" ||
                         mi.Name == "ResyncItems") continue;

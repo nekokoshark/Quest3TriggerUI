@@ -355,9 +355,10 @@ internal void OpenPersonPreset()
             VrPresetBrowser.ShowDialogFull("加载皮肤预设", PluginPaths.SkinPresetDir,
                 "vap", false, null,
                 delegate(string path, bool didClose) {
-                    if (target != null && !string.IsNullOrEmpty(path))
-                        LoadSkinPreset(target, path);
-                });
+                    Atom t = VrPresetBrowser.LoadTarget ?? target;
+                    if (t != null && !string.IsNullOrEmpty(path))
+                        LoadSkinPreset(t, path);
+                }, loadTarget: target);
         }
 
         // Same unified model as hair: a pure skin .vap IS a skin-only preset,
@@ -384,9 +385,10 @@ internal void OpenPersonPreset()
             VrPresetBrowser.ShowDialogFull("加载头发预设", PluginPaths.HairPresetDir,
                 "vap", false, null,
                 delegate(string path, bool didClose) {
-                    if (target != null && !string.IsNullOrEmpty(path))
-                        LoadHairPreset(target, path);
-                });
+                    Atom t = VrPresetBrowser.LoadTarget ?? target;
+                    if (t != null && !string.IsNullOrEmpty(path))
+                        LoadHairPreset(t, path);
+                }, loadTarget: target);
         }
 
         // Unified hair load: a pure hair .vap IS a hair-only section, so the
@@ -397,16 +399,16 @@ internal void OpenPersonPreset()
             LoadExtractedPreset(target, path, "HairPresets", "Hair preset",
                 delegate(JSONClass source) {
                     return ExtractSectionPreset(source, "hair");
-                });
+                }, true);
         }
 
         // Shared spine of the section loads: read the picked .vap, shrink it
         // to one section's storables, then feed that JSON straight into the
         // section's own PresetManager — presetBrowsePath points at the source
         // file first so relative/package refs inside the section resolve.
-        private void LoadExtractedPreset(Atom target, string path,
+        internal void LoadExtractedPreset(Atom target, string path,
             string managerId, string label,
-            Func<JSONClass, JSONClass> extract)
+            Func<JSONClass, JSONClass> extract, bool nativeFile = false)
         {
             if (_appearanceLoadBusy)
             {
@@ -419,6 +421,7 @@ internal void OpenPersonPreset()
             JSONStorableBool auto = null;
             bool oldAuto = false, oldLock = false;
             string oldPath = null;
+            string tempPath = null;
             try
             {
                 string text = FileManager.ReadAllText(path, false);
@@ -447,9 +450,36 @@ internal void OpenPersonPreset()
                 oldPath = url.val;
                 auto.val = false;
                 ctl.lockParams = false;
-                url.val = SuperController.singleton.NormalizePath(path);
-                pm.LoadPresetFromJSON(extracted, false);
-                LogInfo(label + " applied: " + path);
+                if (nativeFile)
+                {
+                    // Sections that stream asset bundles (hair) misbehave
+                    // when injected via LoadPresetFromJSON — the first apply
+                    // lands before the bundle is ready. Routing the same
+                    // JSON through a temp .vap and the manager's native
+                    // path-load makes VaM's own async pipeline handle it,
+                    // exactly like picking the file in the stock UI.
+                    tempPath = TempSectionPresetPath(pm);
+                    File.WriteAllText(tempPath, extracted.ToString(),
+                        new System.Text.UTF8Encoding(false));
+                    if (string.IsNullOrEmpty(pm.GetPresetNameFromFilePath(tempPath)))
+                        throw new InvalidOperationException("native preset path rejected: " + tempPath);
+                    if (ctl.GetPresetFilePathAction("LoadPresetWithPath")
+                        != null)
+                        ctl.CallPresetFileAction(
+                            "LoadPresetWithPath", tempPath);
+                    else
+                    {
+                        url.val = SuperController.singleton.NormalizePath(
+                            tempPath);
+                        ctl.CallAction("LoadPreset");
+                    }
+                }
+                else
+                {
+                    url.val = SuperController.singleton.NormalizePath(path);
+                    pm.LoadPresetFromJSON(extracted, false);
+                }
+                LogInfo(label + " load dispatched: " + path);
             }
             catch (Exception exception)
             {
@@ -460,8 +490,24 @@ internal void OpenPersonPreset()
                 if (url != null) url.val = oldPath;
                 if (auto != null) auto.val = oldAuto;
                 if (ctl != null) ctl.lockParams = oldLock;
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
                 _appearanceLoadBusy = false;
             }
+        }
+
+        // Native managers validate both their store directory and filename
+        // prefix. A person-preset directory is not valid for HairPresets.
+        private static string TempSectionPresetPath(MeshVR.PresetManager pm)
+        {
+            string dir = pm.GetStoreFolderPath(false);
+            dir = dir.Replace('\\', '/').TrimEnd('/');
+            Directory.CreateDirectory(dir);
+            return dir + "/" + pm.storeName + "_q3tmp_" +
+                Guid.NewGuid().ToString("N") + ".vap";
         }
 
         internal void SaveAppearancePreset()
@@ -510,15 +556,97 @@ internal void OpenPersonPreset()
             VrPresetBrowser.ShowDialogFull("加载眼睛预设", PluginPaths.EyePresetDir,
                 "vap", false, null,
                 delegate(string path, bool didClose) {
-                    if (target != null && !string.IsNullOrEmpty(path))
-                        LoadEyePreset(target, path);
-                });
+                    Atom t = VrPresetBrowser.LoadTarget ?? target;
+                    if (t != null && !string.IsNullOrEmpty(path))
+                        LoadEyePreset(t, path);
+                }, loadTarget: target);
         }
 
+        // Direct per-storable restore: AppearancePresets.LoadPresetFromJSON
+        // would run the whole person-scale pipeline (defaults preload,
+        // dynamic storable refresh, 4-phase sweep over ~110 storables) just
+        // to change 3 material storables. Mirroring the manager's own
+        // storable-level sequence keeps the restore semantics identical at
+        // a fraction of the cost.
         private void LoadEyePreset(Atom target, string path)
         {
-            LoadExtractedPreset(target, path, "AppearancePresets",
-                "Eye preset", ExtractEyePreset);
+            if (_appearanceLoadBusy)
+            {
+                LogError("Eye preset: a preset load is already running.");
+                return;
+            }
+            _appearanceLoadBusy = true;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                string text = FileManager.ReadAllText(path, false);
+                if (string.IsNullOrEmpty(text))
+                    throw new InvalidOperationException(
+                        "preset file is unreadable: " + path);
+                JSONClass eyeJson =
+                    ExtractEyePreset(JSON.Parse(text).AsObject);
+                if (eyeJson == null)
+                    throw new InvalidOperationException(
+                        "preset has no eye section: " + path);
+
+                JSONArray storables = eyeJson["storables"].AsArray;
+                int applied = 0;
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass sub = storables[i].AsObject;
+                    if (sub == null) continue;
+                    string id = sub["id"].Value;
+                    JSONStorable storable = target.GetStorableByID(id);
+                    if (storable == null) continue;
+                    try
+                    {
+                        RestoreEyeStorable(storable, sub);
+                        applied++;
+                    }
+                    catch (Exception storableEx)
+                    {
+                        LogError("Exception during eye Restore of " + id +
+                            ": " + storableEx);
+                    }
+                }
+                if (applied == 0)
+                    throw new InvalidOperationException(
+                        "target Person exposes no eye storables.");
+                LogInfo("Eye preset applied (" + applied + " storables, " +
+                    sw.ElapsedMilliseconds + "ms): " + path);
+            }
+            catch (Exception exception)
+            {
+                LogError("Eye preset load failed: " + exception);
+            }
+            finally
+            {
+                _appearanceLoadBusy = false;
+            }
+        }
+
+        // Mirrors PresetManager's per-storable Pre/Restore/Late/Post calls.
+        // includePhysical+includeAppearance=true matches an appearance-scale
+        // restore; setUnlisted=false since we only carry the stored params.
+        private static void RestoreEyeStorable(
+            JSONStorable storable, JSONClass json)
+        {
+            storable.isPresetRestore = true;
+            storable.mergeRestore = false;
+            try
+            {
+                storable.PreRestore();
+                storable.PreRestore(true, true);
+                storable.RestoreFromJSON(json, true, true, null, false);
+                storable.LateRestoreFromJSON(json, true, true, false);
+                storable.PostRestore();
+                storable.PostRestore(true, true);
+            }
+            finally
+            {
+                storable.mergeRestore = false;
+                storable.isPresetRestore = false;
+            }
         }
 
         internal void SaveEyePreset()
@@ -1935,37 +2063,29 @@ internal void OpenPersonPreset()
                 return;
             }
 
-            JSONStorableActionPresetFilePath loadAction =
-                appearancePresets.GetPresetFilePathAction("LoadPresetWithPath");
-            if (loadAction == null)
-            {
-                LogError("Appearance preset: native .vap browser action is unavailable.");
-                return;
-            }
-
-            // Browse uses a separate JSONStorableUrl which suppresses callbacks
-            // when the same path is selected again. Reset only its selected value,
-            // not the remembered directory, before presenting the native browser.
-            JSONStorableUrl browserSelection = GetMemberValue(
-                loadAction.GetType(), loadAction, "url") as JSONStorableUrl;
-            if (browserSelection == null)
-            {
-                LogError("Appearance preset: native browser selection URL is unavailable.");
-                return;
-            }
-            browserSelection.valNoCallback = string.Empty;
-
-            loadAction.Browse(
-                delegate(string path)
+            // Open our browser directly (instead of loadAction.Browse →
+            // FileBrowser takeover) so the header target dropdown knows
+            // this dialog's person and can retarget the load.
+            string title = storeClothing ? "选择写入服装的人物预设"
+                : clothingOnly ? "加载服装预设"
+                : keepCurrentClothing ? "加载外观预设" : "加载人物预设";
+            string dir = clothingOnly
+                ? PluginPaths.ClothingPresetDir
+                : PluginPaths.AppearancePresetDir;
+            VrPresetBrowser.ShowDialogFull(title, dir, "vap", false, null,
+                delegate(string path, bool didClose)
                 {
+                    if (string.IsNullOrEmpty(path)) return;
                     if (storeClothing)
                     {
                         StoreSectionIntoPreset(target, path, "clothing");
                         return;
                     }
-                    LoadAppearancePreset(target, path, keepCurrentClothing,
-                        clothingOnly);
-                });
+                    LoadAppearancePreset(
+                        VrPresetBrowser.LoadTarget ?? target, path,
+                        keepCurrentClothing, clothingOnly);
+                },
+                loadTarget: storeClothing ? null : target);
         }
 
         private void LoadAppearancePreset(Atom target, string path,
@@ -2073,7 +2193,7 @@ internal void OpenPersonPreset()
         private static readonly string[] SkinStorableIds =
             { "skin", "textures", "teeth", "tongue", "mouth" };
 
-        private static JSONClass ExtractSkinPreset(JSONClass source)
+        internal static JSONClass ExtractSkinPreset(JSONClass source)
         {
             JSONArray storables = source == null
                 ? null
@@ -2234,7 +2354,7 @@ internal void OpenPersonPreset()
                 true, "skin");
         }
 
-        private static JSONClass ExtractSectionPreset(JSONClass personPreset,
+        internal static JSONClass ExtractSectionPreset(JSONClass personPreset,
             string sectionKey)
         {
             JSONArray storables = personPreset == null
@@ -2436,7 +2556,7 @@ internal void OpenPersonPreset()
 
         // 0 = not a usable target, 1 = section-only preset (e.g. a pure hair
         // preset whose geometry carries just its own list), 2 = person preset.
-        private static int ClassifyPresetFile(string path, string sectionKey)
+        internal static int ClassifyPresetFile(string path, string sectionKey)
         {
             try
             {
@@ -2469,7 +2589,7 @@ internal void OpenPersonPreset()
             return 0;
         }
 
-        private void LoadFullAppearancePreset(
+        internal void LoadFullAppearancePreset(
             Atom target, JSONStorable appearancePresets, string path)
         {
             if (_appearanceLoadBusy)
@@ -2544,7 +2664,7 @@ internal void OpenPersonPreset()
             }
         }
 
-        private void LoadAppearanceWithoutClothing(
+        internal void LoadAppearanceWithoutClothing(
             Atom target, JSONStorable appearancePresets, string path)
         {
             _appearanceLoadBusy = true;
@@ -2970,8 +3090,6 @@ internal void OpenPersonPreset()
         }
     }
 }
-
-
 
 
 
