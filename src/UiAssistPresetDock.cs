@@ -43,11 +43,13 @@ namespace Quest3TriggerUI
         private const int PdTabCount = 5;
         private const float PdStripW = 96f;
         private const float PdNameH = 18f;
+        // The translucent caption overlays the thumbnail's bottom edge, so
+        // cells stay one name-strip shorter than the favorites grid.
+        private const float PdCellH = FavCellH - PdNameH;
+        private const float PdGridH = PdCellH * FavRows + FavSpacing * (FavRows - 1) + FavPad * 2f;
 
         private static RectTransform _pdDock, _pdCells, _pdTabStrip;
         private static Canvas _pdCanvas;
-        private static GameObject _pdNav;
-        private static Text _pdPageText;
         private static readonly Image[] _pdTabBgs = new Image[PdTabCount];
         private static readonly RectTransform[] _pdTabRects =
             new RectTransform[PdTabCount];
@@ -56,7 +58,7 @@ namespace Quest3TriggerUI
         private static bool _pdPicking;
         private static readonly List<string>[] _pdSlots =
             new List<string>[PdTabCount];
-        private static int _pdTab, _pdPage, _pdPages;
+        private static int _pdTab;
         private static bool _pdDirty = true, _pdLoaded, _pdPositionLogged;
         private static float _pdListHeight;
         private static GameObject _pdList;
@@ -103,6 +105,9 @@ namespace Quest3TriggerUI
         {
             internal string Path;
             internal RawImage Thumb;
+            // Slot background — scroll visibility toggles this off so a
+            // masked cell outside the viewport can't catch a laser hit.
+            internal Image Bg;
         }
         // Marks the 替换/外观 mini-button overlay so the press pipeline's
         // drag-source resolver does not treat a tap on it as grabbing the
@@ -144,17 +149,29 @@ namespace Quest3TriggerUI
                 // list); the tab strip takes the outer left edge — the
                 // mirror image of the favorites bar's [cells|tags] layout.
                 CreatePdTabStrip();
+                // Cells live in a masked viewport — same scroll model as
+                // the favorites bar (anchoredPosition.y is the offset).
+                GameObject viewGo = new GameObject("View",
+                    typeof(RectTransform));
+                _pdView = (RectTransform)viewGo.transform;
+                _pdView.SetParent(_pdDock, false);
+                _pdView.anchorMin = new Vector2(0f, 1f);
+                _pdView.anchorMax = new Vector2(0f, 1f);
+                _pdView.pivot = new Vector2(0f, 1f);
+                _pdView.anchoredPosition = new Vector2(
+                    FavTagGap + PdStripW, -FavPad);
+                _pdView.sizeDelta = new Vector2(FavColW, PdGridH);
+                viewGo.AddComponent<RectMask2D>();
                 GameObject cellsGo = new GameObject("Cells",
                     typeof(RectTransform));
                 _pdCells = (RectTransform)cellsGo.transform;
-                _pdCells.SetParent(_pdDock, false);
+                _pdCells.SetParent(_pdView, false);
                 _pdCells.anchorMin = new Vector2(0f, 1f);
                 _pdCells.anchorMax = new Vector2(0f, 1f);
                 _pdCells.pivot = new Vector2(0f, 1f);
-                _pdCells.anchoredPosition = new Vector2(
-                    FavTagGap + PdStripW, -FavPad);
+                _pdCells.anchoredPosition = Vector2.zero;
                 GridLayoutGroup grid = cellsGo.AddComponent<GridLayoutGroup>();
-                grid.cellSize = new Vector2(FavCellW, FavCellH);
+                grid.cellSize = new Vector2(FavCellW, PdCellH);
                 grid.spacing = new Vector2(FavSpacing, FavSpacing);
                 grid.padding = new RectOffset((int)FavPad, (int)FavPad,
                     0, (int)FavPad);
@@ -162,7 +179,9 @@ namespace Quest3TriggerUI
                 grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
                 grid.constraintCount = FavColumns;
                 cellsGo.AddComponent<PdDockTag>();
-                CreatePdNav();
+                CreateDockScrollbar(_pdDock,
+                    FavTagGap + PdStripW + FavColW, -FavPad, PdGridH,
+                    out _pdScrollTrack, out _pdScrollThumb);
 
                 SuperController.singleton.AddCanvas(_pdCanvas);
                 _pdDirty = true;
@@ -182,7 +201,11 @@ namespace Quest3TriggerUI
             _dockDeleteMode = false;
             _dockDeleteButton = null;
             _dockDeleteLabel = null;
-            _pdPageTargets.Clear();
+            _pdScrollY = 0f;
+            _pdContentH = 0f;
+            _pdView = null;
+            _pdScrollTrack = null;
+            _pdScrollThumb = null;
             _pdAtom = null;
             _pdList = null;
             _pdPositionLogged = false;
@@ -193,8 +216,6 @@ namespace Quest3TriggerUI
                 catch { }
             }
             _pdCanvas = null;
-            _pdNav = null;
-            _pdPageText = null;
             _pdTabStrip = null;
             for (int i = 0; i < PdTabCount; i++)
             {
@@ -264,6 +285,7 @@ namespace Quest3TriggerUI
                 RebuildPdCells();
                 _pdDirty = false;
             }
+            TickDockScroll(false);
             TickPdThumbnails();
         }
 
@@ -509,9 +531,9 @@ namespace Quest3TriggerUI
             }
             if (added == 0) return 0;
             SavePdSlots();
+            // Newly filed entries land at the end — scroll to them.
             if (tab == _pdTab)
-                _pdPage = Mathf.Max(0,
-                    Mathf.CeilToInt(slots.Count / (float)PdPageCapacity) - 1);
+                _pdScrollY = float.MaxValue;
             // Dropped onto another tab's row — switch to it so the result
             // is visible (PdSelectTab no-ops when it is the active tab).
             PdSelectTab(tab);
@@ -523,109 +545,9 @@ namespace Quest3TriggerUI
         {
             if (idx == _pdTab) return;
             _pdTab = idx;
-            _pdPage = 0;
+            _pdScrollY = 0f;
             PdPaintTabs();
             _pdDirty = true;
-        }
-
-        // Bottom ◀ n/m ▶ row centered under the cells column, only visible
-        // when the tab overflows one page — same as the favorites bar's
-        // FavNav.
-        private static void CreatePdNav()
-        {
-            GameObject nav = new GameObject("PdNav", typeof(RectTransform));
-            RectTransform navRect = (RectTransform)nav.transform;
-            navRect.SetParent(_pdDock, false);
-            navRect.anchorMin = new Vector2(1f, 0f);
-            navRect.anchorMax = new Vector2(1f, 0f);
-            navRect.pivot = new Vector2(0.5f, 0f);
-            navRect.anchoredPosition = new Vector2(-FavColW * 0.5f, 4f);
-            navRect.sizeDelta = new Vector2(190f, FavNavH);
-            nav.AddComponent<PdDockTag>();
-
-            CreatePdNavButton(navRect, "◀", -72f, -1,
-                delegate { PdPageStep(-1); });
-            CreatePdNavButton(navRect, "▶", 72f, 1,
-                delegate { PdPageStep(1); });
-
-            GameObject textGo = new GameObject("Page", typeof(RectTransform));
-            RectTransform textRect = (RectTransform)textGo.transform;
-            textRect.SetParent(navRect, false);
-            textRect.anchorMin = new Vector2(0.5f, 0.5f);
-            textRect.anchorMax = new Vector2(0.5f, 0.5f);
-            textRect.anchoredPosition = Vector2.zero;
-            textRect.sizeDelta = new Vector2(90f, FavNavH);
-            _pdPageText = textGo.AddComponent<Text>();
-            _pdPageText.alignment = TextAnchor.MiddleCenter;
-            _pdPageText.fontSize = 20;
-            _pdPageText.color = new Color(1f, 1f, 1f, 0.8f);
-            _pdPageText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            _pdPageText.raycastTarget = false;
-            _pdPageText.text = "1/1";
-
-            _pdNav = nav;
-            nav.SetActive(false);
-        }
-
-        private static void CreatePdNavButton(
-            RectTransform parent, string label, float x, int dir,
-            UnityEngine.Events.UnityAction action)
-        {
-            GameObject go = new GameObject("Nav " + label,
-                typeof(RectTransform));
-            RectTransform rect = (RectTransform)go.transform;
-            rect.SetParent(parent, false);
-            rect.anchorMin = new Vector2(0.5f, 0.5f);
-            rect.anchorMax = new Vector2(0.5f, 0.5f);
-            rect.anchoredPosition = new Vector2(x, 0f);
-            rect.sizeDelta = new Vector2(46f, FavNavH - 4f);
-            FavoritePageTarget target = go.AddComponent<FavoritePageTarget>();
-            target.Direction = dir;
-            _pdPageTargets.Add(target);
-            Image bg = go.AddComponent<Image>();
-            bg.color = new Color(0.11f, 0.38f, 0.48f, 1f);
-            Button button = go.AddComponent<Button>();
-            button.targetGraphic = bg;
-            button.onClick.AddListener(delegate
-            {
-                // A drag release landing on the button must not also fire
-                // a page step on top of the drop commit.
-                if (Quest3TriggerUIPlugin.ClothingDragActive ||
-                    Time.unscaledTime < _favoriteClickAfter) return;
-                VrHaptics.Press();
-                action();
-            });
-            Text text = new GameObject("Label", typeof(RectTransform))
-                .AddComponent<Text>();
-            RectTransform tr = (RectTransform)text.transform;
-            tr.SetParent(rect, false);
-            tr.anchorMin = Vector2.zero;
-            tr.anchorMax = Vector2.one;
-            tr.offsetMin = Vector2.zero;
-            tr.offsetMax = Vector2.zero;
-            text.text = label;
-            text.alignment = TextAnchor.MiddleCenter;
-            text.fontSize = 20;
-            text.color = Color.white;
-            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            text.raycastTarget = false;
-        }
-
-        private static void PdPageStep(int delta)
-        {
-            if (_pdPages <= 1) return;
-            int page = Mathf.Clamp(_pdPage + delta, 0, _pdPages - 1);
-            if (page == _pdPage) return;
-            _pdPage = page;
-            _pdDirty = true;
-        }
-
-        // Same capacity formula as the favorites bar: the nav row sits below
-        // the cells (the dock grows one nav-row taller when paging) instead
-        // of stealing a cell row.
-        private static int PdPageCapacity
-        {
-            get { return FavPageSize; }
         }
 
         private static void RebuildPdCells()
@@ -636,31 +558,25 @@ namespace Quest3TriggerUI
             _pdCellPosition = 0;
             List<string> slots = PdDisplaySlots();
             int count = slots.Count;
-            int capacity = PdPageCapacity;
-            bool nav = count > capacity;
-            _pdPages = Mathf.Max(1,
-                Mathf.CeilToInt(count / (float)capacity));
-            _pdPage = Mathf.Clamp(_pdPage, 0, _pdPages - 1);
-            int start = _pdPage * capacity;
-            int end = Mathf.Min(count, start + capacity);
-            for (int i = start; i < end; i++)
+            // All entries get a cell — the viewport mask + scroll offset do
+            // the slicing now, and path-keyed reuse keeps rebuilds cheap.
+            for (int i = 0; i < count; i++)
                 CreatePdSlot(slots[i]);
             if (count == 0)
                 CreatePdHintSlot();
             FinishPdCells();
-            if (_pdNav != null && _pdNav.activeSelf != nav)
-                _pdNav.SetActive(nav);
-            if (nav && _pdPageText != null)
-                _pdPageText.text = (_pdPage + 1) + "/" + _pdPages;
-            float cellsH = FavGridH;
-            _pdCells.sizeDelta = new Vector2(FavColW, cellsH);
-            // Dock: [left-edge tab strip][cells] horizontally, cells + nav row
-            // vertically — the exact mirror of the favorites bar.
+            int rows = Mathf.CeilToInt(count / (float)FavColumns);
+            _pdContentH = rows > 0
+                ? rows * PdCellH + (rows - 1) * FavSpacing + FavPad
+                : FavPad;
+            _pdCells.sizeDelta = new Vector2(FavColW, _pdContentH);
+            ApplyDockScroll(false, _pdScrollY);
+            // Dock: [left-edge tab strip][cells viewport] — fixed grid height,
+            // the scroll offset replaces the old bottom nav row.
             float stripNeed = _pdTabStrip == null ? 0f
                 : _pdTabStrip.sizeDelta.y + FavPad * 2f;
             _pdDock.sizeDelta = new Vector2(FavTagGap + PdStripW + FavColW,
-                Mathf.Max(64f, Mathf.Max(
-                    cellsH + (nav ? FavNavH + 4f : 0f), stripNeed)));
+                Mathf.Max(64f, Mathf.Max(PdGridH, stripNeed)));
         }
 
         // Empty-tab placeholder, mirroring the favorites bar's FavHint cell.
@@ -706,7 +622,7 @@ namespace Quest3TriggerUI
             tr.anchorMin = Vector2.zero;
             tr.anchorMax = Vector2.one;
             tr.offsetMin = Vector2.zero;
-            tr.offsetMax = new Vector2(0f, -PdNameH);
+            tr.offsetMax = Vector2.zero;
             RawImage thumb = thumbGo.AddComponent<RawImage>();
             thumb.raycastTarget = false;
 
@@ -739,6 +655,7 @@ namespace Quest3TriggerUI
             PdSlotTag tag = cell.AddComponent<PdSlotTag>();
             tag.Path = path;
             tag.Thumb = thumb;
+            tag.Bg = bg;
             _pdVisibleCells.Add(tag);
             PlacePdCell(tag);
             Button button = cell.AddComponent<Button>();
@@ -778,9 +695,9 @@ namespace Quest3TriggerUI
             rt.SetParent(cell, false);
             rt.anchorMin = Vector2.zero;
             rt.anchorMax = Vector2.one;
-            rt.offsetMin = Vector2.zero;
             // Cover the thumbnail, leave the name strip visible.
-            rt.offsetMax = new Vector2(0f, -PdNameH);
+            rt.offsetMin = new Vector2(0f, PdNameH);
+            rt.offsetMax = Vector2.zero;
             rt.SetAsLastSibling();
             _pdPersonOverlay.SetActive(true);
             VrHaptics.Press();
@@ -1161,10 +1078,8 @@ namespace Quest3TriggerUI
             SavePdSlots();
             if (tab == _pdTab)
             {
-                // Jump to the page holding the new slot so the user sees
-                // it land.
-                _pdPage = Mathf.Max(0,
-                    Mathf.CeilToInt(slots.Count / (float)PdPageCapacity) - 1);
+                // Scroll to the bottom so the user sees the new slot land.
+                _pdScrollY = float.MaxValue;
             }
             _pdDirty = true;
             return true;
@@ -1253,9 +1168,7 @@ namespace Quest3TriggerUI
                         break;
                     }
                     case 3: // 皮肤
-                        _pdQuick.LoadExtractedPreset(target, path,
-                            "AppearancePresets", "Skin preset",
-                            SceneQuickActions.ExtractSkinPreset);
+                        _pdQuick.LoadSkinPreset(target, path);
                         break;
                 }
                 VrHaptics.Press();

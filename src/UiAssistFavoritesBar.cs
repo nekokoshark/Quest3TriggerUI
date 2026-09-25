@@ -16,6 +16,9 @@ namespace Quest3TriggerUI
         internal string Uid;
         internal RawImage Thumb;
         internal RawImage Dim;
+        // Slot background — toggled off by scroll visibility so a masked
+        // cell outside the viewport can never catch a laser hit.
+        internal Image Bg;
     }
 
     // Marks a favorites tag row so a dropped thumbnail is filed under that tag.
@@ -54,7 +57,6 @@ namespace Quest3TriggerUI
         private const float FavPad = 8f;
         private const int FavColumns = 7;
         private const int FavRows = 8;
-        private const int FavPageSize = FavColumns * FavRows;
         private const float FavColW = FavCellW * FavColumns + FavSpacing * (FavColumns - 1) + FavPad * 2f;
         private const float FavGridH = FavCellH * FavRows + FavSpacing * (FavRows - 1) + FavPad * 2f;
         private const float FavTagStripW = 176f;
@@ -86,14 +88,12 @@ namespace Quest3TriggerUI
         private static readonly List<string[]> _favorites = new List<string[]>();
         private static readonly Dictionary<string, Texture2D> _favThumbs =
             new Dictionary<string, Texture2D>();
-        // Paging: the bar never grows past the ACE list height; overflow
-        // entries move to additional pages navigated with the ◀ ▶ row.
+        // Scrolling: the bar never grows past the ACE list height; overflow
+        // entries slide under a masked viewport driven by stick/wheel/edge
+        // auto-scroll (UiAssistDockScroll). The tag strip keeps its own
+        // pager row — only the cells grid scrolled.
         private const float FavNavH = 30f;
-        private static int _favPage;
-        private static int _favPages = 1;
         private static float _favListHeight;
-        private static GameObject _favNav;
-        private static Text _favPageText;
         // Named clothing tag groups. The untagged default list stays in the
         // original favorites file; every tag owns its own list.
         private static readonly List<string> _favTagNames = new List<string>();
@@ -207,7 +207,11 @@ namespace Quest3TriggerUI
             _favKeptCells.Clear();
             _favHintCell = null;
             _favPreviewDirty = false;
-            _favoritePageTargets.Clear();
+            _favScrollY = 0f;
+            _favContentH = 0f;
+            _favView = null;
+            _favScrollTrack = null;
+            _favScrollThumb = null;
             if (_favCanvas != null && SuperController.singleton != null)
                 SuperController.singleton.RemoveCanvas(_favCanvas);
             if (_favGhostRoot != null) UnityEngine.Object.Destroy(_favGhostRoot);
@@ -220,13 +224,9 @@ namespace Quest3TriggerUI
             _favCanvas = null;
             _favList = null;
             _favAtom = null;
-            _favNav = null;
-            _favPageText = null;
             _favTagStrip = null;
             _favTagInput = null;
             _favTagEditing = null;
-            _favPage = 0;
-            _favPages = 1;
             _favPositionLogged = false;
         }
 
@@ -491,7 +491,7 @@ namespace Quest3TriggerUI
         {
             if (_favTagView == root) return;
             _favTagView = root;
-            _favPage = 0;
+            _favScrollY = 0f;
             _favDirty = true;
             SaveFavoriteTags();
             RefreshTagRows();
@@ -525,7 +525,7 @@ namespace Quest3TriggerUI
             _favTagTop = Mathf.Max(0, _favTagNames.Count - FavTagCapacity);
             _favTagEditing = name;
             _favTagView = true;
-            _favPage = 0;
+            _favScrollY = 0f;
             _favDirty = true;
             SaveFavoriteTags();
             RefreshTagRows();
@@ -585,7 +585,7 @@ namespace Quest3TriggerUI
             if (_favTagEditing == name) { _favTagEditing = null; _favTagInput = null; }
             if (_favTagIndex == index) { _favTagIndex = -1; _favTagView = true; }
             else if (_favTagIndex > index) _favTagIndex--;
-            _favPage = 0;
+            _favScrollY = 0f;
             _favDirty = true;
             SaveFavoriteStores();
             RefreshTagRows();
@@ -954,13 +954,26 @@ namespace Quest3TriggerUI
                 _favBackground.color = new Color(0f, 0f, 0f, 0.18f);
                 _favBackground.raycastTarget = true;
 
+                // The cells grid is the full list inside a masked viewport;
+                // content anchoredPosition.y IS the scroll offset. Offscreen
+                // cells keep living so uid-keyed reuse stays cheap.
+                GameObject viewGo = new GameObject("View", typeof(RectTransform));
+                _favView = (RectTransform)viewGo.transform;
+                _favView.SetParent(_favDock, false);
+                _favView.anchorMin = new Vector2(0f, 1f);
+                _favView.anchorMax = new Vector2(0f, 1f);
+                _favView.pivot = new Vector2(0f, 1f);
+                _favView.anchoredPosition = new Vector2(0f, -FavPad);
+                _favView.sizeDelta = new Vector2(FavColW, FavGridH);
+                viewGo.AddComponent<RectMask2D>();
+
                 GameObject cellsGo = new GameObject("Cells", typeof(RectTransform));
                 _favCells = (RectTransform)cellsGo.transform;
-                _favCells.SetParent(_favDock, false);
+                _favCells.SetParent(_favView, false);
                 _favCells.anchorMin = new Vector2(0f, 1f);
                 _favCells.anchorMax = new Vector2(0f, 1f);
                 _favCells.pivot = new Vector2(0f, 1f);
-                _favCells.anchoredPosition = new Vector2(0f, -FavPad);
+                _favCells.anchoredPosition = Vector2.zero;
                 _favCells.sizeDelta = new Vector2(FavColW, FavGridH);
                 GridLayoutGroup grid = cellsGo.AddComponent<GridLayoutGroup>();
                 grid.cellSize = new Vector2(FavCellW, FavCellH);
@@ -972,7 +985,8 @@ namespace Quest3TriggerUI
 
                 _favListHeight = ((RectTransform)list.transform).rect.height;
                 LoadFavoriteTags();
-                CreateFavNav();
+                CreateDockScrollbar(_favDock, FavColW, -FavPad, FavGridH,
+                    out _favScrollTrack, out _favScrollThumb);
                 CreateFavTagStrip();
                 ApplyFavoritesDockWidth();
 
@@ -1024,42 +1038,8 @@ namespace Quest3TriggerUI
                 RebuildFavoriteCells();
                 _favDirty = false;
             }
+            TickDockScroll(true);
             TickFavoriteVisuals();
-        }
-
-        // Bottom-center ◀ n/m ▶ row, only visible when entries exceed one page.
-        private static void CreateFavNav()
-        {
-            GameObject nav = new GameObject("FavNav", typeof(RectTransform));
-            RectTransform navRect = (RectTransform)nav.transform;
-            navRect.SetParent(_favDock, false);
-            navRect.anchorMin = new Vector2(0f, 0f);
-            navRect.anchorMax = new Vector2(0f, 0f);
-            navRect.pivot = new Vector2(0.5f, 0f);
-            navRect.anchoredPosition = new Vector2(FavColW * 0.5f, 4f);
-            navRect.sizeDelta = new Vector2(190f, FavNavH);
-            nav.AddComponent<AceFavBarTag>();
-
-            CreateFavNavButton(navRect, "◀", -72f, delegate { FavPageStep(-1); });
-            CreateFavNavButton(navRect, "▶", 72f, delegate { FavPageStep(1); });
-
-            GameObject textGo = new GameObject("Page", typeof(RectTransform));
-            RectTransform textRect = (RectTransform)textGo.transform;
-            textRect.SetParent(navRect, false);
-            textRect.anchorMin = new Vector2(0.5f, 0.5f);
-            textRect.anchorMax = new Vector2(0.5f, 0.5f);
-            textRect.anchoredPosition = Vector2.zero;
-            textRect.sizeDelta = new Vector2(90f, FavNavH);
-            _favPageText = textGo.AddComponent<Text>();
-            _favPageText.alignment = TextAnchor.MiddleCenter;
-            _favPageText.fontSize = 20;
-            _favPageText.color = new Color(1f, 1f, 1f, 0.8f);
-            _favPageText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
-            _favPageText.raycastTarget = false;
-            _favPageText.text = "1/1";
-
-            _favNav = nav;
-            nav.SetActive(false);
         }
 
         private static void CreateFavNavButton(
@@ -1077,12 +1057,6 @@ namespace Quest3TriggerUI
             bg.color = new Color(0.11f, 0.38f, 0.48f, 1f);
             Button button = go.AddComponent<Button>();
             button.targetGraphic = bg;
-            if (parent.gameObject.name == "FavNav")
-            {
-                FavoritePageTarget target = go.AddComponent<FavoritePageTarget>();
-                target.Direction = x < 0f ? -1 : 1;
-                _favoritePageTargets.Add(target);
-            }
             button.onClick.AddListener(delegate {
                 if (Quest3TriggerUIPlugin.ClothingDragActive ||
                     Time.unscaledTime < _favoriteClickAfter) return;
@@ -1103,15 +1077,6 @@ namespace Quest3TriggerUI
             text.raycastTarget = false;
         }
 
-        private static void FavPageStep(int delta)
-        {
-            if (_favPages <= 1) return;
-            int page = Mathf.Clamp(_favPage + delta, 0, _favPages - 1);
-            if (page == _favPage) return;
-            _favPage = page;
-            _favDirty = true;
-        }
-
         private static void RebuildFavoriteCells()
         {
             if (_favCells == null) return;
@@ -1119,27 +1084,22 @@ namespace Quest3TriggerUI
             _favCellPosition = 0;
             List<string[]> favorites = FavoriteDisplayOrder();
             int count = favorites.Count;
-            // Fixed 7x8 area; paging sits below and never takes a cell row.
-            int capacity = FavoriteCapacity();
-            bool nav = count > capacity;
-            _favPages = Mathf.Max(1, Mathf.CeilToInt(count / (float)capacity));
-            _favPage = Mathf.Clamp(_favPage, 0, _favPages - 1);
-            int start = _favPage * capacity;
-            int end = Mathf.Min(count, start + capacity);
-            for (int i = start; i < end; i++)
+            // All entries get a cell — the viewport mask + scroll offset do
+            // the slicing now, and uid-keyed reuse keeps rebuilds cheap.
+            for (int i = 0; i < count; i++)
                 CreateFavoriteSlot(favorites[i][0]);
             if (count == 0)
                 CreateEmptyHintSlot();
             FinishFavoriteCells();
-            if (_favNav != null && _favNav.activeSelf != nav)
-                _favNav.SetActive(nav);
-            if (nav && _favPageText != null)
-                _favPageText.text = (_favPage + 1) + "/" + _favPages;
-            _favCells.sizeDelta = new Vector2(FavColW, FavGridH);
-            float height = FavGridH + (nav ? FavNavH + 4f : 0f);
+            int rows = Mathf.CeilToInt(count / (float)FavColumns);
+            _favContentH = rows > 0
+                ? rows * FavCellH + (rows - 1) * FavSpacing + FavPad
+                : FavPad;
+            _favCells.sizeDelta = new Vector2(FavColW, _favContentH);
+            ApplyDockScroll(true, _favScrollY);
             ApplyFavoritesDockWidth();
             _favDock.sizeDelta = new Vector2(_favDock.sizeDelta.x,
-                Mathf.Max(height, RequiredTagStripHeight()));
+                Mathf.Max(FavGridH, RequiredTagStripHeight()));
         }
 
         // An empty bar must still be findable: one dashed-feel placeholder cell
@@ -1207,6 +1167,7 @@ namespace Quest3TriggerUI
             tag.Uid = uid;
             tag.Thumb = thumb;
             tag.Dim = dim;
+            tag.Bg = bg;
             _favVisibleCells.Add(tag);
             PlaceFavoriteCell(tag);
             string captured = uid;
@@ -1675,6 +1636,10 @@ namespace Quest3TriggerUI
                     ? new Color(0.3f, 0.85f, 0.35f, 0.3f)
                     : new Color(0f, 0.28f, 0.08f, 0.22f);
             }
+            // Scroll the dock the drag pointer rests on — thumbstick moves
+            // the list, and the viewport's top/bottom strip auto-scrolls.
+            TickDockScroll(true);
+            TickDockScroll(false);
             // Live reorder preview (phone-icon reflow) on both docks.
             TickPdReorder();
             TickFavoriteReorder();
@@ -1711,9 +1676,7 @@ namespace Quest3TriggerUI
                         if (FileDockPreset(dropTab, source.PresetPath))
                         {
                             PdSelectTab(dropTab);
-                            _pdPage = Mathf.Max(0,
-                                Mathf.CeilToInt(_pdSlots[dropTab].Count /
-                                    (float)PdPageCapacity) - 1);
+                            _pdScrollY = float.MaxValue;
                             _pdDirty = true;
                         }
                         pdActed = true;
@@ -1837,8 +1800,8 @@ namespace Quest3TriggerUI
             }
             CaptureFavoriteState(source);
             SaveFavoriteStores();
-            // Land on the page the new entry was appended to.
-            _favPage = int.MaxValue;
+            // Scroll to the bottom so the just-appended entry is visible.
+            _favScrollY = float.MaxValue;
             _favDirty = true;
             Log("已收藏服装：" + (source.DisplayName ?? source.Uid) +
                 " → " + (ActiveTagName ?? "默认"));

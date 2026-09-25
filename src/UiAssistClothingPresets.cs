@@ -8,7 +8,7 @@ namespace Quest3TriggerUI
 {
     internal static partial class UiAssistHudLink
     {
-        private static UIDynamicButton _savePreset;
+        private static UIDynamicButton _editorVisibilityButton;
         private static GameObject _presetList;
         private static object _presetEditor;
         private static float _nextPresetCheck;
@@ -16,8 +16,9 @@ namespace Quest3TriggerUI
 
         private static void ClearPresetButtons()
         {
-            if (_savePreset != null) UnityEngine.Object.Destroy(_savePreset.gameObject);
-            _savePreset = null;
+            ClearPanelPresentation();
+            if (_editorVisibilityButton != null) UnityEngine.Object.Destroy(_editorVisibilityButton.gameObject);
+            _editorVisibilityButton = null;
             _presetList = null;
             _presetEditor = null;
         }
@@ -48,15 +49,16 @@ namespace Quest3TriggerUI
                 UpdateBanBar(state, list);
                 UpdateLockBar(state, list);
                 if (_presetList == list && ReferenceEquals(_presetEditor, state.Editor) &&
-                    _savePreset != null) return;
+                    _editorVisibilityButton != null) return;
                 ClearPresetButtons();
                 object canvas = Read(state.Editor.GetType(), state.Editor, "_uiButtonCanvas");
                 _presetList = list;
                 _presetEditor = state.Editor;
-                // 新增/替换 live on the left preset dock now — the editor
-                // header keeps only 保存.
-                _savePreset = CreatePresetButton(canvas, list, "保存", 36f,
-                    BrowseClothingPresetSave);
+                // Saving remains on the preset dock; this independent toggle
+                // stays clickable when only the editor body is hidden.
+                _editorVisibilityButton = CreatePresetButton(canvas, list, "隐藏", 36f,
+                    ToggleEditorVisibility);
+                BindPanelPresentation(canvas, list);
             }
             catch (Exception e) { ClearPresetButtons(); _nextPresetCheck = Time.unscaledTime + 5f; Error(e); }
         }

@@ -364,7 +364,7 @@ internal void OpenPersonPreset()
         // Same unified model as hair: a pure skin .vap IS a skin-only preset,
         // so the whitelist extraction passes it through unchanged while a
         // person preset is filtered down to its skin storables.
-        private void LoadSkinPreset(Atom target, string path)
+        internal void LoadSkinPreset(Atom target, string path)
         {
             LoadExtractedPreset(target, path, "SkinPresets", "Skin preset",
                 ExtractSkinPreset);
@@ -3604,6 +3604,5 @@ internal void OpenPersonPreset()
         }
     }
 }
-
 
 

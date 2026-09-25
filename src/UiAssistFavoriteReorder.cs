@@ -6,38 +6,18 @@ namespace Quest3TriggerUI
 {
     internal static partial class UiAssistHudLink
     {
-        // Page-flip buttons on either dock carry one of these; a held drag
-        // hovering them turns pages after a short dwell (the phone-icon
-        // "drag to screen edge" equivalent). The same tag serves both docks.
-        private sealed class FavoritePageTarget : MonoBehaviour
-        {
-            internal int Direction;
-        }
-
         // Right favorites bar reorder state.
         private static List<string[]> _favoriteDragList;
         private static string _favoriteDragUid;
         private static int _favoriteDropIndex = -1;
-        private static int _favoritePageDirection;
-        private static float _favoritePageAt, _favoriteClickAfter;
+        private static float _favoriteClickAfter;
         private static bool _favPtrLogged;
-        private static readonly List<FavoritePageTarget> _favoritePageTargets =
-            new List<FavoritePageTarget>();
 
         // Left preset dock reorder state — same shape as the favorites side.
         private static List<string> _pdDragList;
         private static string _pdDragPath;
         private static int _pdDropIndex = -1;
-        private static int _pdPageDirection;
-        private static float _pdPageAt;
         private static bool _pdPtrLogged;
-        private static readonly List<FavoritePageTarget> _pdPageTargets =
-            new List<FavoritePageTarget>();
-
-        private static int FavoriteCapacity()
-        {
-            return FavPageSize;
-        }
 
         // ---------- shared pointer → grid plumbing ----------
 
@@ -111,13 +91,11 @@ namespace Quest3TriggerUI
 
         // Shared grid math for both docks. Returns the insertion index into
         // the FULL list with the dragged entry still counted — i.e. the gap
-        // the pointer hovers over (0..count). The local point clamps into
-        // the grid bounds so anywhere inside the dock maps to the nearest
-        // slot; past a cell's horizontal center inserts AFTER it, which is
-        // what makes dropping at the very end possible. Indices are global:
-        // pushing past the page boundary lands the entry on the next page.
+        // the pointer hovers over (0..count). The local point is in scrolled
+        // content space, so rows map straight to global indices — the clamp
+        // still converts anywhere inside the dock into the nearest slot.
         private static int GridInsertIndex(Vector2 p, RectTransform cells,
-            int page, int capacity, int count)
+            int count)
         {
             if (cells == null || count <= 0) return -1;
             GridLayoutGroup grid = cells.GetComponent<GridLayoutGroup>();
@@ -125,21 +103,26 @@ namespace Quest3TriggerUI
             float right = grid != null ? grid.padding.right : FavPad;
             float top = grid != null ? grid.padding.top : 0f;
             float bottom = grid != null ? grid.padding.bottom : FavPad;
+            // Cell metrics come from the grid itself — the preset dock's
+            // cells are shorter than the favorites grid's.
+            float cellW = grid != null ? grid.cellSize.x : FavCellW;
+            float cellH = grid != null ? grid.cellSize.y : FavCellH;
+            float spX = grid != null ? grid.spacing.x : FavSpacing;
+            float spY = grid != null ? grid.spacing.y : FavSpacing;
+            int cols = grid != null ? grid.constraintCount : FavColumns;
             float x = Mathf.Clamp(p.x - left, 0f,
                 Mathf.Max(0f, cells.rect.width - left - right - 1f));
             float y = Mathf.Clamp(-p.y - top, 0f,
                 Mathf.Max(0f, cells.rect.height - top - bottom - 1f));
             int col = Mathf.Clamp(
-                Mathf.FloorToInt(x / (FavCellW + FavSpacing)), 0, FavColumns - 1);
+                Mathf.FloorToInt(x / (cellW + spX)), 0, cols - 1);
             int row = Mathf.Max(0,
-                Mathf.FloorToInt(y / (FavCellH + FavSpacing)));
-            int start = page * capacity;
-            int pageCount = Mathf.Clamp(count - start, 0, capacity);
-            int idx = Mathf.Min(row * FavColumns + col, pageCount);
-            if (idx < pageCount &&
-                x - col * (FavCellW + FavSpacing) > (FavCellW + FavSpacing) * 0.5f)
+                Mathf.FloorToInt(y / (cellH + spY)));
+            int idx = Mathf.Min(row * cols + col, count);
+            if (idx < count &&
+                x - col * (cellW + spX) > (cellW + spX) * 0.5f)
                 idx++;
-            return Mathf.Clamp(start + idx, 0, count);
+            return Mathf.Clamp(idx, 0, count);
         }
 
         // ---------- right favorites bar ----------
@@ -151,7 +134,7 @@ namespace Quest3TriggerUI
             _favoriteDragList = VisibleFavorites;
             _favoriteDragUid = source.Uid;
             _favPtrLogged = false;
-            Log("fav drag begin uid=" + source.Uid + " page=" + (_favPage + 1));
+            Log("fav drag begin uid=" + source.Uid);
         }
 
         private static void ClearFavoriteReorder()
@@ -160,8 +143,6 @@ namespace Quest3TriggerUI
             _favoriteDragList = null;
             _favoriteDragUid = null;
             _favoriteDropIndex = -1;
-            _favoritePageDirection = 0;
-            _favoritePageAt = 0f;
         }
 
         private static List<string[]> FavoriteDisplayOrder()
@@ -186,42 +167,18 @@ namespace Quest3TriggerUI
                 return -1;
             Vector2 p;
             if (!DockPointerLocal(_favCells, out p)) return -1;
-            return GridInsertIndex(p, _favCells, _favPage, FavoriteCapacity(),
-                items.Count);
+            return GridInsertIndex(p, _favCells, items.Count);
         }
 
         private static void TickFavoriteReorder()
         {
             if (_favoriteDragList == null) return;
-            int direction = 0;
             Vector2 point;
-            foreach (FavoritePageTarget target in _favoritePageTargets)
-                if (target != null && PointerOnRect(target.transform as RectTransform, out point))
-                { direction = target.Direction; break; }
-            if (direction != 0)
-            {
-                if (_favoritePageDirection != direction)
-                {
-                    _favoritePageDirection = direction;
-                    _favoritePageAt = Time.unscaledTime + 0.45f;
-                }
-                else if (Time.unscaledTime >= _favoritePageAt)
-                {
-                    int old = _favPage;
-                    FavPageStep(direction);
-                    _favoritePageAt = Time.unscaledTime + 0.6f;
-                    if (old != _favPage)
-                    {
-                        _favoriteDropIndex = -1;
-                        Log("fav drag page=" + (_favPage + 1));
-                    }
-                }
-                return;
-            }
-            _favoritePageDirection = 0;
             int index = -1;
             // Over the tag strip the drop files into that tag group, and
             // outside the dock it removes — neither shows a reorder preview.
+            // (Scrolling already ran in TickFavoriteDrag this frame, so the
+            // drop index reflects the live content offset.)
             if (!PointerOnRect(_favTagStrip, out point) &&
                 PointerOnRect(_favDock, out point))
                 index = FavoriteDropIndex();
@@ -279,8 +236,6 @@ namespace Quest3TriggerUI
             _pdDragList = null;
             _pdDragPath = null;
             _pdDropIndex = -1;
-            _pdPageDirection = 0;
-            _pdPageAt = 0f;
         }
 
         private static List<string> PdDisplaySlots()
@@ -304,39 +259,13 @@ namespace Quest3TriggerUI
                 return -1;
             Vector2 p;
             if (!DockPointerLocal(_pdCells, out p)) return -1;
-            return GridInsertIndex(p, _pdCells, _pdPage, PdPageCapacity,
-                slots.Count);
+            return GridInsertIndex(p, _pdCells, slots.Count);
         }
 
         private static void TickPdReorder()
         {
             if (_pdDragList == null) return;
-            int direction = 0;
             Vector2 point;
-            foreach (FavoritePageTarget target in _pdPageTargets)
-                if (target != null && PointerOnRect(target.transform as RectTransform, out point))
-                { direction = target.Direction; break; }
-            if (direction != 0)
-            {
-                if (_pdPageDirection != direction)
-                {
-                    _pdPageDirection = direction;
-                    _pdPageAt = Time.unscaledTime + 0.45f;
-                }
-                else if (Time.unscaledTime >= _pdPageAt)
-                {
-                    int old = _pdPage;
-                    PdPageStep(direction);
-                    _pdPageAt = Time.unscaledTime + 0.6f;
-                    if (old != _pdPage)
-                    {
-                        _pdDropIndex = -1;
-                        Log("pd drag page=" + (_pdPage + 1));
-                    }
-                }
-                return;
-            }
-            _pdPageDirection = 0;
             int index = -1;
             // Over the tab strip the drop copies the preset into that tab,
             // and outside the dock it removes — neither shows a reorder

@@ -25,6 +25,10 @@ namespace Quest3TriggerUI
         private static ulong _available = ulong.MaxValue;
         private static ulong _commitAvailable = ulong.MaxValue;
         private static bool _batch;
+        private static WeakReference _probeHead;
+        private static long _probeEstimate, _probeTicks, _probeDeadline;
+        private static bool _probeHit;
+        private static int _probesLeft = 4, _cacheSized;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MemoryStatus
@@ -54,8 +58,8 @@ namespace Quest3TriggerUI
                 // Install release before admission. A layout mismatch unpatches both.
                 _harmony.Patch(finish, finalizer: Patch("AfterFinish"));
                 _harmony.Patch(resolve, finalizer: Patch("AfterResolve"));
-                _harmony.Patch(dispatch, transpiler: Patch("DispatchTranspiler"), postfix: Patch("AfterDispatch"));
-                Log("installed: main-thread admission; estimated bytes held through Finish; no quality changes");
+                _harmony.Patch(dispatch, prefix: Patch("BeforeDispatch"), transpiler: Patch("DispatchTranspiler"), postfix: Patch("AfterDispatch"));
+                Log("installed: main-thread admission; estimated bytes held through Finish; native cache metadata sizing; no quality changes");
             }
             catch (Exception e)
             {
@@ -148,6 +152,38 @@ namespace Quest3TriggerUI
             return limit;
         }
 
+        private static void BeforeDispatch()
+        {
+            _probesLeft = 4;
+            _probeDeadline = System.Diagnostics.Stopwatch.GetTimestamp() +
+                System.Diagnostics.Stopwatch.Frequency / 500; // 2 ms between probes, not a hard I/O deadline.
+        }
+
+        private static long RequestEstimate(ImageLoaderThreaded.QueuedImage q, out bool cacheSized)
+        {
+            cacheSized = false;
+            long estimate = EstimateBytes(q.width, q.height, q.setSize, q.createNormalFromBump);
+            if (q.setSize) return estimate;
+            if (_probeHead != null && ReferenceEquals(_probeHead.Target, q))
+            {
+                cacheSized = _probeHit;
+                return _probeEstimate;
+            }
+            // At most four small probes / dispatch. A budget-deferred head is
+            // memoized, not re-opened every frame. No retained textures or buffers.
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (_probesLeft <= 0 || (_probeDeadline != 0 && start >= _probeDeadline)) return estimate;
+            _probesLeft--;
+            long known;
+            cacheSized = TextureCacheEstimate.TryEstimate(q, out known);
+            _probeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - start;
+            if (cacheSized) estimate = known;
+            _probeHead = new WeakReference(q);
+            _probeEstimate = estimate;
+            _probeHit = cacheSized;
+            return estimate;
+        }
+
         private static bool Admit(ImageLoaderThreaded.QueuedImage q)
         {
             if (q == null || q.processed || q.finished || q.hadError || q.cancel) return true;
@@ -174,7 +210,8 @@ namespace Quest3TriggerUI
             catch (Exception e) { Log("early classification retained request: " + e.Message); }
             if ((Enabled != null && !Enabled.Value) || q.isThumbnail) return true;
             if (Held.ContainsKey(q)) return true;
-            long estimate = EstimateBytes(q.width, q.height, q.setSize, q.createNormalFromBump);
+            bool cacheSized;
+            long estimate = RequestEstimate(q, out cacheSized);
             long budget;
             try { budget = CurrentBudget(); }
             catch { budget = 2048L * MiB; }
@@ -184,6 +221,8 @@ namespace Quest3TriggerUI
                 return false; // Leave original head intact; next frame follows Finish.
             }
             Held.Add(q, estimate);
+            _probeHead = null;
+            if (cacheSized) _cacheSized++;
             _reserved += estimate;
             _peak = Math.Max(_peak, _reserved);
             _admitted++;
@@ -216,11 +255,14 @@ namespace Quest3TriggerUI
             if (_batch && Held.Count == 0)
             {
                 Log("cycle admitted=" + _admitted + " deferred=" + _deferred +
-                    " earlyDiscarded=" + _discarded + " peakReservedMiB=" + (_peak / MiB) +
+                    " earlyDiscarded=" + _discarded + " cacheSized=" + _cacheSized +
+                    " cacheProbeMs=" + (_probeTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
+                    " peakReservedMiB=" + (_peak / MiB) +
                     " (estimate, not actual memory; not a preset completion signal)");
                 _batch = false;
                 _admitted = _deferred = _discarded = 0;
-                _peak = 0;
+                _peak = _probeTicks = 0;
+                _cacheSized = 0;
             }
         }
 
@@ -233,6 +275,11 @@ namespace Quest3TriggerUI
             _admitted = _deferred = _discarded = 0;
             _available = _commitAvailable = ulong.MaxValue;
             _batch = false;
+            _probeHead = null;
+            _probeEstimate = _probeTicks = _probeDeadline = 0;
+            _probeHit = false;
+            _probesLeft = 4;
+            _cacheSized = 0;
         }
 
         private static void Log(string message)

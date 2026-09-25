@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.235";
+        public const string PluginVersion = "4.6.241";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -76,6 +76,12 @@ namespace Quest3TriggerUI
         private int _quickActionRevision = -1;
         private static int _inputSampleFrame = -1;
         private static Vector2 _sampledRightStick;
+        // Read-only access for UI scroll plumbing (dock bars). The value is
+        // refreshed once per frame by SampleInputs — no extra input call.
+        internal static Vector2 SampledRightStick
+        {
+            get { return _sampledRightStick; }
+        }
         private static bool _lastAButton;
         private static int _aButtonDownFrame = -1;
         private static int _aButtonUpFrame = -1;
@@ -440,12 +446,15 @@ namespace Quest3TriggerUI
             _memSnapshotEntry = Config.Bind(
                 "Diagnostics", "MemorySnapshot", false,
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
+            Config.Bind("Diagnostics", "EyeMaterialSnapshot", false,
+                "Read-only one-shot eye/lash material bindings in the log; auto-resets, no scene changes.");
             _memWatchEntry = Config.Bind(
                 "Diagnostics", "MemWatchSeconds", 15,
                 "Periodic one-line memory/VRAM/texture-cache snapshot (snap[watch]); 0=off. Cheap — safe to leave on while hunting leaks.");
 
             Instance = this;
             Log = Logger;
+            BodySmootherCompatibility.Install();
             PinyinEngine.Initialize();
             PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
             _auxiliaryUiView = VrAuxiliaryUiView.Begin();
@@ -663,6 +672,7 @@ namespace Quest3TriggerUI
 
             HairPerfProbe.Tick();
             AtomClonePool.Tick();
+            BodySmootherCompatibility.Tick();
             // Config file self-watch: the hot-loaded payload can't rely on
             // BepInEx's FileSystemWatcher (observed not firing for live
             // edits), so poll the cfg mtime and scan the flag directly —
@@ -824,8 +834,9 @@ namespace Quest3TriggerUI
                 byte[] raw = System.IO.File.ReadAllBytes(path);
                 string text = System.Text.Encoding.UTF8.GetString(raw);
                 bool snap = text.Contains("MemorySnapshot = true");
+                bool eye = text.Contains("EyeMaterialSnapshot = true");
                 bool evict = text.Contains("AudioCacheEvictNow = true");
-                if (!snap && !evict)
+                if (!snap && !evict && !eye)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -834,6 +845,7 @@ namespace Quest3TriggerUI
                     "MemorySnapshot = true", "MemorySnapshot = false");
                 text = text.Replace(
                     "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
+                text = text.Replace("EyeMaterialSnapshot = true", "EyeMaterialSnapshot = false");
                 // GetBytes re-emits the BOM because the decoded string
                 // still carries the \uFEFF character.
                 System.IO.File.WriteAllBytes(
@@ -841,6 +853,7 @@ namespace Quest3TriggerUI
                 _cfgLastWrite =
                     System.IO.File.GetLastWriteTimeUtc(path);
                 if (snap) MemoryProbe.Dump();
+                if (eye) CharacterMaterialProbe.Dump();
                 if (evict) AudioCacheJanitor.SweepNow();
             }
             catch (Exception ex)
@@ -852,6 +865,7 @@ namespace Quest3TriggerUI
 
         private void LateUpdate()
         {
+            UiAssistHudLink.ApplyPanelPresentation();
             if (_keyboard != null)
             {
                 _keyboard.LateTick();
@@ -886,7 +900,7 @@ namespace Quest3TriggerUI
                               (controller != null && controller.worldUIActivated) ||
                               (_pinnedTiles != null && _pinnedTiles.CapturingGrip) ||
                               (KeyboardChord != null && KeyboardChord.Active) ||
-                              (Trigger != null && Trigger.LongPressActive);
+                              (Trigger != null && Trigger.LongPressActive) || UiAssistHudLink.PanelOrbitCapturing;
             bool gripPressed = RightGripTrigger != null && RightGripTrigger.Pressed;
             // Reuse this frame's sampled stick: SampleInputs already paid for
             // the OpenVR/Oculus read. Resampling here doubles reflection calls.
@@ -930,6 +944,7 @@ namespace Quest3TriggerUI
             RefreshPitchInputMode();
             VrShotCameras.ApplyPendingShot(controller, _globalPitch);
             _globalPitch.BeforeControllerInteraction(controller);
+            UiAssistHudLink.ApplyPanelPresentation();
         }
         internal void BeforeNativeNavigation(SuperController controller)
         {
@@ -1043,6 +1058,7 @@ namespace Quest3TriggerUI
             ClothingRegionMode.Shutdown();
             PluginListMode.Shutdown();
             WardrobeJanitor.Shutdown();
+            BodySmootherCompatibility.Shutdown();
             // An undestroyed recorder outlives this runtime through the
             // AudioListener tap and writes to its .audio.wav forever.
             if (VrVideoRecorder.Current != null)
@@ -1246,9 +1262,13 @@ namespace Quest3TriggerUI
             _aButtonUpFrame = _lastAButton && !aPressed ? frame : -1;
             _lastAButton = aPressed;
 
+            UiAssistHudLink.UpdatePanelOrbitInput(RightGripTrigger.Pressed, rightStick,
+                !InputRuntimeActive || KeyboardVisible || RadialMenuVisible || SliderDragActive ||
+                ClothingDragActive || ClothingDragCandidate != null || PinnedTilesCapturingGrip ||
+                (KeyboardChord != null && KeyboardChord.Active));
             ShortcutGestures.Advance(frame, Time.unscaledTime,
                 leftIndexValue, leftGripValue, indexValue, gripValue,
-                SliderDragActive || ClothingDragActive || RadialMenuVisible || PinnedTilesCapturingGrip || GripPitchCapturing);
+                SliderDragActive || ClothingDragActive || RadialMenuVisible || PinnedTilesCapturingGrip || GripPitchCapturing || UiAssistHudLink.PanelOrbitCapturing);
 
             if (Instance != null)
                 Instance.RefreshPitchInputMode();
@@ -1535,7 +1555,7 @@ internal static bool SuppressRightInput()
             Quest3TriggerUIPlugin.SampleInputs();
             if (Quest3TriggerUIPlugin.KeyboardVisible ||
                 Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
-                Quest3TriggerUIPlugin.GripPitchCapturing)
+                Quest3TriggerUIPlugin.GripPitchCapturing || UiAssistHudLink.PanelOrbitCapturing)
             {
                 __result = 0f;
                 return false;
@@ -1571,7 +1591,7 @@ internal static bool SuppressRightInput()
 			int frame = Time.frameCount;
             if (Quest3TriggerUIPlugin.KeyboardVisible ||
                 Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
-                Quest3TriggerUIPlugin.GripPitchCapturing)
+                Quest3TriggerUIPlugin.GripPitchCapturing || UiAssistHudLink.PanelOrbitCapturing)
             {
                 __result = false;
                 return false;
@@ -1605,7 +1625,7 @@ internal static bool SuppressRightInput()
 			int frame = Time.frameCount;
             if (Quest3TriggerUIPlugin.KeyboardVisible ||
                 Quest3TriggerUIPlugin.RadialMenuVisible || Quest3TriggerUIPlugin.PinnedTilesCapturingGrip ||
-                Quest3TriggerUIPlugin.GripPitchCapturing || ___rightGUIInteract)
+                Quest3TriggerUIPlugin.GripPitchCapturing || UiAssistHudLink.PanelOrbitCapturing || ___rightGUIInteract)
             {
                 __result = false;
                 return false;
@@ -1638,9 +1658,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
-
-
 
 
 

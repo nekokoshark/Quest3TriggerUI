@@ -132,8 +132,15 @@ namespace Quest3TriggerUI
     {
         private static void Postfix(ref Vector4 __result)
         {
+            Quest3TriggerUIPlugin.SampleInputs();
             if (Quest3TriggerUIPlugin.GripPitchCapturing)
                 __result.w = 0f;
+            // Native NavigationIL: z=yaw, w=height. Keep left-stick x/y.
+            if (UiAssistHudLink.PanelOrbitCapturing)
+            {
+                __result.z = 0f;
+                __result.w = 0f;
+            }
             if (PluginListMode.ConsumeNavigation)
                 __result = Vector4.zero;
         }

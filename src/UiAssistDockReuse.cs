@@ -128,6 +128,11 @@ namespace Quest3TriggerUI
                 tag.Thumb.texture = cached;
                 tag.Thumb.color = Color.white;
             }
+            // Cells outside the masked viewport stay unqueued — scrolling
+            // pumps them in via PumpVisibleFavVisuals, so a long list only
+            // ever decodes the rows the user can actually see.
+            if (!DockCellVisible(tag.transform.GetSiblingIndex(),
+                FavCellH, _favScrollY, FavGridH)) return;
             if (_favVisualQueued.Add(tag)) _favVisualQueue.Enqueue(tag);
         }
 
@@ -156,6 +161,8 @@ namespace Quest3TriggerUI
             _pdThumbs.TryGetValue(tag.Path, out cached);
             tag.Thumb.texture = cached;
             tag.Thumb.color = cached != null ? Color.white : new Color(0.25f, 0.25f, 0.3f, 1f);
+            if (!DockCellVisible(tag.transform.GetSiblingIndex(),
+                PdCellH, _pdScrollY, PdGridH)) return;
             if (_pdThumbQueued.Add(tag)) _pdThumbQueue.Enqueue(tag);
         }
 
