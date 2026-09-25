@@ -790,7 +790,13 @@ namespace Quest3TriggerUI
                             delegate { return PhysicsBudget.Level == 0; }),
                         new QuickActionDefinition("physics.budget.balanced", "均衡",
                             delegate { PhysicsBudget.SetLevelEntry(1); },
-                            delegate { return PhysicsBudget.Level == 1; })
+                            delegate { return PhysicsBudget.Level == 1; }),
+                        new QuickActionDefinition("physics.budget.aggressive", "激进",
+                            delegate { PhysicsBudget.SetLevelEntry(2); },
+                            delegate { return PhysicsBudget.Level == 2; }),
+                        new QuickActionDefinition("physics.budget.haircoll", "头发碰撞",
+                            delegate { PhysicsBudget.ToggleHairCollision(); },
+                            delegate { return PhysicsBudget.HairCollisionMode == 1; })
                     }),
                 new QuickActionDefinition("shots", "运镜", VrShotCameras.TogglePanel,
                     delegate { return VrShotCameras.PanelVisible; },
@@ -799,18 +805,11 @@ namespace Quest3TriggerUI
                         new QuickActionDefinition("shots.prev", "上一镜", VrShotCameras.Prev),
                         new QuickActionDefinition("shots.next", "下一镜", VrShotCameras.Next)
                     }),
-                new QuickActionDefinition("rescan-files", "快速扫描",
-                    BrowserAssistScanAccelerator.QuickRescan, null,
+                new QuickActionDefinition("optimize-memory", "优化内存", _quickActions.OptimizeMemory, null,
                     new List<QuickActionDefinition> {
-                        new QuickActionDefinition("rescan-files.clothing-hair",
-                            "服装/头发",
-                            BrowserAssistScanAccelerator.RefreshClothingHair,
-                            delegate {
-                                return BrowserAssistScanAccelerator
-                                    .ClothingHairPending;
-                            })
+                        new QuickActionDefinition("optimize-memory.vram", "显存报告",
+                            delegate { MemoryProbe.Snapshot("manual"); })
                     }),
-                new QuickActionDefinition("optimize-memory", "优化内存", _quickActions.OptimizeMemory),
                 new QuickActionDefinition("standby", "待机/恢复", ToggleStandby,
                     delegate { return _quickActions.StandbyActive; })
             };
@@ -818,31 +817,11 @@ namespace Quest3TriggerUI
 
         private QuickActionDefinition BuildPersonAction()
         {
+            // Preset sub-actions now live on the preset dock's 读取/保存
+            // rows (per-tab split); this button only opens the control
+            // panel. 眼睛 was dropped by request.
             _personDefinition = new QuickActionDefinition("person", "人物",
-                delegate { _quickActions.OpenPersonControlPanel(); }, null,
-                new List<QuickActionDefinition> {
-                    new QuickActionDefinition("person.replace", "替换", _quickActions.OpenPersonPreset),
-                    new QuickActionDefinition("person.clothing", "服装", _quickActions.OpenClothingOnlyPreset, null,
-                        new List<QuickActionDefinition> {
-                            new QuickActionDefinition("person.clothing.save", "保存", _quickActions.OpenStoreClothingIntoPreset)
-                        }),
-                    new QuickActionDefinition("appearance", "外观", _quickActions.OpenAppearancePresetWithoutClothing, null,
-                        new List<QuickActionDefinition> {
-                            new QuickActionDefinition("appearance.save", "保存", _quickActions.SaveAppearancePreset)
-                        }),
-                    new QuickActionDefinition("skin", "皮肤", _quickActions.OpenSkinPreset, null,
-                        new List<QuickActionDefinition> {
-                            new QuickActionDefinition("skin.save", "保存", _quickActions.SaveSkinPreset)
-                        }),
-                    new QuickActionDefinition("person.hair", "头发", _quickActions.OpenHairPreset, null,
-                        new List<QuickActionDefinition> {
-                            new QuickActionDefinition("person.hair.save", "保存", _quickActions.SaveHairPreset)
-                        }),
-                    new QuickActionDefinition("person.eye", "眼睛", _quickActions.OpenEyePreset, null,
-                        new List<QuickActionDefinition> {
-                            new QuickActionDefinition("person.eye.save", "保存", _quickActions.SaveEyePreset)
-                        })
-                });
+                delegate { _quickActions.OpenPersonControlPanel(); });
             return _personDefinition;
         }
 

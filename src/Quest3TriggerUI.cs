@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.196";
+        public const string PluginVersion = "4.6.235";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -58,6 +58,8 @@ namespace Quest3TriggerUI
         private ConfigEntry<float> _physicsClothScaleEntry;
         private ConfigEntry<int> _physicsClothOffEntry;
         private ConfigEntry<bool> _memSnapshotEntry;
+        private ConfigEntry<int> _memWatchEntry;
+        private float _nextMemWatch;
         private float _cfgWatchT;
         private DateTime _cfgLastWrite;
         private int _handledToggleFrame = -1;
@@ -80,6 +82,20 @@ namespace Quest3TriggerUI
 		internal static bool SliderDragActive { get; private set; }
         internal static AceFavDragSource ClothingDragCandidate;
         internal static bool ClothingDragActive;
+        private static bool _radialDragBlocked;
+        internal static bool RadialDragBlocked
+        {
+            get { return _radialDragBlocked || ClothingDragActive ||
+                ClothingDragCandidate != null || VrPresetBrowser.CapturingGesture; }
+        }
+
+        private static void UpdateRadialDragBlock(bool held, bool releaseFrame, bool captured, bool freshPress)
+        {
+            // Retain gesture ownership across panel gaps, cancellation and
+            // the release frame. Only a completed trigger cycle unlocks it.
+            _radialDragBlocked = (held || releaseFrame) &&
+                ((!freshPress && _radialDragBlocked) || captured);
+        }
 
         internal static bool KeyboardVisible
         {
@@ -152,6 +168,14 @@ namespace Quest3TriggerUI
             {
                 Logger.LogError("Duplicate runtime cleanup failed: " + exception);
             }
+            try
+            {
+                RecoverOrphanedRecorders();
+            }
+            catch (Exception exception)
+            {
+                Logger.LogError("Orphaned recorder cleanup failed: " + exception);
+            }
             RuntimeReady = false;
             ConfigEntry<float> longPress = Config.Bind(
                 "Input", "LongPressSeconds", 0.35f,
@@ -222,7 +246,6 @@ namespace Quest3TriggerUI
                 "IME", "CloudCandidates", false,
                 "Query Baidu's search-suggestion service for Chinese candidates (typed pinyin is sent over the network). false = local dictionary only. Off by default — the local rime-ice dictionary already covers IME-grade vocabulary.");
             PinyinEngine.CloudEnabled = imeCloud.Value;
-            PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
             ConfigEntry<bool> imeLearning = Config.Bind(
                 "IME", "Learning", true,
                 "Remember committed words/phrases in a local user dictionary (全拼+简拼 both recall). Stored in Quest3TriggerUI.pinyin-user.txt next to the plugin.");
@@ -242,21 +265,31 @@ namespace Quest3TriggerUI
                 "Hair density/detail scale; -1=level default (0.75/0.5), 0=disable.");
             ConfigEntry<int> physicsHairColl = Config.Bind(
                 "PhysicsBudget", "HairCollision", -1,
-                "Hair collision solve off: -1=level default (aggressive only), 0=never, 1=always.");
+                "Hair collision solve off: -1=level default (aggressive only), 0=never touch collision even at a level (头发碰撞 button off), 1=always off (works standalone at level 0).");
             ConfigEntry<float> physicsClothScale = Config.Bind(
                 "PhysicsBudget", "ClothScale", -1.0f,
                 "Cloth iteration scale for items with headroom; -1=level default (0.8/0.66), 0=disable.");
             ConfigEntry<int> physicsClothOff = Config.Bind(
                 "PhysicsBudget", "ClothOffBelow", -1,
                 "Cloth items with <=N physics particles get sim disabled entirely; -1=level default (250/500), 0=never.");
+            ConfigEntry<int> physicsHairCollAbove = Config.Bind(
+                "PhysicsBudget", "HairCollOffAbove", -1,
+                "Hair collision solver off for items with >=N particles (density*detail); -1=level default (20000 at balanced, unused at aggressive where all collision is off), 0=never.");
+            ConfigEntry<float> physicsHairCurl = Config.Bind(
+                "PhysicsBudget", "HairCurlScale", -1f,
+                "Hair curl frequency scale; -1=level default (0.75/0.6), 0=off, else overrides.");
             ConfigEntry<string> recordingDir = Config.Bind(
                 "Recording", "OutputDirectory", "VR录制",
                 "VR recording output folder. Relative paths resolve under the VaM install folder; absolute paths are used as-is.");
             ConfigEntry<string> ffmpegPath = Config.Bind(
                 "Recording", "FfmpegPath", "ffmpeg.exe",
                 "ffmpeg executable for VR recording. Bare name resolves through PATH; otherwise give a full path.");
+            ConfigEntry<bool> pauseOnStall = Config.Bind(
+                "Recording", "PauseOnStall", true,
+                "Pause recording during game stalls: the dead span is skipped from the output instead of being filled with repeated frames, and capture resumes when the game does.");
             VrVideoRecorder.OutputDirectory = recordingDir.Value;
             VrVideoRecorder.FfmpegPath = ffmpegPath.Value;
+            VrVideoRecorder.PauseOnStall = pauseOnStall.Value;
             ConfigEntry<string> hairPresetDir = Config.Bind(
                 "Paths", "HairPresetDir", "Custom/Atom/Person/Hair",
                 "VaM-relative folder where the hair preset browser opens. Change it if your hair presets live elsewhere.");
@@ -309,7 +342,10 @@ namespace Quest3TriggerUI
             PhysicsBudget.HairCollisionMode = physicsHairColl.Value;
             PhysicsBudget.ClothScaleOverride = physicsClothScale.Value;
             PhysicsBudget.ClothOffBelowOverride = physicsClothOff.Value;
+            PhysicsBudget.HairCollOffAboveOverride = physicsHairCollAbove.Value;
+            PhysicsBudget.HairCurlScaleOverride = physicsHairCurl.Value;
             PhysicsBudget.LevelEntry = physicsBudget;
+            PhysicsBudget.CollEntry = physicsHairColl;
             _physicsBudgetEntry = physicsBudget;
             _physicsSolverCapEntry = physicsSolverCap;
             _physicsHairScaleEntry = physicsHairScale;
@@ -353,12 +389,65 @@ namespace Quest3TriggerUI
             AudioCacheJanitor.EvictNow = Config.Bind(
                 "Diagnostics", "AudioCacheEvictNow", false,
                 "One-shot: evict all currently-unreferenced audio clips immediately (ignores grace window), then resets to false.");
+            PresetCleanupCoalescer.Enabled = Config.Bind(
+                "TextureLoading", "CoalesceCoveredCleanup", true,
+                "Reuse a native cleanup for supplemental cleanup only if it covers all prior release requests.");
+            PresetInstanceReuse.Enabled = Config.Bind(
+                "TextureLoading", "ReusePresetInstances", true,
+                "Temporarily retain ready same-base clothing/hair instances across native preset reset; restore all parameters normally.");
+            BumpNormalRowConverter.Enabled = Config.Bind(
+                "TextureLoading", "BumpNormalThreeRows", true,
+                "Use three scratch rows for native-equivalent bump-to-normal conversion; preserve output format and resolution.");
+            TextureDecodeBudget.Enabled = Config.Bind(
+                "TextureLoading", "DecodeBudgetEnabled", true,
+                "Bound estimated pending/decoding/upload-wait texture bytes; preserves image quality.");
+            TextureDecodeBudget.BudgetMiB = Config.Bind(
+                "TextureLoading", "DecodeBudgetMiB", 2048,
+                "Estimated in-flight budget (256..8192 MiB), reduced under physical RAM or system commit pressure. One oversize image may proceed.");
+            TextureDecodeBudget.EarlyDiscard = Config.Bind(
+                "TextureLoading", "DiscardStaleBeforeDecode", true,
+                "Skip decoding only when all known native receivers are proven obsolete; retain native completion.");
+            WardrobeJanitor.Enabled = Config.Bind(
+                "Wardrobe", "AutoUnload", true,
+                "Destroyed-removed clothing/hair reclamation: VaM keeps every swapped-out item's GameObject+textures until you press optimize memory. This unloads items that have been inactive for WardrobeIdleSeconds, a few per frame — reclaims their RAM+VRAM without the big optimize stall.");
+            WardrobeJanitor.IdleSeconds = Config.Bind(
+                "Wardrobe", "IdleSeconds", 60f,
+                "Seconds a removed clothing/hair item may sit inactive before it is destroyed. Longer = safer when cycling the same outfit set (re-wearing a destroyed item reloads it from scratch).");
+            WardrobeJanitor.MaxPerFrame = Config.Bind(
+                "Wardrobe", "MaxPerFrame", 2,
+                "Max inactive wardrobe items destroyed per frame — spreads the Destroy cost so reclamation is near-invisible.");
+            WardrobeJanitor.PurgeOnLoad = Config.Bind(
+                "Wardrobe", "PurgeOnLoad", true,
+                "After successful appearance/clothing/hair restore, wait for native image/character load tail before reclaiming inactive instances. Full appearance only also purges morph scratch; independent of AutoUnload.");
+            WardrobeJanitor.PurgeDelaySeconds = Config.Bind(
+                "Wardrobe", "PurgeDelaySeconds", 5f,
+                "Seconds after a full person preset load before the inactive-item purge runs — lets the async texture/morph tail settle first.");
+            TextureOrphanSweeper.Enabled = Config.Bind(
+                "Wardrobe", "TexOrphanSweep", true,
+                "Release unused textureCache ownership only for observed native character/material callback results. Unknown/UI/preload consumers are retained; no direct texture destruction.");
+            TextureOrphanSweeper.AgeSeconds = Config.Bind(
+                "Wardrobe", "TexOrphanSeconds", 120f,
+                "Seconds a cache entry may sit without any use count before its cache ownership is released — only observed native callbacks qualify; UI, preloads and unknown consumers are excluded.");
+            TextureOrphanSweeper.UnusedBudgetMiB = Config.Bind(
+                "Wardrobe", "UnusedNativeTextureBudgetMiB", 512,
+                "Soft budget for observed native unused textures only; live/shared/UI/preload/unknown consumers retained; 15s grace and sweep batch apply.");
+            TextureOrphanSweeper.MaxPerSweep = Config.Bind(
+                "Wardrobe", "TexOrphanMaxPerSweep", 16,
+                "Max orphan cache entries released per 10s sweep — spreads the work.");
+            WardrobeJanitor.PurgeMorphDeltas = Config.Bind(
+                "Wardrobe", "PurgeMorphDeltas", true,
+                "The post-load purge also calls UnloadRuntimeMorphDeltas (the same call VaM's optimize-memory makes) to drop the previous preset's runtime morph deltas.");
             _memSnapshotEntry = Config.Bind(
                 "Diagnostics", "MemorySnapshot", false,
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
+            _memWatchEntry = Config.Bind(
+                "Diagnostics", "MemWatchSeconds", 15,
+                "Periodic one-line memory/VRAM/texture-cache snapshot (snap[watch]); 0=off. Cheap — safe to leave on while hunting leaks.");
 
             Instance = this;
             Log = Logger;
+            PinyinEngine.Initialize();
+            PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
             _auxiliaryUiView = VrAuxiliaryUiView.Begin();
             Trigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
 			LeftTrigger = new TriggerStateMachine(longPress.Value, pressThreshold.Value, releaseThreshold.Value);
@@ -446,6 +535,68 @@ namespace Quest3TriggerUI
             if (removed > 0)
                 Logger.LogWarning("Removed " + removed +
                     " duplicate Quest3TriggerUI runtime instance(s) and their overlapping canvases.");
+        }
+
+        // A crash or reload mid-recording destroys this runtime but leaves
+        // the previous payload's VrAudioTap on the scene AudioListener: it
+        // keeps feeding that payload's static recorder, so the .audio.wav
+        // grows forever while the new UI reports nothing recording. Dispose
+        // every foreign-assembly recorder (finalizes the WAV header, closes
+        // the stream, stops its ffmpeg) and destroy tap components that
+        // outlived their payload.
+        private void RecoverOrphanedRecorders()
+        {
+            int disposed = 0, taps = 0;
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try { types = assembly.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types; }
+                catch { continue; }
+                if (types == null) continue;
+                for (int i = 0; i < types.Length; i++)
+                {
+                    Type t = types[i];
+                    if (t == null || t == typeof(VrVideoRecorder)) continue;
+                    if (t.Name != "VrVideoRecorder" || t.Namespace == null ||
+                        !t.Namespace.StartsWith("Quest3TriggerUI"))
+                        continue;
+                    FieldInfo current = t.GetField("Current",
+                        BindingFlags.Static | BindingFlags.NonPublic |
+                        BindingFlags.Public);
+                    if (current == null) continue;
+                    object recorder;
+                    try { recorder = current.GetValue(null); }
+                    catch { continue; }
+                    if (recorder == null) continue;
+                    try
+                    {
+                        t.GetMethod("Dispose").Invoke(recorder, null);
+                        disposed++;
+                    }
+                    catch (Exception e)
+                    {
+                        Logger.LogWarning("Orphaned recorder dispose failed: " + e);
+                    }
+                }
+            }
+            foreach (MonoBehaviour mb in Resources.FindObjectsOfTypeAll<MonoBehaviour>())
+            {
+                if (mb == null) continue;
+                Type t = mb.GetType();
+                if (t == typeof(VrAudioTap) || t == typeof(VrVideoTap)) continue;
+                string name = t.Name;
+                if ((name != "VrAudioTap" && name != "VrVideoTap") ||
+                    t.Namespace == null ||
+                    !t.Namespace.StartsWith("Quest3TriggerUI") ||
+                    t.Assembly == GetType().Assembly)
+                    continue;
+                UnityEngine.Object.Destroy(mb);
+                taps++;
+            }
+            if (disposed > 0 || taps > 0)
+                Logger.LogInfo("Recovered orphaned recording: disposed=" +
+                    disposed + " stale taps destroyed=" + taps);
         }
 
         private void Update()
@@ -541,8 +692,15 @@ namespace Quest3TriggerUI
                 _memSnapshotEntry.Value = false;
                 MemoryProbe.Dump();
             }
+            if (_memWatchEntry != null && _memWatchEntry.Value > 0 &&
+                Time.unscaledTime >= _nextMemWatch)
+            {
+                _nextMemWatch = Time.unscaledTime + _memWatchEntry.Value;
+                MemoryProbe.Snapshot("watch");
+            }
             AudioDeviceFollower.Tick();
             AudioCacheJanitor.Tick();
+            WardrobeJanitor.Tick();
 
             if (!InputRuntimeActive || SuperController.singleton == null)
                 return;
@@ -554,6 +712,9 @@ namespace Quest3TriggerUI
             if (_physicsBudgetEntry != null &&
                 _physicsBudgetEntry.Value != PhysicsBudget.Level)
                 PhysicsBudget.SetLevel(_physicsBudgetEntry.Value);
+            if (_physicsHairCollEntry != null &&
+                _physicsHairCollEntry.Value != PhysicsBudget.HairCollisionMode)
+                PhysicsBudget.HairCollisionMode = _physicsHairCollEntry.Value;
             PhysicsBudget.Tick();
             _keyboard.Tick();
             if (_quickActionRevision != _keyboard.QuickActionRevision)
@@ -568,14 +729,19 @@ namespace Quest3TriggerUI
             ClothingRegionMode.Tick();
             PluginListMode.Tick();
             int frame = Time.frameCount;
-            if (ClothingDragCandidate != null && Trigger != null &&
-                Trigger.LongPressStartFrame == frame)
+            // The drag answers to whichever hand's trigger armed it —
+            // candidate.RightPointer picks the state machine so a left-hand
+            // grab releases on the left trigger, not the right.
+            TriggerStateMachine dragTrigger = ClothingDragCandidate != null &&
+                !ClothingDragCandidate.RightPointer ? LeftTrigger : Trigger;
+            if (ClothingDragCandidate != null && dragTrigger != null &&
+                dragTrigger.LongPressStartFrame == frame)
             {
                 ClothingDragActive = UiAssistHudLink.BeginFavoriteDrag(ClothingDragCandidate);
             }
-            if (ClothingDragActive && Trigger != null)
+            if (ClothingDragActive && dragTrigger != null)
             {
-                if (Trigger.ReleasedFrame == frame)
+                if (dragTrigger.ReleasedFrame == frame)
                 {
                     UiAssistHudLink.EndFavoriteDrag(ClothingDragCandidate);
                     ClothingDragActive = false;
@@ -592,8 +758,8 @@ namespace Quest3TriggerUI
                     Logger.LogInfo("Q3 radial blocked: keyboard visible");
                 else if (SliderDragActive)
                     Logger.LogInfo("Q3 radial blocked: slider drag active");
-                else if (ClothingDragCandidate != null)
-                    Logger.LogInfo("Q3 radial blocked: clothing drag candidate");
+                else if (RadialDragBlocked)
+                    Logger.LogInfo("Q3 radial blocked: captured drag gesture");
                 else if (ClothingRegionMode.PointerInside)
                     Logger.LogInfo("Q3 radial blocked: regional clothing drag");
                 else if (PluginListMode.PointerInside)
@@ -869,13 +1035,18 @@ namespace Quest3TriggerUI
 
         private void OnDestroy()
         {
+            PinyinEngine.Shutdown();
             UiAssistHudLink.Reset(); DlssUiOverlay.Stop();
             if (_auxiliaryUiView != null) DestroyImmediate(_auxiliaryUiView.gameObject);
-            PinyinEngine.FlushUserDict();
             HairDebugMode.Shutdown();
             VrShotCameras.Shutdown();
             ClothingRegionMode.Shutdown();
             PluginListMode.Shutdown();
+            WardrobeJanitor.Shutdown();
+            // An undestroyed recorder outlives this runtime through the
+            // AudioListener tap and writes to its .audio.wav forever.
+            if (VrVideoRecorder.Current != null)
+                VrVideoRecorder.Current.Dispose();
             PhysicsBudget.Restore();
             RuntimeReady = false;
             if (_globalPitch != null)
@@ -907,6 +1078,7 @@ namespace Quest3TriggerUI
 			SliderDragActive = false;
             ClothingDragActive = false;
             ClothingDragCandidate = null;
+            _radialDragBlocked = false;
             _globalPitch = null;
             if (_embodyNavigationGuard != null)
                 _embodyNavigationGuard.Reset();
@@ -1021,19 +1193,48 @@ namespace Quest3TriggerUI
                         " kbVis=" + KeyboardVisible + " radVis=" + RadialMenuVisible +
                         " ptrIn=" + VrPresetBrowser.PointerInside);
 				SliderDragActive = VrSliderPointer.IsRightPointerOverSlider();
-                GameObject pressLookRight = VrPointerPresentation.CurrentLookTarget(true);
-                GameObject pressLookLeft = VrPointerPresentation.CurrentLookTarget(false);
-                ClothingDragCandidate =
-                    UiAssistHudLink.BeginFavoriteCandidate(pressLookRight, true) ??
-                    UiAssistHudLink.BeginFavoriteCandidate(pressLookLeft, false);
-                if (ClothingDragCandidate == null)
-                    UiAssistHudLink.LogPressMiss(pressLookRight, pressLookLeft);
+                // Each trigger only ever binds its own hand's laser —
+                // falling back to the left look target let a right press
+                // grab whatever the left cursor rested on.
+                if (ClothingDragCandidate == null && !ClothingDragActive)
+                {
+                    GameObject pressLookRight =
+                        VrPointerPresentation.CurrentLookTarget(true);
+                    ClothingDragCandidate =
+                        UiAssistHudLink.BeginFavoriteCandidate(pressLookRight, true);
+                    if (ClothingDragCandidate == null)
+                        UiAssistHudLink.LogPressMiss(pressLookRight,
+                            VrPointerPresentation.CurrentLookTarget(false));
+                }
             }
 			else if (!Trigger.Pressed && Trigger.ReleasedFrame != frame)
             {
 				SliderDragActive = false;
+                if (ClothingDragCandidate == null ||
+                    ClothingDragCandidate.RightPointer)
+                    ClothingDragCandidate = null;
+            }
+            // Left index gets the same press pipeline for the left laser:
+            // press on a slot arms a candidate, long-press drags it, and
+            // the left submit patches withhold the native click meanwhile.
+            if (LeftTrigger.PressedDownFrame == frame)
+            {
+                if (ClothingDragCandidate == null && !ClothingDragActive)
+                    ClothingDragCandidate =
+                        UiAssistHudLink.BeginFavoriteCandidate(
+                            VrPointerPresentation.CurrentLookTarget(false), false);
+            }
+            else if (!LeftTrigger.Pressed && LeftTrigger.ReleasedFrame != frame &&
+                     ClothingDragCandidate != null &&
+                     !ClothingDragCandidate.RightPointer)
+            {
                 ClothingDragCandidate = null;
             }
+            UpdateRadialDragBlock(Trigger.Pressed, Trigger.ReleasedFrame == frame,
+                ClothingDragActive || ClothingDragCandidate != null ||
+                VrPresetBrowser.CapturingGesture ||
+                (Trigger.PressedDownFrame == frame && VrPresetBrowser.PointerInside),
+                Trigger.PressedDownFrame == frame);
 			RightGripTrigger.Advance(frame, Time.unscaledTime, gripValue);
             if (RightGripTrigger.PressedDownFrame == frame && Log != null)
                 Log.LogInfo("Q3 grip edge: grip=" + gripValue.ToString("F2") +
@@ -1099,6 +1300,16 @@ internal static bool SuppressRightInput()
 	}
 
     internal static class SyntheticRightUiClick
+    {
+        private static readonly SyntheticClickState State = new SyntheticClickState();
+        internal static void Begin(int frame) { State.Begin(frame); }
+        internal static bool ConsumeUp(int frame) { return State.ConsumeUp(frame); }
+    }
+
+    // Left-hand counterpart: while a left press is owned by a drag
+    // candidate the real submit edges are withheld, so a tap replays the
+    // click as a synthetic down+up pair (same model as the right hand).
+    internal static class SyntheticLeftUiClick
     {
         private static readonly SyntheticClickState State = new SyntheticClickState();
         internal static void Begin(int frame) { State.Begin(frame); }
@@ -1188,8 +1399,19 @@ internal static bool SuppressRightInput()
 		{
 			if (!Quest3TriggerUIPlugin.InputRuntimeActive) return true;
 			Quest3TriggerUIPlugin.SampleInputs();
-			__result = Quest3TriggerUIPlugin.LeftTrigger != null &&
-				Quest3TriggerUIPlugin.LeftTrigger.PressedDownFrame == Time.frameCount;
+			int frame = Time.frameCount;
+			// A left press on a drag source is owned by the drag pipeline —
+			// the real submit down would click the slot underneath the
+			// press before a long-press could turn it into a drag.
+			bool leftOwned = Quest3TriggerUIPlugin.ClothingDragCandidate != null &&
+				!Quest3TriggerUIPlugin.ClothingDragCandidate.RightPointer;
+			bool tap = leftOwned &&
+				Quest3TriggerUIPlugin.LeftTrigger != null &&
+				Quest3TriggerUIPlugin.LeftTrigger.TapFrame == frame;
+			if (tap) SyntheticLeftUiClick.Begin(frame);
+			__result = tap || (!leftOwned &&
+				Quest3TriggerUIPlugin.LeftTrigger != null &&
+				Quest3TriggerUIPlugin.LeftTrigger.PressedDownFrame == frame);
 			return false;
 		}
 	}
@@ -1202,8 +1424,15 @@ internal static bool SuppressRightInput()
 		{
 			if (!Quest3TriggerUIPlugin.InputRuntimeActive) return true;
 			Quest3TriggerUIPlugin.SampleInputs();
-			__result = Quest3TriggerUIPlugin.LeftTrigger != null &&
-				Quest3TriggerUIPlugin.LeftTrigger.ReleasedFrame == Time.frameCount;
+			int frame = Time.frameCount;
+			// While a left drag owns the press the real release is withheld
+			// — the drop already committed in EndFavoriteDrag; on taps the
+			// synthetic pair replays the click a frame later instead.
+			bool leftOwned = Quest3TriggerUIPlugin.ClothingDragCandidate != null &&
+				!Quest3TriggerUIPlugin.ClothingDragCandidate.RightPointer;
+			__result = SyntheticLeftUiClick.ConsumeUp(frame) || (!leftOwned &&
+				Quest3TriggerUIPlugin.LeftTrigger != null &&
+				Quest3TriggerUIPlugin.LeftTrigger.ReleasedFrame == frame);
 			return false;
 		}
 	}
@@ -1409,15 +1638,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
-
-
-
-
-
-
-
-
 
 
 

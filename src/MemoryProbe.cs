@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
@@ -18,7 +19,10 @@ namespace Quest3TriggerUI
         private struct MemCounters
         {
             public uint cb;
-            public UIntPtr PageFaultCount;
+            // Native DWORD — declaring UIntPtr shifted every later field
+            // by 4 bytes and made WorkingSetSize/PagefileUsage read the
+            // wrong counters.
+            public uint PageFaultCount;
             public UIntPtr PeakWorkingSetSize;
             public UIntPtr WorkingSetSize;
             public UIntPtr QuotaPeakPagedPoolUsage;
@@ -32,6 +36,80 @@ namespace Quest3TriggerUI
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetProcessMemoryInfo(
             IntPtr hProcess, out MemCounters counters, uint size);
+
+        // Per-process dedicated VRAM. Profiler.GetAllocatedMemoryForGraphicsDriver
+        // returns 0 on Unity 2018 release builds; WMI class names would work but
+        // Mono's System.Management is unreliable, so we go straight to PDH.
+        // PdhAddEnglishCounterW takes the English path on any locale (this box
+        // is zh-CN — plain PdhAddCounter would need the localized name).
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+        private static extern int PdhOpenQueryW(
+            string ds, IntPtr ud, out IntPtr query);
+        [DllImport("pdh.dll", CharSet = CharSet.Unicode)]
+        private static extern int PdhAddEnglishCounterW(
+            IntPtr query, string path, IntPtr ud, out IntPtr counter);
+        [DllImport("pdh.dll")] private static extern int PdhCollectQueryData(
+            IntPtr query);
+        [DllImport("pdh.dll")] private static extern int PdhGetFormattedCounterArrayW(
+            IntPtr counter, int format, ref uint bufSize,
+            out uint itemCount, IntPtr buffer);
+        [DllImport("pdh.dll")] private static extern int PdhCloseQuery(
+            IntPtr query);
+
+        private const int PDH_FMT_LARGE = 0x00000400;  // LONGLONG, not LONG
+        private const int PDH_MORE_DATA = unchecked((int)0x800007D2);
+        // PDH_FMT_COUNTERVALUE_ITEM on x64: LPWSTR name (8) + DWORD CStatus (4)
+        // + pad (4) + union value (8) → item stride 24, CStatus offset 8,
+        // value offset 16. Items with CStatus != 0 carry undefined values.
+        private const int PdhItemStride = 24, PdhItemStatusOfs = 8,
+            PdhItemValueOfs = 16;
+
+        private static long GfxDedicatedBytes()
+        {
+            IntPtr q = IntPtr.Zero, ctr = IntPtr.Zero, buf = IntPtr.Zero;
+            try
+            {
+                if (PdhOpenQueryW(null, IntPtr.Zero, out q) != 0) return -1;
+                if (PdhAddEnglishCounterW(q,
+                        "\\GPU Process Memory(*)\\Dedicated Usage",
+                        IntPtr.Zero, out ctr) != 0)
+                    return -1;
+                // First collect on a fresh counter often yields junk —
+                // collect twice like any rate-counter reader would.
+                if (PdhCollectQueryData(q) != 0) return -1;
+                System.Threading.Thread.Sleep(50);
+                if (PdhCollectQueryData(q) != 0) return -1;
+                uint bufSize = 0, count = 0;
+                int rc = PdhGetFormattedCounterArrayW(ctr, PDH_FMT_LARGE,
+                    ref bufSize, out count, IntPtr.Zero);
+                if (rc != PDH_MORE_DATA || bufSize == 0) return -1;
+                buf = Marshal.AllocHGlobal((int)bufSize);
+                rc = PdhGetFormattedCounterArrayW(ctr, PDH_FMT_LARGE,
+                    ref bufSize, out count, buf);
+                if (rc != 0) return -1;
+                string needle = "pid_" + Process.GetCurrentProcess().Id + "_";
+                long sum = 0; bool any = false;
+                for (uint i = 0; i < count; i++)
+                {
+                    IntPtr item = new IntPtr(buf.ToInt64() + i * PdhItemStride);
+                    string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(item));
+                    if (name == null || !name.StartsWith(needle,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    if (Marshal.ReadInt32(item, PdhItemStatusOfs) != 0)
+                        continue;
+                    sum += Marshal.ReadInt64(item, PdhItemValueOfs);
+                    any = true;
+                }
+                return any ? sum : -1;
+            }
+            catch { return -1; }
+            finally
+            {
+                if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
+                if (q != IntPtr.Zero) PdhCloseQuery(q);
+            }
+        }
 
         private class ObjRow
         {
@@ -271,7 +349,7 @@ namespace Quest3TriggerUI
             }
         }
 
-        private static int FormatBpp(TextureFormat f)
+        internal static int FormatBpp(TextureFormat f)
         {
             switch (f)
             {
@@ -302,7 +380,7 @@ namespace Quest3TriggerUI
             }
         }
 
-        private static long TexBytes(int w, int h, int bpp, int mips)
+        internal static long TexBytes(int w, int h, int bpp, int mips)
         {
             long bytes = 0;
             int levels = Math.Max(1, mips);
@@ -609,6 +687,120 @@ namespace Quest3TriggerUI
             {
                 Log("atom count failed: " + ex.Message);
             }
+        }
+
+        // Lightweight tagged snapshot — one compact line for tracking
+        // growth across repeated operations (person preset loads). The
+        // heavyweight Dump() stays opt-in via cfg; this one is cheap
+        // enough to run automatically. Includes the ImageLoaderThreaded
+        // texture-cache census with refcount buckets: cached textures
+        // stay referenced by the dictionary, so UnloadUnusedAssets can
+        // never reclaim them — dead-bucket growth is the leak signature.
+        internal static void Snapshot(string tag)
+        {
+            try
+            {
+                MemCounters mc;
+                long ws = Environment.WorkingSet, pf = 0;
+                if (GetProcessMemoryInfo(
+                        Process.GetCurrentProcess().Handle,
+                        out mc, (uint)Marshal.SizeOf(typeof(MemCounters))))
+                {
+                    ws = (long)mc.WorkingSetSize.ToUInt64();
+                    pf = (long)mc.PagefileUsage.ToUInt64();
+                }
+                long gfx = GfxDedicatedBytes();
+                if (gfx < 0)
+                    try
+                    {
+                        gfx = UnityEngine.Profiling.Profiler
+                            .GetAllocatedMemoryForGraphicsDriver();
+                    }
+                    catch { gfx = -1; }
+                long heap = GC.GetTotalMemory(false);
+
+                int texN = 0, dead = 0, live = 0, untracked = 0;
+                long texB = 0, deadB = 0;
+                List<ObjRow> top = null;
+                try
+                {
+                    ImageLoaderThreaded loader = ImageLoaderThreaded.singleton;
+                    const BindingFlags BF = BindingFlags.Instance |
+                        BindingFlags.NonPublic;
+                    Type lt = typeof(ImageLoaderThreaded);
+                    FieldInfo cacheF = lt.GetField("textureCache", BF);
+                    FieldInfo countF = lt.GetField("textureUseCount", BF);
+                    var cacheDict = loader != null && cacheF != null
+                        ? cacheF.GetValue(loader)
+                            as Dictionary<string, Texture2D> : null;
+                    var countDict = loader != null && countF != null
+                        ? countF.GetValue(loader)
+                            as Dictionary<Texture2D, int> : null;
+                    if (cacheDict != null)
+                    {
+                        top = new List<ObjRow>();
+                        foreach (KeyValuePair<string, Texture2D> kv
+                            in cacheDict)
+                        {
+                            Texture2D t = kv.Value;
+                            if (t == null) continue;
+                            texN++;
+                            long b = TexBytes(t.width, t.height,
+                                FormatBpp(t.format), t.mipmapCount);
+                            texB += b;
+                            int c = 0;
+                            bool tracked = countDict != null &&
+                                countDict.TryGetValue(t, out c);
+                            if (!tracked) untracked++;
+                            else if (c <= 0) { dead++; deadB += b; }
+                            else live++;
+                            top.Add(new ObjRow
+                            {
+                                Name = kv.Key +
+                                    (tracked ? " x" + c : " x?"),
+                                Bytes = b
+                            });
+                        }
+                    }
+                }
+                catch (Exception texEx)
+                {
+                    Log("tex census failed: " + texEx.Message);
+                }
+
+                Log(string.Format(
+                    "snap[{0}] ws={1:F2}GB pagefile={2:F2}GB heap={3:F2}GB gfx={4} texCache={5}({6:F2}GB live={7} dead={8}({9:F2}GB) untracked={10})",
+                    tag, ws / 1073741824.0, pf / 1073741824.0,
+                    heap / 1073741824.0,
+                    gfx < 0 ? "n/a"
+                        : (gfx / 1048576.0).ToString("F0") + "MB",
+                    texN, texB / 1073741824.0, live, dead,
+                    deadB / 1073741824.0, untracked));
+                if (top != null && top.Count > 0)
+                {
+                    top.Sort(delegate(ObjRow a, ObjRow b)
+                    { return b.Bytes.CompareTo(a.Bytes); });
+                    var sb = new System.Text.StringBuilder();
+                    int n = Math.Min(6, top.Count);
+                    for (int i = 0; i < n; i++)
+                        sb.Append(Truncate(top[i].Name, 40)).Append('=')
+                            .Append((top[i].Bytes / 1048576.0)
+                                .ToString("F0")).Append("MB; ");
+                    Log("snap[" + tag + "] top: " + sb);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("snapshot failed: " + ex.Message);
+            }
+        }
+
+        internal static System.Collections.IEnumerator SnapshotDelayed(
+            MonoBehaviour host, string tag, float seconds)
+        {
+            if (host == null) yield break;
+            yield return new WaitForSecondsRealtime(seconds);
+            Snapshot(tag);
         }
 
         private static string Truncate(string s, int max)

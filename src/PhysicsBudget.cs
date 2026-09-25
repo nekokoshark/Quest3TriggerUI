@@ -20,39 +20,70 @@ namespace Quest3TriggerUI
         internal static int Level;                        // 0=off 1=balanced 2=aggressive
         internal static int SolverCapOverride = -1;       // >0 cap override, 0=disable cap
         internal static float HairScaleOverride = -1f;    // 0..1 density/detail scale, 0=off
+        internal static float HairCurlScaleOverride = -1f; // 0..1 curl frequency scale, -1=level default
         internal static int HairCollisionMode = -1;       // -1=default (aggr only), 0=never, 1=always
         internal static float ClothScaleOverride = -1f;   // 0..1 iteration scale, 0=off
         internal static int ClothOffBelowOverride = -1;   // particles ≤ N → sim off; 0=never
+        internal static int HairCollOffAboveOverride = -1; // ≥N particles → collision off; -1=level default, 0=never
         internal static BepInEx.Configuration.ConfigEntry<int> LevelEntry;
+        internal static BepInEx.Configuration.ConfigEntry<int> CollEntry;
 
         private const float ScanSeconds = 1.0f;
 
         private static float _nextScan;
         private static int _appliedLevel = -1;
+        private static bool _collOnlyApplied;
         private static bool _simsLogged;
         private static readonly Dictionary<PhysicsSimulator, int> _origIterations =
             new Dictionary<PhysicsSimulator, int>();
 
-        private static void ParamsFor(int level, out int cap, out float hairScale,
-            out bool hairCollOff, out float clothScale, out int clothOffBelow)
+        private static void ParamsFor(int level, out int cap,
+            out float hairDensity, out float hairDetail, out float hairCurl,
+            out bool hairCollOff, out int hairCollOffAbove,
+            out float clothScale, out int clothOffBelow)
         {
             // Solver cap measured harmful on real content (collider chains
             // under-converge → soft-body clothing sags) — off in presets,
             // SolverCap override remains for manual tuning.
-            if (level >= 2)
+            if (level <= 0)
             {
-                cap = 0; hairScale = 0.5f; hairCollOff = true;
+                // Neutral set — only reached when the standalone collision
+                // toggle runs the scan with no budget level active.
+                cap = 0; hairDensity = 1f; hairDetail = 1f;
+                hairCurl = 1f; hairCollOff = false;
+                hairCollOffAbove = 0;
+                clothScale = 1f; clothOffBelow = 0;
+            }
+            else if (level >= 2)
+            {
+                cap = 0; hairDensity = 0.75f; hairDetail = 0.6f;
+                hairCurl = 0.6f; hairCollOff = true;
+                hairCollOffAbove = 0;
                 clothScale = 0.66f; clothOffBelow = 500;
             }
             else
             {
-                cap = 0; hairScale = 0.75f; hairCollOff = false;
+                // Balanced: collision off only for genuinely heavy hair —
+                // density×detail ≈ particle count, 20000 ≈ long dense hair.
+                cap = 0; hairDensity = 0.85f; hairDetail = 0.75f;
+                hairCurl = 0.75f; hairCollOff = false;
+                hairCollOffAbove = 20000;
                 clothScale = 0.8f; clothOffBelow = 250;
             }
             if (SolverCapOverride >= 0) cap = SolverCapOverride;
             if (HairScaleOverride >= 0f)
-                hairScale = HairScaleOverride < 0.001f ? 1.0f : HairScaleOverride;
+            {
+                float hs = HairScaleOverride < 0.001f ? 1.0f : HairScaleOverride;
+                hairDensity = hs; hairDetail = hs;
+            }
+            if (HairCurlScaleOverride >= 0f)
+                hairCurl = HairCurlScaleOverride < 0.001f
+                    ? 1.0f : HairCurlScaleOverride;
             if (HairCollisionMode >= 0) hairCollOff = HairCollisionMode == 1;
+            if (HairCollOffAboveOverride >= 0) hairCollOffAbove = HairCollOffAboveOverride;
+            // Mode 0 = "never": the toggle's off state must not touch hair
+            // collision at all — suppress the level's collision policy too.
+            if (HairCollisionMode == 0) { hairCollOff = false; hairCollOffAbove = 0; }
             if (ClothScaleOverride >= 0f)
                 clothScale = ClothScaleOverride < 0.001f ? 1.0f : ClothScaleOverride;
             if (ClothOffBelowOverride >= 0) clothOffBelow = ClothOffBelowOverride;
@@ -66,7 +97,16 @@ namespace Quest3TriggerUI
                 if (Level <= 0) Restore();
                 else Apply(Level);
             }
-            if (_appliedLevel <= 0) return;
+            // The standalone collision toggle keeps the scan alive at
+            // level 0; releasing it restores what it had switched off.
+            bool collOnly = _appliedLevel <= 0 && HairCollisionMode == 1;
+            if (!collOnly && _collOnlyApplied)
+            {
+                GpuSimBudget.Restore();
+                _collOnlyApplied = false;
+            }
+            if (_appliedLevel <= 0 && !collOnly) return;
+            if (collOnly) _collOnlyApplied = true;
             if (Time.unscaledTime < _nextScan) return;
             _nextScan = Time.unscaledTime + ScanSeconds;
             Scan();
@@ -83,13 +123,25 @@ namespace Quest3TriggerUI
             SetLevelEntry((Level + 1) % 3);
         }
 
+        // Menu button: toggle collision force-off (1) ↔ never touch (0).
+        // Off means hands-off even when a budget level is active.
+        internal static void ToggleHairCollision()
+        {
+            HairCollisionMode = HairCollisionMode == 1 ? 0 : 1;
+            if (CollEntry != null) CollEntry.Value = HairCollisionMode;
+            if (Quest3TriggerUIPlugin.Log != null)
+                Quest3TriggerUIPlugin.Log.LogInfo(
+                    "Hair collision mode=" + HairCollisionMode);
+        }
+
         internal static void SetLevelEntry(int level)
         {
             SolverCapOverride = -1;
             HairScaleOverride = -1f;
-            HairCollisionMode = -1;
             ClothScaleOverride = -1f;
             ClothOffBelowOverride = -1;
+            HairCollOffAboveOverride = -1;
+            HairCurlScaleOverride = -1f;
             SetLevel(level);
             if (LevelEntry != null) LevelEntry.Value = Level;
             if (Quest3TriggerUIPlugin.Log != null)
@@ -126,11 +178,12 @@ namespace Quest3TriggerUI
         {
             SuperController sc = SuperController.singleton;
             if (sc == null) return;
-            int cap, clothOffBelow;
-            float hairScale, clothScale;
+            int cap, clothOffBelow, hairCollOffAbove;
+            float hairDensity, hairDetail, hairCurl, clothScale;
             bool hairCollOff;
-            ParamsFor(_appliedLevel, out cap, out hairScale, out hairCollOff,
-                out clothScale, out clothOffBelow);
+            ParamsFor(_appliedLevel, out cap, out hairDensity, out hairDetail,
+                out hairCurl, out hairCollOff,
+                out hairCollOffAbove, out clothScale, out clothOffBelow);
             if (cap <= 0 && _origIterations.Count > 0)
             {
                 foreach (KeyValuePair<PhysicsSimulator, int> kv in _origIterations)
@@ -148,10 +201,13 @@ namespace Quest3TriggerUI
             {
                 Atom atom = atoms[i];
                 if (atom == null) continue;
-                if (hairScale < 0.999f || hairCollOff || clothScale < 0.999f ||
+                if (hairDensity < 0.999f || hairDetail < 0.999f ||
+                    hairCurl < 0.999f || hairCollOff || hairCollOffAbove > 0 ||
+                    clothScale < 0.999f ||
                     clothOffBelow > 0 || GpuSimBudget.HasState)
-                    GpuSimBudget.ScanAtom(atom, hairScale, hairCollOff,
-                        clothScale, clothOffBelow);
+                    GpuSimBudget.ScanAtom(atom, hairDensity, hairDetail,
+                        hairCurl, hairCollOff,
+                        hairCollOffAbove, clothScale, clothOffBelow);
                 PhysicsSimulator[] sims;
                 try { sims = atom.physicsSimulators; }
                 catch { continue; }

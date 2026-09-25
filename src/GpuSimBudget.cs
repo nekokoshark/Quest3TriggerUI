@@ -27,6 +27,7 @@ namespace Quest3TriggerUI
         private sealed class HairState
         {
             internal int origDensity, origDetail, lastWDensity, lastWDetail;
+            internal float origCurl, lastWCurl;
             internal bool origColl, collSnapshotted;
         }
         private sealed class ClothState
@@ -52,8 +53,14 @@ namespace Quest3TriggerUI
             get { return _hair.Count > 0 || _cloth.Count > 0; }
         }
 
-        internal static void ScanAtom(Atom atom, float hairScale, bool hairCollOff,
-            float clothScale, int clothOffBelow)
+        // hairCollOffAbove: collision is also switched off for items whose
+        // inherent size (origDensity×origDetail ≈ particle count) reaches
+        // the threshold — the balanced level uses this so only genuinely
+        // heavy long hair loses collision, while aggressive turns it off
+        // for everything via hairCollOff.
+        internal static void ScanAtom(Atom atom, float hairDensity,
+            float hairDetail, float hairCurl, bool hairCollOff,
+            int hairCollOffAbove, float clothScale, int clothOffBelow)
         {
             List<HairSimControl> hairs = GetControls(atom, _hairByAtom);
             List<ClothSimControl> cloths = GetControls(atom, _clothByAtom);
@@ -95,10 +102,16 @@ namespace Quest3TriggerUI
                 if (!_hair.TryGetValue(h, out st))
                     _hair[h] = st = new HairState {
                         origDensity = lod.FixedDensity, origDetail = lod.FixedDetail,
-                        lastWDensity = -1, lastWDetail = -1 };
-                st.lastWDensity = ScaleHairField(lod, true, st, hairScale, 6);
-                st.lastWDetail = ScaleHairField(lod, false, st, hairScale, 4);
-                if (hairCollOff)
+                        origCurl = h.hairSettings.RenderSettings == null
+                            ? -1f : h.hairSettings.RenderSettings.WavinessFrequency,
+                        lastWDensity = -1, lastWDetail = -1, lastWCurl = -1f };
+                st.lastWDensity = ScaleHairField(lod, true, st, hairDensity, 6);
+                st.lastWDetail = ScaleHairField(lod, false, st, hairDetail, 4);
+                st.lastWCurl = ScaleHairCurl(h.hairSettings, st, hairCurl);
+                bool wantCollOff = hairCollOff ||
+                    (hairCollOffAbove > 0 &&
+                     (long)st.origDensity * st.origDetail >= hairCollOffAbove);
+                if (wantCollOff)
                 {
                     if (!st.collSnapshotted)
                     { st.origColl = ps.IsCollisionEnabled; st.collSnapshotted = true; }
@@ -172,6 +185,34 @@ namespace Quest3TriggerUI
             return target;
         }
 
+        // Curl frequency lives in RenderSettings (the 卷曲密度 slider →
+        // WavinessFrequency) and needs particlesData.UpdateSettings() to
+        // take effect — same re-baselining rule as the int fields, float
+        // variant with no floor.
+        private static float ScaleHairCurl(
+            GPUTools.Hair.Scripts.HairSettings hs, HairState st, float scale)
+        {
+            var rs = hs.RenderSettings;
+            if (rs == null || st.origCurl < 0f) return -1f;
+            float live = rs.WavinessFrequency;
+            if (st.lastWCurl >= 0f && live != st.lastWCurl)
+                st.origCurl = live;
+            float target = scale >= 0.99f
+                ? st.origCurl : st.origCurl * scale;
+            if (live != target)
+            {
+                rs.WavinessFrequency = target;
+                try
+                {
+                    var cmd = hs.HairBuidCommand;
+                    if (cmd != null && cmd.particlesData != null)
+                        cmd.particlesData.UpdateSettings();
+                }
+                catch { }
+            }
+            return target;
+        }
+
         private static int ScaleCloth(GPUTools.Cloth.Scripts.ClothSettings cs,
             bool outer, ClothState st, float scale)
         {
@@ -223,6 +264,19 @@ namespace Quest3TriggerUI
                     {
                         h.hairSettings.LODSettings.FixedDensity = kv.Value.origDensity;
                         h.hairSettings.LODSettings.FixedDetail = kv.Value.origDetail;
+                    }
+                    if (kv.Value.origCurl >= 0f &&
+                        h.hairSettings.RenderSettings != null)
+                    {
+                        h.hairSettings.RenderSettings.WavinessFrequency =
+                            kv.Value.origCurl;
+                        try
+                        {
+                            var cmd = h.hairSettings.HairBuidCommand;
+                            if (cmd != null && cmd.particlesData != null)
+                                cmd.particlesData.UpdateSettings();
+                        }
+                        catch { }
                     }
                     if (kv.Value.collSnapshotted &&
                         h.hairSettings.PhysicsSettings != null)

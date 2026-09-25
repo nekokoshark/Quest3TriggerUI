@@ -43,10 +43,27 @@ namespace Quest3TriggerUI
                 new[] { typeof(NamedAudioClip) }, null);
         private static readonly Dictionary<AudioClip, float> UnrefSince =
             new Dictionary<AudioClip, float>();
+        // AudioSourceControl keeps a LinkedList<NamedAudioClip> queue for
+        // clips queued while another is playing/paused, plus _playingClip.
+        // Neither is assigned to audioSource.clip until dequeued, so a
+        // clip-list sweep alone would evict music still waiting to play.
+        private static readonly System.Reflection.FieldInfo QueueField =
+            typeof(AudioSourceControl).GetField("queue",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
+        private static readonly System.Reflection.FieldInfo PlayingField =
+            typeof(AudioSourceControl).GetField("_playingClip",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
         private static float _nextSweep;
 
         internal static void Tick()
         {
+            var sc = SuperController.singleton;
+            // Never evict mid-restore: scene load re-links clip references
+            // and a sweep here could destroy clips the new scene is wiring.
+            if (sc == null || sc.isLoading ||
+                SceneLoadAccelerator.SceneLoadActive) return;
             if (EvictNow != null && EvictNow.Value)
             {
                 EvictNow.Value = false;
@@ -75,6 +92,24 @@ namespace Quest3TriggerUI
                     AudioSource s = o as AudioSource;
                     if (s != null && s.clip != null)
                         referenced.Add(s.clip);
+                }
+                // Queued-but-not-yet-playing clips and the control's
+                // current clip are live references a clip-only sweep
+                // cannot see.
+                foreach (UnityEngine.Object o in
+                    Resources.FindObjectsOfTypeAll(typeof(AudioSourceControl)))
+                {
+                    var q = QueueField != null
+                        ? QueueField.GetValue(o)
+                            as LinkedList<NamedAudioClip> : null;
+                    if (q != null)
+                        foreach (var nac in q)
+                            if (nac != null && nac.sourceClip != null)
+                                referenced.Add(nac.sourceClip);
+                    var pc = PlayingField != null
+                        ? PlayingField.GetValue(o) as NamedAudioClip : null;
+                    if (pc != null && pc.sourceClip != null)
+                        referenced.Add(pc.sourceClip);
                 }
 
                 float now = Time.unscaledTime;

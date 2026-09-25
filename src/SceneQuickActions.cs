@@ -518,30 +518,41 @@ internal void OpenPersonPreset()
 
         internal void SaveSkinPreset()
         {
+            SaveSkinPresetFor(null, false, null);
+        }
+
+        // Dock-context save: explicit editor atom, compact browser, and an
+        // onDone(didClose) so the caller can restore its panel afterwards.
+        internal void SaveSkinPresetFor(Atom target, bool small,
+            Action<bool> onDone)
+        {
             SavePersonPresetDialog("SkinPresets",
                 PluginPaths.SkinPresetDir, "皮肤",
-                delegate(Atom target, string path) {
-                    if (FileManager.IsPackagePath(path))
-                    {
-                        LogError("皮肤 save: presets inside VAR packages cannot be rewritten.");
-                        return true;
-                    }
-                    if (!File.Exists(path))
-                        return false; // new name → native store
-                    int kind = ClassifyPresetFile(path, "character");
-                    if (kind == 2)
-                    {
-                        // Person preset: merge the live skin storables into it.
-                        StoreSkinIntoPreset(target, path);
-                        return true;
-                    }
-                    if (kind == 0)
-                    {
-                        LogError("皮肤 save: selected file is neither a person nor a skin preset: " + path);
-                        return true;
-                    }
-                    return false; // pure skin preset → native store (+thumbnail)
-                });
+                SkinStoreIntercept, target, small, onDone);
+        }
+
+        private bool SkinStoreIntercept(Atom target, string path)
+        {
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError("皮肤 save: presets inside VAR packages cannot be rewritten.");
+                return true;
+            }
+            if (!File.Exists(path))
+                return false; // new name → native store
+            int kind = ClassifyPresetFile(path, "character");
+            if (kind == 2)
+            {
+                // Person preset: merge the live skin storables into it.
+                StoreSkinIntoPreset(target, path);
+                return true;
+            }
+            if (kind == 0)
+            {
+                LogError("皮肤 save: selected file is neither a person nor a skin preset: " + path);
+                return true;
+            }
+            return false; // pure skin preset → native store (+thumbnail)
         }
 
         internal void OpenEyePreset()
@@ -805,30 +816,39 @@ internal void OpenPersonPreset()
 
         internal void SaveHairPreset()
         {
+            SaveHairPresetFor(null, false, null);
+        }
+
+        internal void SaveHairPresetFor(Atom target, bool small,
+            Action<bool> onDone)
+        {
             SavePersonPresetDialog("HairPresets",
                 PluginPaths.HairPresetDir, "头发",
-                delegate(Atom target, string path) {
-                    if (FileManager.IsPackagePath(path))
-                    {
-                        LogError("头发 save: presets inside VAR packages cannot be rewritten.");
-                        return true;
-                    }
-                    if (!File.Exists(path))
-                        return false; // new name → native store
-                    int kind = ClassifyPresetFile(path, "hair");
-                    if (kind == 2)
-                    {
-                        // Person preset: merge the live hair section into it.
-                        StoreSectionIntoPreset(target, path, "hair");
-                        return true;
-                    }
-                    if (kind == 0)
-                    {
-                        LogError("头发 save: selected file is neither a person nor a hair preset: " + path);
-                        return true;
-                    }
-                    return false; // pure hair preset → native store (+thumbnail)
-                });
+                HairStoreIntercept, target, small, onDone);
+        }
+
+        private bool HairStoreIntercept(Atom target, string path)
+        {
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError("头发 save: presets inside VAR packages cannot be rewritten.");
+                return true;
+            }
+            if (!File.Exists(path))
+                return false; // new name → native store
+            int kind = ClassifyPresetFile(path, "hair");
+            if (kind == 2)
+            {
+                // Person preset: merge the live hair section into it.
+                StoreSectionIntoPreset(target, path, "hair");
+                return true;
+            }
+            if (kind == 0)
+            {
+                LogError("头发 save: selected file is neither a person nor a hair preset: " + path);
+                return true;
+            }
+            return false; // pure hair preset → native store (+thumbnail)
         }
 
         // Mirrors UIAssist's save-mode file pick: the SAME media browser is
@@ -840,9 +860,13 @@ internal void OpenPersonPreset()
         // file there performs a load while our save dialog is open.
         private void SavePersonPresetDialog(
             string storableId, string suggestedDir, string label,
-            Func<Atom, string, bool> interceptPath = null)
+            Func<Atom, string, bool> interceptPath = null,
+            Atom targetOverride = null, bool small = false,
+            Action<bool> onDone = null)
         {
-            Atom target = FindClosestPerson(PersonGenderFilter.Female);
+            Atom target = targetOverride != null
+                ? targetOverride
+                : FindClosestPerson(PersonGenderFilter.Female);
             if (target == null)
             {
                 LogError(label + " preset save: no female Person atom is in front of the VR view.");
@@ -864,17 +888,34 @@ internal void OpenPersonPreset()
             VrPresetBrowser.ShowDialogFull("保存" + label + "预设", startDir, "vap",
                 true, defaultName,
                 delegate(string path, bool didClose) {
-                    if (target == null)
-                        return;
-                    LogInfo(label + " save dialog returned path=" +
-                        (path ?? "<null>"));
-                    if (string.IsNullOrEmpty(path))
-                        return;
-                    if (interceptPath != null &&
-                        interceptPath(target, path))
-                        return;
-                    StorePresetToPath(presets, path, storableId, label);
-                });
+                    try
+                    {
+                        // The header atom dropdown may have re-pointed the
+                        // save at a different Person — resolve its manager.
+                        Atom eff = VrPresetBrowser.LoadTarget ?? target;
+                        if (eff == null)
+                            return;
+                        MeshVR.PresetManagerControl effPresets =
+                            eff == target ? presets
+                            : eff.GetStorableByID(storableId)
+                                as MeshVR.PresetManagerControl;
+                        if (effPresets == null)
+                        {
+                            LogError(label + " preset save: " + storableId +
+                                " is unavailable on " + eff.uid + ".");
+                            return;
+                        }
+                        LogInfo(label + " save dialog returned path=" +
+                            (path ?? "<null>"));
+                        if (string.IsNullOrEmpty(path))
+                            return;
+                        if (interceptPath != null &&
+                            interceptPath(eff, path))
+                            return;
+                        StorePresetToPath(effPresets, path, storableId, label);
+                    }
+                    finally { if (onDone != null) onDone(didClose); }
+                }, compact: small, loadTarget: target);
         }
 
         // StorePreset resolves the output file purely from pm.presetName
@@ -928,6 +969,248 @@ internal void OpenPersonPreset()
             catch (Exception exception)
             {
                 LogError(label + " preset save failed: " + exception);
+            }
+        }
+
+        // ---- preset-dock 保存 entries: the dock's editor atom is the
+        // target (not the closest person), the browser is the compact
+        // dock-adjacent variant, and onDone(didClose) lets the dock restore
+        // the editor UI when the dialog closes. ----
+
+        internal void SavePersonPresetFor(Atom target, string label,
+            bool small, Action<bool> onDone)
+        {
+            SavePersonPresetDialog("AppearancePresets",
+                PluginPaths.AppearancePresetDir, label,
+                null, target, small, onDone);
+        }
+
+        // 服装 tab save — mirror of SaveHairPresetFor: a real save dialog in
+        // the clothing preset dir. New name → native ClothingPresets store
+        // (standalone clothing preset + thumbnail); existing person .vap →
+        // merge the live clothing section into it.
+        internal void SaveClothingPresetFor(Atom target, bool small,
+            Action<bool> onDone)
+        {
+            SavePersonPresetDialog("ClothingPresets",
+                PluginPaths.ClothingPresetDir, "服装",
+                ClothingStoreIntercept, target, small, onDone);
+        }
+
+        private bool ClothingStoreIntercept(Atom target, string path)
+        {
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError("服装 save: presets inside VAR packages cannot be rewritten.");
+                return true;
+            }
+            if (!File.Exists(path))
+                return false; // new name → native store
+            int kind = ClassifyPresetFile(path, "clothing");
+            if (kind == 2)
+            {
+                // Person preset: merge the live clothing section into it.
+                StoreSectionIntoPreset(target, path, "clothing");
+                return true;
+            }
+            if (kind == 0)
+            {
+                LogError("服装 save: selected file is neither a person nor a clothing preset: " + path);
+                return true;
+            }
+            return false; // pure clothing preset → native store (+thumbnail)
+        }
+
+        // Person-menu 服装→保存: pick an existing person .vap and merge the
+        // live clothing section into it (no standalone file is created).
+        internal void SaveClothingIntoPresetFor(Atom target, bool small,
+            Action<bool> onDone)
+        {
+            if (target == null) return;
+            SuperController sc = SuperController.singleton;
+            if (sc != null) sc.ShowMainHUDAuto();
+            VrPresetBrowser.ShowDialogFull("选择写入服装的人物预设",
+                PluginPaths.AppearancePresetDir, "vap", false, null,
+                delegate(string path, bool didClose) {
+                    try
+                    {
+                        Atom eff = VrPresetBrowser.LoadTarget ?? target;
+                        if (eff == null || string.IsNullOrEmpty(path))
+                            return;
+                        StoreSectionIntoPreset(eff, path, "clothing");
+                    }
+                    finally { if (onDone != null) onDone(didClose); }
+                }, compact: small, loadTarget: target);
+        }
+
+        // 化妆 tab save — a standalone clothing preset holding ONLY the
+        // worn items the makeup classifier recognises (eye shadow /
+        // highlight, blush, lips…). Same file shape as a native clothing
+        // preset so the dock loads it back through the merge path.
+        internal void SaveMakeupPresetFor(Atom target, bool small,
+            Action<bool> onDone)
+        {
+            if (target == null) return;
+            SuperController sc = SuperController.singleton;
+            if (sc != null) sc.ShowMainHUDAuto();
+            string makeupDir = PluginPaths.ClothingPresetDir + "/化妆";
+            try { Directory.CreateDirectory(
+                SuperController.singleton.NormalizePath(makeupDir)); }
+            catch { }
+            string startDir = PresetSaveDirs.Get("MakeupPresets", makeupDir);
+            string defaultName = "Preset_" +
+                DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".vap";
+            VrPresetBrowser.ShowDialogFull("保存化妆预设", startDir,
+                "vap", true, defaultName,
+                delegate(string path, bool didClose) {
+                    try
+                    {
+                        Atom eff = VrPresetBrowser.LoadTarget ?? target;
+                        if (eff == null || string.IsNullOrEmpty(path))
+                            return;
+                        if (FileManager.IsPackagePath(path))
+                        {
+                            LogError("化妆 save: presets inside VAR packages cannot be rewritten.");
+                            return;
+                        }
+                        StoreMakeupPresetFile(eff, path);
+                    }
+                    finally { if (onDone != null) onDone(didClose); }
+                }, compact: small, loadTarget: target);
+        }
+
+        private void StoreMakeupPresetFile(Atom target, string path)
+        {
+            if (_appearanceLoadBusy)
+            {
+                LogError("化妆 preset: a preset load is already running.");
+                return;
+            }
+            _appearanceLoadBusy = true;
+            string tempPath = null;
+            try
+            {
+                JSONStorable geometryStorable =
+                    target.GetStorableByID("geometry");
+                DAZCharacterSelector selector =
+                    geometryStorable as DAZCharacterSelector;
+                JSONClass geometryJson = geometryStorable == null
+                    ? null
+                    : geometryStorable.GetJSON(true, true, true);
+                JSONArray liveList = geometryJson == null
+                    ? null
+                    : geometryJson["clothing"].AsArray;
+                if (selector == null || selector.clothingItems == null ||
+                    liveList == null)
+                    throw new InvalidOperationException(
+                        "target Person exposes no clothing list.");
+
+                var makeupKeys = new HashSet<string>();
+                for (int i = 0; i < selector.clothingItems.Length; i++)
+                {
+                    DAZClothingItem ci = selector.clothingItems[i];
+                    if (ci == null || !ci.active || !IsMakeupClothing(ci))
+                        continue;
+                    if (!string.IsNullOrEmpty(ci.uid))
+                        makeupKeys.Add(ci.uid);
+                    if (!string.IsNullOrEmpty(ci.internalUid))
+                        makeupKeys.Add(ci.internalUid);
+                    if (!string.IsNullOrEmpty(ci.packageUid))
+                        makeupKeys.Add(ci.packageUid);
+                }
+                if (makeupKeys.Count == 0)
+                    throw new InvalidOperationException(
+                        "没有在穿的化妆件（眼影/高光/腮红等）可存。");
+
+                var makeupList = new JSONArray();
+                var itemIds = new List<string>();
+                for (int i = 0; i < liveList.Count; i++)
+                {
+                    JSONClass item = liveList[i].AsObject;
+                    if (item == null) continue;
+                    string key = MakeupItemKey(item);
+                    if (string.IsNullOrEmpty(key) ||
+                        !makeupKeys.Contains(key))
+                        continue;
+                    makeupList.Add(item);
+                    if (itemIds.IndexOf(key) < 0) itemIds.Add(key);
+                }
+                if (makeupList.Count == 0)
+                    throw new InvalidOperationException(
+                        "在穿清单里没有匹配到化妆件。");
+
+                var root = new JSONClass();
+                root["setUnlistedParamsToDefault"] = new JSONData(true);
+                var geometry = new JSONClass();
+                geometry["id"] = new JSONData("geometry");
+                geometry["clothing"] = makeupList;
+                var outStorables = new JSONArray();
+                outStorables.Add(geometry);
+                List<string> storableIds = target.GetStorableIDs();
+                for (int i = 0; storableIds != null && i < storableIds.Count; i++)
+                {
+                    string id = storableIds[i];
+                    if (!IsItemStorable(id, itemIds)) continue;
+                    JSONStorable storable = target.GetStorableByID(id);
+                    JSONClass sub = storable == null
+                        ? null
+                        : storable.GetJSON(true, true, true);
+                    if (sub == null) continue;
+                    sub["id"] = new JSONData(id);
+                    outStorables.Add(sub);
+                }
+                root["storables"] = outStorables;
+
+                string normalized =
+                    SuperController.singleton.NormalizePath(path);
+                Directory.CreateDirectory(
+                    Path.GetDirectoryName(normalized));
+                string fileName = Path.GetFileName(normalized);
+                if (!fileName.StartsWith("Preset_",
+                        StringComparison.OrdinalIgnoreCase))
+                    normalized = Path.Combine(
+                        Path.GetDirectoryName(normalized),
+                        "Preset_" + fileName);
+
+                tempPath = normalized + ".q3tmp";
+                File.WriteAllText(tempPath, root.ToString(),
+                    new System.Text.UTF8Encoding(false));
+                if (File.Exists(normalized))
+                    File.Replace(tempPath, normalized, null);
+                else
+                    File.Move(tempPath, normalized);
+                tempPath = null;
+
+                string jpg = normalized.Substring(0,
+                    normalized.Length - ".vap".Length) + ".jpg";
+                try
+                {
+                    SuperController.singleton.DoSaveScreenshot(jpg,
+                        new SuperController.ScreenShotCallback(
+                            delegate(string s) { }));
+                }
+                catch (Exception shotEx)
+                {
+                    LogError("化妆 preset thumbnail failed (file saved): " +
+                        shotEx.Message);
+                }
+                PresetSaveDirs.Set("MakeupPresets",
+                    Path.GetDirectoryName(normalized));
+                LogInfo("化妆 preset saved (" + makeupList.Count +
+                    " items): " + normalized);
+            }
+            catch (Exception exception)
+            {
+                LogError("化妆 preset save failed: " + exception);
+            }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+                _appearanceLoadBusy = false;
             }
         }
 
@@ -2141,6 +2424,224 @@ internal void OpenPersonPreset()
                 });
         }
 
+        // Makeup-item detection for worn garments. Evidence: .vam tags are
+        // unreliable (VAM_GS ships none, Toussaint/paledriver use
+        // eye/eyes/reflection), isRealClothingItem is always true, and
+        // exclusiveRegion is always None on this content. What reliably
+        // holds: eye-area tags where present, and name tokens —
+        // "StartsWith(eye)" alone covers eye/eyes/eyeball/eyeshadow/
+        // eyelash/eyelid/eyebrow/eyeliner/EYE2.
+        private static readonly string[] MakeupTagTerms = {
+            "eye", "eyes", "iris", "pupil", "eyelash", "eyelashes",
+            "eyebrow", "eyebrows", "eyelid", "lid", "lids", "eyeshadow",
+            "eyeshade", "eyemakeup", "eyeliner", "eyeline", "reflection",
+            "reflections", "blush", "blusher", "lip", "lips", "lipgloss",
+            "lipstick", "makeup", "mascara", "facepaint", "眼影", "睫毛",
+            "眉", "唇", "腮红", "高光", "妆", "眼线"
+        };
+        private static readonly string[] MakeupNameTokens = {
+            "iris", "pupil", "lash", "lashes", "eyaball", "lid", "lids",
+            "brow", "brows", "lip", "lips", "lipgloss", "lipstick",
+            "blush", "blusher", "blushers", "makeup", "mascara",
+            "facepaint", "facepainting"
+        };
+        private static readonly string[] MakeupNameCjk = {
+            "眼影", "睫毛", "眼线", "眉", "唇", "腮红", "高光", "妆"
+        };
+        private static bool IsMakeupClothing(DAZClothingItem item)
+        {
+            if (item == null) return false;
+            string[] tags = item.tagsArray;
+            if (tags != null)
+                for (int i = 0; i < tags.Length; i++)
+                {
+                    string tag = tags[i];
+                    if (string.IsNullOrEmpty(tag)) continue;
+                    tag = tag.Trim();
+                    for (int t = 0; t < MakeupTagTerms.Length; t++)
+                        if (string.Equals(tag, MakeupTagTerms[t],
+                                StringComparison.OrdinalIgnoreCase))
+                            return true;
+                }
+            return NameLooksMakeup(item.displayName) ||
+                NameLooksMakeup(item.uid) ||
+                NameLooksMakeup(item.internalUid);
+        }
+        private static bool NameLooksMakeup(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return false;
+            for (int i = 0; i < MakeupNameCjk.Length; i++)
+                if (name.IndexOf(MakeupNameCjk[i],
+                        StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            string token = "";
+            for (int i = 0; i <= name.Length; i++)
+            {
+                if (i < name.Length && char.IsLetterOrDigit(name[i]))
+                { token += char.ToLowerInvariant(name[i]); continue; }
+                if (token.Length > 0)
+                {
+                    if (token.StartsWith("eye", StringComparison.Ordinal) ||
+                        token.StartsWith("face", StringComparison.Ordinal))
+                        return true;
+                    for (int t = 0; t < MakeupNameTokens.Length; t++)
+                        if (token == MakeupNameTokens[t]) return true;
+                    token = "";
+                }
+            }
+            return false;
+        }
+
+        // Makeup presets are clothing presets but must not steamroll the
+        // whole outfit: the synthesized preset the manager receives is
+        //   current worn set  − removeIds  − preset item ids
+        //                       + the preset's enabled entries
+        // Kept items ride along with their LIVE storable JSON so tweaked
+        // params (colors, materials) survive — sending the list alone would
+        // reset them under setUnlistedParamsToDefault. The preset's own
+        // item storables carry the makeup look.
+        internal static JSONClass BuildMakeupClothingPreset(
+            JSONClass personPreset, Atom target, List<string> removeIds,
+            bool addItems, List<string> appliedIds)
+        {
+            if (personPreset == null || target == null) return null;
+            JSONArray storables = personPreset["storables"].AsArray;
+            if (storables == null) return null;
+
+            // Preset side: enabled clothing entries + their item ids.
+            var presetIds = new List<string>();
+            var presetEntries = new JSONArray();
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass storable = storables[i].AsObject;
+                if (storable == null || storable["id"].Value != "geometry")
+                    continue;
+                JSONArray list = storable["clothing"].AsArray;
+                if (list == null) break;
+                for (int j = 0; j < list.Count; j++)
+                {
+                    JSONClass item = list[j].AsObject;
+                    if (item == null || item["enabled"].Value != "true")
+                        continue;
+                    string key = MakeupItemKey(item);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    if (presetIds.IndexOf(key) < 0) presetIds.Add(key);
+                    presetEntries.Add(item);
+                }
+                break;
+            }
+            if (addItems && presetIds.Count == 0) return null;
+            if (appliedIds != null)
+            {
+                appliedIds.Clear();
+                appliedIds.AddRange(presetIds);
+            }
+
+            // Live side: the target's current clothing list.
+            JSONStorable geometryStorable =
+                target.GetStorableByID("geometry");
+            JSONClass geometryJson = geometryStorable == null
+                ? null
+                : geometryStorable.GetJSON(true, true, true);
+            JSONArray liveList = geometryJson == null
+                ? null
+                : geometryJson["clothing"].AsArray;
+            if (liveList == null) return null;
+
+            var drop = new HashSet<string>();
+            if (removeIds != null)
+                for (int i = 0; i < removeIds.Count; i++)
+                    if (!string.IsNullOrEmpty(removeIds[i]))
+                        drop.Add(removeIds[i]);
+            // The preset's own ids always drop — on apply the new copy
+            // replaces them, on toggle-off they are what comes off (this
+            // also self-heals a lost tracking record).
+            for (int i = 0; i < presetIds.Count; i++)
+                drop.Add(presetIds[i]);
+            // Applying a new makeup preset also strips every worn item the
+            // classifier recognises as makeup (eye shadow/highlight, blush,
+            // lips…) — including makeup worn before our tracking existed.
+            if (addItems)
+            {
+                DAZCharacterSelector selector =
+                    geometryStorable as DAZCharacterSelector;
+                if (selector != null && selector.clothingItems != null)
+                    for (int i = 0; i < selector.clothingItems.Length; i++)
+                    {
+                        DAZClothingItem ci = selector.clothingItems[i];
+                        if (ci == null || !ci.active ||
+                            !IsMakeupClothing(ci)) continue;
+                        if (!string.IsNullOrEmpty(ci.uid))
+                            drop.Add(ci.uid);
+                        if (!string.IsNullOrEmpty(ci.internalUid))
+                            drop.Add(ci.internalUid);
+                        if (!string.IsNullOrEmpty(ci.packageUid))
+                            drop.Add(ci.packageUid);
+                    }
+            }
+
+            var mergedList = new JSONArray();
+            var keepIds = new List<string>();
+            for (int i = 0; i < liveList.Count; i++)
+            {
+                JSONClass item = liveList[i].AsObject;
+                if (item == null) continue;
+                string key = MakeupItemKey(item);
+                if (!string.IsNullOrEmpty(key) && drop.Contains(key))
+                    continue;
+                if (!string.IsNullOrEmpty(key)) keepIds.Add(key);
+                mergedList.Add(item);
+            }
+            if (addItems)
+                for (int i = 0; i < presetEntries.Count; i++)
+                    mergedList.Add(presetEntries[i]);
+
+            var output = new JSONClass();
+            output["setUnlistedParamsToDefault"] = new JSONData(true);
+            var geometry = new JSONClass();
+            geometry["id"] = new JSONData("geometry");
+            geometry["clothing"] = mergedList;
+            var outStorables = new JSONArray();
+            outStorables.Add(geometry);
+
+            // Live storables for every kept item — preserves the params the
+            // user already has on those garments.
+            var dropList = new List<string>(drop);
+            List<string> storableIds = target.GetStorableIDs();
+            for (int i = 0; storableIds != null && i < storableIds.Count; i++)
+            {
+                string id = storableIds[i];
+                if (IsItemStorable(id, dropList)) continue;
+                if (!IsItemStorable(id, keepIds)) continue;
+                JSONStorable storable = target.GetStorableByID(id);
+                JSONClass sub = storable == null
+                    ? null
+                    : storable.GetJSON(true, true, true);
+                if (sub == null) continue;
+                sub["id"] = new JSONData(id);
+                outStorables.Add(sub);
+            }
+            // Preset storables for the incoming makeup items.
+            if (addItems)
+                for (int i = 0; i < storables.Count; i++)
+                {
+                    JSONClass storable = storables[i].AsObject;
+                    if (storable == null) continue;
+                    if (IsItemStorable(storable["id"].Value, presetIds))
+                        outStorables.Add(storable);
+                }
+            output["storables"] = outStorables;
+            return output;
+        }
+
+        private static string MakeupItemKey(JSONClass item)
+        {
+            string iid = item == null ? null : item["internalId"].Value;
+            if (string.IsNullOrEmpty(iid))
+                iid = item == null ? null : item["id"].Value;
+            return iid;
+        }
+
         // Item storable tails: clothing items use Sim/ItemControl/WrapControl/
         // Material*; hair adds a per-item "Preset" storable and vendor
         // material/wrap names like KrayonScalpMaterial/CustomScalpWrapControl,
@@ -2624,6 +3125,12 @@ internal void OpenPersonPreset()
                     controls[i].lockParams = false;
                 }
 
+                if (PresetPathCompatibility.TryLoad(target, appearancePresets, path))
+                {
+                    LogInfo("Person preset loaded from exact path: " + path);
+                    return;
+                }
+
                 loadOnSelect = appearancePresets.GetBoolJSONParam(
                     "loadPresetOnSelect");
                 presetPath = appearancePresets.GetUrlJSONParam(
@@ -2640,7 +3147,13 @@ internal void OpenPersonPreset()
                 }
 
                 presetPath.val = SuperController.singleton.NormalizePath(path);
+                MemoryProbe.Snapshot("preset-pre");
                 appearancePresets.CallAction("LoadPreset");
+                if (Quest3TriggerUIPlugin.Instance != null)
+                    Quest3TriggerUIPlugin.Instance.StartCoroutine(
+                        MemoryProbe.SnapshotDelayed(
+                            Quest3TriggerUIPlugin.Instance,
+                            "preset-post", 8f));
                 if (Quest3TriggerUIPlugin.Log != null)
                     Quest3TriggerUIPlugin.Log.LogInfo(
                         "Person preset LoadPreset invoked with locks cleared: " + path);
@@ -2689,8 +3202,9 @@ internal void OpenPersonPreset()
                 // lock ClothingPresets for one AppearancePresets load pass.
                 clothingWasLocked = clothingControl.lockParams;
                 clothingControl.lockParams = true;
-                appearancePresets.CallPresetFileAction(
-                    "LoadPresetWithPath", path);
+                if (!PresetPathCompatibility.TryLoad(target, appearancePresets, path))
+                    appearancePresets.CallPresetFileAction(
+                        "LoadPresetWithPath", path);
                 if (Quest3TriggerUIPlugin.Log != null)
                     Quest3TriggerUIPlugin.Log.LogInfo(
                         "Appearance loaded in one native pass with ClothingPresets locked.");

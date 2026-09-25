@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -389,6 +389,8 @@ namespace Quest3TriggerUI
                 for (; completed < moves.Count; completed++)
                     MoveLocalFile(moves[completed].Key, moves[completed].Value);
 
+                UiAssistHudLink.NotifyDockPresetMoved(
+                    moves[0].Key, moves[0].Value, false);
                 string movedName = Path.GetFileName(_pendingMoveSource);
                 CancelMove();
                 RefreshCurrentDirectory("已移动预设及其缩略图：" + movedName);

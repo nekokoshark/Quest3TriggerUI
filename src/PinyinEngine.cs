@@ -104,6 +104,77 @@ namespace Quest3TriggerUI
             internal string InitKey;   // "" for single-syllable words
         }
         private static bool _loadStarted;
+        private static readonly object _stateGate = new object();
+        private static volatile bool _closed;
+        private static volatile int _generation;
+
+        // Awake may run again for the same assembly when HotLoader rolls back.
+        // Ordinary callers cannot reopen a retired engine via EnsureLoaded.
+        internal static void Initialize()
+        {
+            lock (_stateGate)
+            {
+                if (_closed)
+                {
+                    _closed = false;
+                    _loadStarted = false;
+                    _userSaveQueued = false;
+                }
+            }
+            ReleaseRetiredDictionaries();
+        }
+
+        // One pass at initialization, not a per-frame assembly/object scan.
+        // Only completed legacy engines whose MonoBehaviour is gone qualify.
+        // In-flight loads/saves are deliberately left alone.
+        private static void ReleaseRetiredDictionaries()
+        {
+            int released = 0;
+            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm == typeof(PinyinEngine).Assembly ||
+                    !asm.GetName().Name.StartsWith("Quest3TriggerUI_payload_")) continue;
+                try
+                {
+                    foreach (Type type in asm.GetTypes())
+                    {
+                        if (type.Name != "PinyinEngine" || type.Namespace == null ||
+                            !type.Namespace.StartsWith("Quest3TriggerUI.v")) continue;
+                        if (ReleaseRetiredDictionary(type)) released++;
+                    }
+                }
+                catch (Exception e) { Log("retired dictionary skipped: " + e.Message); }
+            }
+            Log("retired dictionaries released=" + released + " (roots only; no forced GC)");
+        }
+
+        private static bool ReleaseRetiredDictionary(Type type)
+        {
+            if (type == typeof(PinyinEngine)) return false;
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+            Type plugin = type.Assembly.GetType(type.Namespace + ".Quest3TriggerUIPlugin");
+            FieldInfo instance = plugin == null ? null : plugin.GetField("Instance", flags);
+            PropertyInfo ready = plugin == null ? null : plugin.GetProperty("RuntimeReady", flags);
+            if (instance == null || ready == null ||
+                (UnityEngine.Object)instance.GetValue(null) != null ||
+                (bool)ready.GetValue(null, null)) return false;
+            // New lifecycle versions clean themselves. Never alter their generation.
+            if (type.GetField("_stateGate", flags) != null) return false;
+            string[] names = { "_full", "_initials", "_fuzzy", "_syllables", "_allKeys", "_userFull", "_userInit",
+                "_loadStarted", "_userDirty", "_userSaveQueued" };
+            FieldInfo[] fields = new FieldInfo[names.Length];
+            for (int i = 0; i < names.Length; i++)
+            {
+                fields[i] = type.GetField(names[i], flags);
+                if (fields[i] == null) return false;
+            }
+            if (fields[0].GetValue(null) == null || !(bool)fields[7].GetValue(null) ||
+                (bool)fields[8].GetValue(null) || (bool)fields[9].GetValue(null)) return false;
+            for (int i = 0; i < 7; i++) fields[i].SetValue(null, null);
+            // Keep HotLoader's same-assembly rollback usable for legacy versions.
+            fields[7].SetValue(null, false);
+            return true;
+        }
 
         private sealed class Cand
         {
@@ -161,21 +232,29 @@ namespace Quest3TriggerUI
         // load at plugin init instead; _full's non-null is the ready flag.
         internal static bool EnsureLoaded()
         {
-            if (_full != null) return true;
-            if (_loadStarted) return false;
-            _loadStarted = true;
-            ThreadPool.QueueUserWorkItem(delegate { LoadWorker(); });
-            return false;
+            lock (_stateGate)
+            {
+                if (_closed) return false;
+                if (_full != null) return true;
+                if (_loadStarted) return false;
+                _loadStarted = true;
+                int generation = _generation;
+                ThreadPool.QueueUserWorkItem(delegate { LoadWorker(generation); });
+                return false;
+            }
         }
 
-        private static void LoadWorker()
+        private static void LoadWorker(int generation)
         {
             try
             {
                 string dir = PluginDir();
                 var full = LoadTable(Path.Combine(dir, "pinyin_dict.txt"));
+                if (!LoadIsCurrent(generation)) return;
                 var initials = LoadTable(Path.Combine(dir, "pinyin_initials.txt"));
+                if (!LoadIsCurrent(generation)) return;
                 var fuzzy = LoadTable(Path.Combine(dir, "pinyin_fuzzy.txt"));
+                if (!LoadIsCurrent(generation)) return;
                 var syllables = LoadSyllables(Path.Combine(dir, "pinyin_syllables.txt"));
                 string[] keys = null;
                 if (full != null)
@@ -187,18 +266,24 @@ namespace Quest3TriggerUI
                 var ufull = new Dictionary<string, List<UEntry>>();
                 var uinit = new Dictionary<string, List<UEntry>>();
                 LoadUserDict(UserDictPath(), ufull, uinit);
-                _userFull = ufull;
-                _userInit = uinit;
-                _initials = initials;
-                _fuzzy = fuzzy;
-                _syllables = syllables;
-                _allKeys = keys;
-                Thread.MemoryBarrier();
-                _full = full;   // assign last — its non-null marks load complete
-                Log("loaded full=" + (_full == null ? 0 : _full.Count) +
-                    " init=" + (_initials == null ? 0 : _initials.Count) +
-                    " fuzzy=" + (_fuzzy == null ? 0 : _fuzzy.Count) +
-                    " syl=" + (_syllables == null ? 0 : _syllables.Count) +
+                lock (_stateGate)
+                {
+                    if (_closed || generation != _generation) return;
+                    if (!_userDirty)
+                    {
+                        _userFull = ufull;
+                        _userInit = uinit;
+                    }
+                    _initials = initials;
+                    _fuzzy = fuzzy;
+                    _syllables = syllables;
+                    _allKeys = keys;
+                    _full = full;
+                }
+                Log("loaded full=" + (full == null ? 0 : full.Count) +
+                    " init=" + (initials == null ? 0 : initials.Count) +
+                    " fuzzy=" + (fuzzy == null ? 0 : fuzzy.Count) +
+                    " syl=" + (syllables == null ? 0 : syllables.Count) +
                     " dir=" + dir);
             }
             catch (Exception e)
@@ -206,6 +291,11 @@ namespace Quest3TriggerUI
                 if (Quest3TriggerUIPlugin.Log != null)
                     Quest3TriggerUIPlugin.Log.LogError("Q3 pinyin load: " + e);
             }
+        }
+
+        private static bool LoadIsCurrent(int generation)
+        {
+            lock (_stateGate) return !_closed && generation == _generation;
         }
 
         private static string PluginDir()
@@ -229,14 +319,18 @@ namespace Quest3TriggerUI
             if (!File.Exists(path)) return null;
             Dictionary<string, string[]> table =
                 new Dictionary<string, string[]>(65536);
-            foreach (string line in File.ReadAllLines(path))
+            using (StreamReader reader = new StreamReader(path))
             {
-                int tab = line.IndexOf('\t');
-                if (tab <= 0) continue;
-                string key = line.Substring(0, tab);
-                string[] words = line.Substring(tab + 1)
-                    .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (words.Length > 0) table[key] = words;
+                string line;
+                while ((line = reader.ReadLine()) != null)
+                {
+                    int tab = line.IndexOf('\t');
+                    if (tab <= 0) continue;
+                    string key = line.Substring(0, tab);
+                    string[] words = line.Substring(tab + 1)
+                        .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (words.Length > 0) table[key] = words;
+                }
             }
             return table;
         }
@@ -344,6 +438,15 @@ namespace Quest3TriggerUI
 
         private static void Learn(List<string> syls, string word)
         {
+            lock (_stateGate)
+            {
+                if (_closed) return;
+                LearnLocked(syls, word);
+            }
+        }
+
+        private static void LearnLocked(List<string> syls, string word)
+        {
             if (!UserLearning || syls == null || syls.Count == 0 ||
                 string.IsNullOrEmpty(word) || word.Length > 24)
                 return;
@@ -358,61 +461,73 @@ namespace Quest3TriggerUI
                 _userInit = new Dictionary<string, List<UEntry>>();
             }
             string full = Join(syls, syls.Count);
-            lock (_userFull)   // SaveUserDict enumerates on a bg thread
+            UEntry e = AddUser(_userFull, full, word);
+            if (syls.Count >= 2 && _userInit != null)
             {
-                UEntry e = AddUser(_userFull, full, word);
-                if (syls.Count >= 2 && _userInit != null)
-                {
-                    System.Text.StringBuilder sb =
-                        new System.Text.StringBuilder(syls.Count);
-                    for (int i = 0; i < syls.Count; i++)
-                        sb.Append(syls[i][0]);
-                    e.InitKey = sb.ToString();
-                    AddRef(_userInit, e.InitKey, e);
-                }
+                System.Text.StringBuilder sb =
+                    new System.Text.StringBuilder(syls.Count);
+                for (int i = 0; i < syls.Count; i++)
+                    sb.Append(syls[i][0]);
+                e.InitKey = sb.ToString();
+                AddRef(_userInit, e.InitKey, e);
             }
             _userDirty = true;
             if (!_userSaveQueued)
             {
                 _userSaveQueued = true;
+                int generation = _generation;
                 ThreadPool.QueueUserWorkItem(delegate
                 {
                     try
                     {
                         Thread.Sleep(1500);   // coalesce rapid commits
-                        SaveUserDict();
+                        lock (_stateGate)
+                        {
+                            if (!_closed && generation == _generation) SaveUserDict();
+                        }
                     }
                     catch { }
-                    finally { _userSaveQueued = false; }
+                    finally
+                    {
+                        lock (_stateGate)
+                        {
+                            if (generation == _generation) _userSaveQueued = false;
+                        }
+                    }
                 });
             }
         }
 
         private static void SaveUserDict()
         {
+            lock (_stateGate) SaveUserDictLocked();
+        }
+
+        private static void SaveUserDictLocked()
+        {
             if (!_userDirty || _userFull == null) return;
-            _userDirty = false;
             try
             {
                 System.Text.StringBuilder sb =
                     new System.Text.StringBuilder(4096);
-                lock (_userFull)
+                foreach (KeyValuePair<string, List<UEntry>> kv in _userFull)
                 {
-                    foreach (KeyValuePair<string, List<UEntry>> kv in
-                        _userFull)
+                    List<UEntry> list = kv.Value;
+                    for (int i = 0; i < list.Count; i++)
                     {
-                        List<UEntry> list = kv.Value;
-                        for (int i = 0; i < list.Count; i++)
-                        {
-                            UEntry e = list[i];
-                            sb.Append(kv.Key).Append('\t')
-                              .Append(e.InitKey).Append('\t')
-                              .Append(e.Word).Append('\t')
-                              .Append(e.Count).Append('\n');
-                        }
+                        UEntry e = list[i];
+                        sb.Append(kv.Key).Append('\t')
+                          .Append(e.InitKey).Append('\t')
+                          .Append(e.Word).Append('\t')
+                          .Append(e.Count).Append('\n');
                     }
                 }
-                File.WriteAllText(UserDictPath(), sb.ToString());
+                string path = UserDictPath();
+                string temp = path + ".next";
+                File.WriteAllText(temp, sb.ToString());
+                if (File.Exists(path)) File.Replace(temp, path, null);
+                else File.Move(temp, path);
+                _userDirty = false;
             }
             catch (Exception e)
             {
@@ -429,11 +544,38 @@ namespace Quest3TriggerUI
             SaveUserDict();
         }
 
+        internal static void Shutdown()
+        {
+            lock (_stateGate)
+            {
+                if (_closed) return;
+                _closed = true;
+                _generation++;
+                SaveUserDictLocked();
+                _full = null;
+                _initials = null;
+                _fuzzy = null;
+                _syllables = null;
+                _allKeys = null;
+                // If disk persistence failed, retain only the small learned map.
+                if (!_userDirty) { _userFull = null; _userInit = null; }
+                ResetComp();
+                lock (_cloudGate)
+                {
+                    _cloudDone.Clear();
+                    _cloudInFlight = 0;
+                    _cloudLastQuery = null;
+                }
+            }
+            Log("shutdown: dictionary roots released; no forced GC");
+        }
+
         // ---- key handling -------------------------------------------------
 
         internal static KeyResult HandleKey(ushort key, bool shift, out string commit)
         {
             commit = null;
+            if (_closed) return KeyResult.NotHandled;
             bool hasComp = _comp.Length > 0;
 
             // Letters feed the composition — both when empty (starts it) and
@@ -886,6 +1028,7 @@ namespace Quest3TriggerUI
         // composition moved past the queried letters) are dropped.
         internal static void Tick()
         {
+            if (_closed) return;
             CloudResult result = null;
             lock (_cloudGate)
             {
@@ -899,6 +1042,7 @@ namespace Quest3TriggerUI
 
         private static void QueryCloud(string raw)
         {
+            if (_closed) return;
             if (!CloudEnabled || raw.Length < CloudMinLetters ||
                 raw == _cloudLastQuery) return;
             if (Environment.TickCount < _cloudDownUntil) return;
@@ -914,10 +1058,11 @@ namespace Quest3TriggerUI
                 try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; }
                 catch { }
             }
-            ThreadPool.QueueUserWorkItem(delegate { FetchCloud(raw); });
+            int generation = _generation;
+            ThreadPool.QueueUserWorkItem(delegate { FetchCloud(raw, generation); });
         }
 
-        private static void FetchCloud(string raw)
+        private static void FetchCloud(string raw, int generation)
         {
             CloudResult result = null;
             try
@@ -936,6 +1081,7 @@ namespace Quest3TriggerUI
                 }
                 lock (_cloudGate)
                 {
+                    if (_closed || generation != _generation) return;
                     _cloudInFlight--;
                     if (result != null) _cloudDone.Enqueue(result);
                     _cloudDownUntil = 0;
@@ -946,6 +1092,7 @@ namespace Quest3TriggerUI
             {
                 lock (_cloudGate)
                 {
+                    if (_closed || generation != _generation) return;
                     _cloudInFlight--;
                     _cloudDownUntil = Environment.TickCount + CloudCooldownMs;
                     if (!_cloudFailLogged)

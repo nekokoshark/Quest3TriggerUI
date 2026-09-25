@@ -20,6 +20,8 @@ namespace Quest3TriggerUI
         // resolved through PATH.
         internal static string OutputDirectory = "VR录制";
         internal static string FfmpegPath = "ffmpeg.exe";
+        internal static bool PauseOnStall = true;
+        private const double StallGap = 0.5;
         private static string ResolvedDirectory()
         {
             return Path.IsPathRooted(OutputDirectory)
@@ -52,7 +54,8 @@ namespace Quest3TriggerUI
         private string _videoPath, _audioPath, _finalPath;
         private VrAudioTap _audioTap;
         private FileStream _audioStream;
-        private long _audioBytes;
+        private long _audioBytes, _audioBytesAtFrame;
+        private double _shift, _lastRaw = -1, _stallSkipped;
         private int _audioChannels = 2;
         private int _audioSampleRate = 48000;
         private float _nextFind;
@@ -148,6 +151,7 @@ namespace Quest3TriggerUI
             _finalPath = stem + ".mkv"; _videoPath = stem + ".video.mkv"; _audioPath = stem + ".audio.wav";
             _error = null; _finishedMessage = null; _finish = false; _finishing = false; _endFrame = 0;
             _capturedFrame = -1; _nextCapture = 0; _pending = false; _pendingSince = 0; _nextFind = 0;
+            _shift = 0; _lastRaw = -1; _stallSkipped = 0; _audioBytesAtFrame = 0;
             try { foreach (string f in Directory.GetFiles(directory, "VaM_*.video.mkv")) File.Delete(f); foreach (string f in Directory.GetFiles(directory, "VaM_*.audio.wav")) File.Delete(f); } catch { }
             _target = new RenderTexture(_width, _height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB);
             _target.useMipMap = false;
@@ -175,7 +179,7 @@ namespace Quest3TriggerUI
         internal void Stop()
         {
             if (!Active || _finishing) return;
-            _endFrame = Math.Max(0, (int)(_clock.Elapsed.TotalSeconds * Fps)); Active = false; _finishing = true; Status = "正在封装视频…";
+            _endFrame = Math.Max(0, (int)((_clock.Elapsed.TotalSeconds - _shift) * Fps)); Active = false; _finishing = true; Status = "正在封装视频…";
             RemoveTap(); RemoveAudioTap(); ReleaseManualCapture(); _finish = true; _wake.Set();
             if (!_pending) ReleaseTarget();
         }
@@ -185,7 +189,7 @@ namespace Quest3TriggerUI
             {
                 bool timedOut = !_request.done; _pending = false;
                 if (timedOut) UnityEngine.Debug.Log("[VR Recording] GPU读回超时，丢弃该帧（游戏卡顿中）");
-                else if (_request.hasError) _error = "GPU读回失败";
+                else if (_request.hasError) UnityEngine.Debug.Log("[VR Recording] GPU读回失败，丢弃该帧");
                 else
                 {
                     byte[] bytes = null; lock (_gate) { if (_free.Count > 0) bytes = _free.Dequeue(); }
@@ -204,28 +208,58 @@ namespace Quest3TriggerUI
             if (cam != _sourceCamera || !Active || _finishing) return;
             CaptureManual();
         }
+        // Wall-clock timestamp that also refreshes capture liveness. A raw gap
+        // longer than StallGap is a main-thread stall — its whole span is cut
+        // from the media timeline (video stays contiguous, audio rewinds to
+        // the last frame boundary) so dead time never reaches the output.
+        private double RawNow()
+        {
+            double raw = _clock.Elapsed.TotalSeconds;
+            double gap = _lastRaw < 0 ? 0 : raw - _lastRaw;
+            _lastRaw = raw;
+            if (PauseOnStall && gap > StallGap) OnStall(gap);
+            return raw;
+        }
+        private void OnStall(double gap)
+        {
+            _shift += gap; _stallSkipped += gap;
+            FileStream s = _audioStream;
+            if (s != null)
+                lock (s)
+                {
+                    if (_audioStream == s && s.Length > _audioBytesAtFrame)
+                    {
+                        s.SetLength(_audioBytesAtFrame); s.Position = _audioBytesAtFrame;
+                        _audioBytes = _audioBytesAtFrame;
+                    }
+                }
+            UnityEngine.Debug.Log("[VR Recording] 卡顿跳过 " + gap.ToString("0.0") + "s（累计 " + _stallSkipped.ToString("0.0") + "s）");
+            Status = "录制中 " + _width + "×" + _height + " · " + Fps + " FPS · " + Bitrate + " Mbps · 已跳过卡顿 " + _stallSkipped.ToString("0.0") + "s";
+        }
         private void CaptureManual()
         {
+            double raw = RawNow();
             if (_pending || _dlssFrame || _capturedFrame == Time.frameCount || _target == null || _scene == null || _captureCamera == null) return;
-            double now = _clock.Elapsed.TotalSeconds; if (now < _nextCapture) return;
+            double now = raw - _shift; if (now < _nextCapture) return;
             lock (_gate) { if (_free.Count == 0) return; }
             if (_headAnchor != null) { _captureCamera.transform.position = _headAnchor.position; _captureCamera.transform.rotation = _headAnchor.rotation; }
             try { if (_replayDraws != null) _replayDraws.Invoke(null, new object[] { _captureCamera }); } catch { }
             _captureCamera.Render();
             Graphics.Blit(_scene, _target, new Vector2(1f, -1f), new Vector2(0f, 1f));
             _request = AsyncGPUReadback.Request(_target, 0, TextureFormat.RGBA32);
-            _frameIndex = Math.Max(0, (int)(now * Fps)); _pending = true; _pendingSince = Time.unscaledTime;
+            _frameIndex = Math.Max(0, (int)(now * Fps)); _audioBytesAtFrame = _audioBytes; _pending = true; _pendingSince = Time.unscaledTime;
             _capturedFrame = Time.frameCount; _nextCapture = now + 1.0 / Fps;
             _manualFireCount++;
         }
         internal void Capture(RenderTexture source, bool flip, bool packed, bool dlss)
         {
             _tapFireCount++;
+            double raw = RawNow();
             if (!Active || _finishing || source == null || _target == null || _pending || _capturedFrame == Time.frameCount) return;
-            double now = _clock.Elapsed.TotalSeconds; if (now < _nextCapture) return;
+            double now = raw - _shift; if (now < _nextCapture) return;
             if (!dlss && _dlssFrame) return; lock (_gate) { if (_free.Count == 0) return; }
             Graphics.Blit(source, _target, new Vector2(packed ? .5f : 1f, flip ? -1f : 1f), new Vector2(0, flip ? 1f : 0));
-            _request = AsyncGPUReadback.Request(_target, 0, TextureFormat.RGBA32); _frameIndex = Math.Max(0, (int)(now * Fps)); _pending = true; _pendingSince = Time.unscaledTime; _capturedFrame = Time.frameCount; _nextCapture = now + 1.0 / Fps;
+            _request = AsyncGPUReadback.Request(_target, 0, TextureFormat.RGBA32); _frameIndex = Math.Max(0, (int)(now * Fps)); _audioBytesAtFrame = _audioBytes; _pending = true; _pendingSince = Time.unscaledTime; _capturedFrame = Time.frameCount; _nextCapture = now + 1.0 / Fps;
         }
         internal void SetDlss(bool active) { _dlssFrame = active; }
         private void FinalizeRecording()

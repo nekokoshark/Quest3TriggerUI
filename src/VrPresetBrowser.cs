@@ -73,6 +73,14 @@ namespace Quest3TriggerUI
             get { return IsOpen && _instance._pointerInside; }
         }
 
+        // Gesture ownership, not hover: a thumbnail may be in the gap on
+        // its way to the preset dock. Keep ownership until release/reset.
+        internal static bool CapturingGesture
+        {
+            get { return _instance != null && (_instance._pressActive ||
+                _instance._moveDrag || _instance._dragging || _instance._hudDragging); }
+        }
+
         // Transform the VR keyboard docks under while the browser is open
         // (the panel sits at the control panel's spot, so the keyboard
         // follows it instead of tracking the player's head).
@@ -193,11 +201,12 @@ namespace Quest3TriggerUI
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string, bool> onResult, bool dirPick = false,
-            bool pickMode = false, Atom loadTarget = null)
+            bool pickMode = false, Atom loadTarget = null,
+            bool compact = false, bool personMode = false)
         {
             Instance.Open(title, suggestedDir, filter, saveMode,
                 defaultSaveName, null, onResult, dirPick, pickMode,
-                loadTarget);
+                loadTarget, compact, personMode);
         }
 
         // "vap|vab" / "*.jpg" / "vap,json" style filters → ext array.
@@ -246,6 +255,9 @@ namespace Quest3TriggerUI
         // files are hidden and 打开 commits the current directory.
         private bool _dirPickMode;
         private bool _pickMode;
+        // Compact layout only (dock-adjacent scale/shift) without pickMode's
+        // click-keeps-open semantics — used by the dock's 保存 dialog.
+        private bool _compact;
         private string _title = "";
         private Action<string> _cb;
         private Action<string, bool> _cbFull;
@@ -268,6 +280,16 @@ namespace Quest3TriggerUI
         private GameObject _targetPopup;
         private RectTransform _targetListRect;
         private RectTransform _targetListContent;
+        // 替换/外观 apply-mode selector — a second small dropdown left of
+        // the atom dropdown, enabled only by callers that want the user to
+        // choose how a person preset applies (the dock 人物 tab loader).
+        // The popup REUSES _targetPopup's list; _popupForMode switches what
+        // RebuildTargetPopup fills it with.
+        private bool _personMode;
+        private bool _popupForMode;
+        private Button _modeBtn;
+        private Text _modeLabel;
+        internal static int PersonApplyMode;   // 0 = 替换 full, 1 = 外观 minus clothing
         private InputField _fileNameInput;
         private Text _pathText;
         private RectTransform _pathBar;
@@ -324,6 +346,12 @@ namespace Quest3TriggerUI
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Texture2D> _thumbCache =
             new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+        // Sidecar .jpg write-tick per .vap — the freshness stamp for
+        // _thumbCache. Overwriting a preset bumps the jpg's mtime, and the
+        // thumb pump evicts + re-decodes entries whose stamp moved, so an
+        // overwritten preset never keeps its old thumbnail.
+        private readonly Dictionary<string, long> _thumbStamp =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _jpgSet =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -332,13 +360,14 @@ namespace Quest3TriggerUI
             bool saveMode, string defaultSaveName,
             Action<string> cb, Action<string, bool> cbFull,
             bool dirPick = false, bool pickMode = false,
-            Atom loadTarget = null)
+            Atom loadTarget = null, bool compact = false,
+            bool personMode = false)
         {
             try
             {
                 OpenInternal(title, suggestedDir, filter, saveMode,
                     defaultSaveName, cb, cbFull, dirPick, pickMode,
-                    loadTarget);
+                    loadTarget, compact, personMode);
             }
             catch (Exception ex)
             {
@@ -352,7 +381,8 @@ namespace Quest3TriggerUI
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string> cb, Action<string, bool> cbFull,
-            bool dirPick, bool pickMode, Atom loadTarget)
+            bool dirPick, bool pickMode, Atom loadTarget, bool compact,
+            bool personMode)
         {
             if (_canvas == null)
                 Build();
@@ -375,6 +405,9 @@ namespace Quest3TriggerUI
             _saveMode = saveMode;
             _dirPickMode = dirPick;
             _pickMode = pickMode;
+            _compact = compact;
+            _personMode = personMode;
+            _popupForMode = false;
             _dialogTarget = loadTarget;
             _cb = cb;
             _cbFull = cbFull;
@@ -419,7 +452,8 @@ namespace Quest3TriggerUI
             if (_saveRow != null)
                 _saveRow.SetActive(_saveMode);
             if (_saveMode && _fileNameInput != null)
-                _fileNameInput.text = defaultSaveName ?? "";
+                _fileNameInput.text = (_filter == "vap" || _filter.Length == 0)
+                    ? PresetFilenameRules.EditName(defaultSaveName) : (defaultSaveName ?? "");
             if (_dirPickMode)
                 SetStatus("选择目录：进入目标文件夹后点「打开」");
             else if (_pickMode)
@@ -439,6 +473,7 @@ namespace Quest3TriggerUI
             // Leftover hide-tags and pre-tag orphans from dead payload
             // generations would keep their alpha-0 groups on the HUD
             // forever — destroy/reset them before hiding.
+            _hudHidden.Clear();
             CleanupHudState();
             // Hide the control panel's other visuals while the browser
             // occupies its spot. Sibling-of-ancestors hiding leaves our own
@@ -631,6 +666,13 @@ namespace Quest3TriggerUI
                 (hasIn && (itr > 0.55f || abv > 0.5f)) ||
                 (Quest3TriggerUIPlugin.Trigger != null &&
                  Quest3TriggerUIPlugin.Trigger.Pressed);
+            // A controller trigger owns its own hand's laser — a right
+            // press must not grab whatever the left pointer rests on.
+            // The desktop mouse fallback has only one pointer, so it may
+            // still bind either hand's look target.
+            bool trigHeld = (hasIn && (itr > 0.55f || abv > 0.5f)) ||
+                (Quest3TriggerUIPlugin.Trigger != null &&
+                 Quest3TriggerUIPlugin.Trigger.Pressed);
             // VaM re-activates its HUD children when the panel is grabbed —
             // CanvasGroup hiding survives that, and re-running the sweep
             // each frame also catches newly created siblings.
@@ -649,36 +691,43 @@ namespace Quest3TriggerUI
             GameObject lookR = VrPointerPresentation.CurrentLookTarget(true);
             GameObject lookL = VrPointerPresentation.CurrentLookTarget(false);
             GameObject lookT = lookR != null ? lookR : lookL;
-            bool lookRight = lookR != null;
+            // Gesture pointer: once a press is active it stays on the
+            // owning hand; pre-press it is the pressing device — a real
+            // trigger binds the right laser, the mouse binds either.
+            GameObject lookG = (_pressActive || _hudDragging)
+                ? (_gestureRight ? lookR : lookL)
+                : (trigHeld ? lookR : lookT);
             // Inside/onGrid/onBar from the live look target — more reliable
             // than IPointerEnter, which VaM's module dispatches unevenly.
             if (_canvas != null)
                 _pointerInside = lookT != null &&
                     lookT.transform.IsChildOf(_canvas.transform);
             bool onGrid = _pointerInside && _gridContent != null &&
-                (lookT == _gridContent.gameObject ||
-                 lookT.transform.IsChildOf(_gridContent));
+                lookG != null &&
+                (lookG == _gridContent.gameObject ||
+                 lookG.transform.IsChildOf(_gridContent));
             // The viewport's background image catches hits on space that
             // isn't covered by cards or the (masked-off) content — treat it
             // as grid-blank too so taps there can clear the selection.
             bool onViewport = onGrid ||
                 (_pointerInside && _scroll != null &&
-                 _scroll.viewport != null && lookT != null &&
-                 (lookT == _scroll.viewport.gameObject ||
-                  lookT.transform.IsChildOf(_scroll.viewport)));
+                 _scroll.viewport != null && lookG != null &&
+                 (lookG == _scroll.viewport.gameObject ||
+                  lookG.transform.IsChildOf(_scroll.viewport)));
             bool onBar = _pointerInside && _pathBar != null &&
-                (lookT == _pathBar.gameObject ||
-                 lookT.transform.IsChildOf(_pathBar));
+                lookG != null &&
+                (lookG == _pathBar.gameObject ||
+                 lookG.transform.IsChildOf(_pathBar));
             Vector2 cur;
             Vector3 curW;
             bool surfOk = _pressActive
                 ? SurfacePoint(_gestureRight, out cur, out curW)
-                : SurfacePoint(lookRight, out cur, out curW);
+                : SurfacePoint(lookG == lookR, out cur, out curW);
             if (held && !_trigHeldPrev)
             {
                 LogErr("Q3 press edge: grid=" + onGrid + " bar=" + onBar +
                     " surf=" + surfOk +
-                    " target=" + (lookT != null ? lookT.name : "null"));
+                    " target=" + (lookG != null ? lookG.name : "null"));
                 if (onViewport && surfOk)
                 {
                     // Presses on a card's ops buttons (Btn_*/Input) belong to
@@ -687,12 +736,12 @@ namespace Quest3TriggerUI
                     // column, so without this a scrollbar drag would pick up
                     // a card as a move-drag instead.
                     bool onScrollbar = _vscrollBar != null &&
-                        lookT != null &&
-                        lookT.transform.IsChildOf(_vscrollBar.transform);
-                    if (!IsCardOps(lookT) && !onScrollbar)
+                        lookG != null &&
+                        lookG.transform.IsChildOf(_vscrollBar.transform);
+                    if (!IsCardOps(lookG) && !onScrollbar)
                     {
                         _pressActive = true;
-                        _gestureRight = lookRight;
+                        _gestureRight = lookG == lookR;
                         _dragStart = cur;
                         _pressIdx = ItemIndexAt(cur);
                     }
@@ -704,12 +753,13 @@ namespace Quest3TriggerUI
                     // VaM's HUD anchoring, so we move our own canvas (still
                     // parented under the control panel, so it keeps
                     // following; the offset persists until recenter).
+                    bool gestureRight = lookG == lookR;
                     Transform h = VrPointerPresentation.MotionController(
-                        SuperController.singleton, lookRight);
+                        SuperController.singleton, gestureRight);
                     if (h != null)
                     {
                         _hudDragging = true;
-                        _gestureRight = lookRight;
+                        _gestureRight = gestureRight;
                         _hudHandPrev = h.position;
                     }
                 }
@@ -776,7 +826,7 @@ namespace Quest3TriggerUI
                     }
                     else if (_moveDrag)
                     {
-                        UpdateDragGhost(cur, curW, onViewport, lookT);
+                        UpdateDragGhost(cur, curW, onViewport, lookG);
                     }
                 }
                 if (!held)
@@ -799,11 +849,30 @@ namespace Quest3TriggerUI
                         // Drop target: a dir card under the cursor, or a
                         // sidebar row (tree node / favourite) carrying a
                         // DirDropRef.
-                        string dest = DragDestAt(cur, onViewport, lookT);
+                        string dest = DragDestAt(cur, onViewport, lookG);
+                        int dockTab = dest == null
+                            ? UiAssistHudLink.PresetDockTabAtPointer(
+                                _gestureRight) : -1;
                         LogErr("Q3 drag-move end: dest=" +
-                            (dest ?? "null") + " sel=" + _selPaths.Count);
+                            (dest ?? "null") + " dockTab=" + dockTab +
+                            " sel=" + _selPaths.Count);
                         if (dest != null)
                             DoBatchMove(dest);
+                        else if (dockTab >= 0)
+                        {
+                            int filed = UiAssistHudLink.FileDockPresets(
+                                dockTab, _selPaths);
+                            int skipped = _selPaths.Count - filed;
+                            SetStatus("已收藏 " + filed + " 项到预设栏" +
+                                (skipped > 0
+                                    ? "，跳过 " + skipped + " 项" : ""));
+                            if (filed > 0)
+                            {
+                                _selPaths.Clear();
+                                UpdateSelBar();
+                                RefreshSelectionVisuals();
+                            }
+                        }
                         else
                             SetStatus("已取消移动");
                     }
@@ -814,7 +883,7 @@ namespace Quest3TriggerUI
                         LogErr("Q3 release: vp=" + onViewport +
                             " surf=" + surfOk + " idx=" + idx +
                             " sel=" + _selPaths.Count + " lt=" +
-                            (lookT != null ? lookT.name : "null"));
+                            (lookG != null ? lookG.name : "null"));
                         if (onViewport && surfOk)
                         {
                             if (idx < 0)
@@ -829,7 +898,7 @@ namespace Quest3TriggerUI
                                     RefreshSelectionVisuals();
                                 }
                             }
-                            else if (!IsCardOps(lookT))
+                            else if (!IsCardOps(lookG))
                             {
                                 CardView v = FindView(idx);
                                 if (v != null)
@@ -958,6 +1027,15 @@ namespace Quest3TriggerUI
             PlaceRight(_targetBtn.GetComponent<RectTransform>(),
                 8f, 6f, 236f, 36f);
             _targetBtn.onClick.AddListener(ToggleTargetPopup);
+            // 替换/外观 apply-mode dropdown sits left of the atom dropdown;
+            // only callers passing personMode (dock 人物 tab loader) show it.
+            _modeBtn = NewButton(root.transform, "替换");
+            _modeBtn.name = "ModeBtn";
+            _modeLabel = _modeBtn.GetComponentInChildren<Text>();
+            if (_modeLabel != null) _modeLabel.fontSize = 20;
+            PlaceRight(_modeBtn.GetComponent<RectTransform>(),
+                252f, 6f, 96f, 36f);
+            _modeBtn.onClick.AddListener(ToggleModePopup);
             BuildTargetPopup(root);
 
             // search box (top-right overlay)
@@ -1025,18 +1103,39 @@ namespace Quest3TriggerUI
         private void ToggleTargetPopup()
         {
             if (_targetPopup == null) return;
-            bool show = !_targetPopup.activeSelf;
-            _targetPopup.SetActive(show);
-            if (show)
+            if (_targetPopup.activeSelf && !_popupForMode)
             {
-                _targetPopup.transform.SetAsLastSibling();
-                RebuildTargetPopup();
+                _targetPopup.SetActive(false);
+                return;
             }
+            _popupForMode = false;
+            _targetPopup.SetActive(true);
+            _targetPopup.transform.SetAsLastSibling();
+            RebuildTargetPopup();
+        }
+
+        private void ToggleModePopup()
+        {
+            if (_targetPopup == null) return;
+            if (_targetPopup.activeSelf && _popupForMode)
+            {
+                _targetPopup.SetActive(false);
+                return;
+            }
+            _popupForMode = true;
+            _targetPopup.SetActive(true);
+            _targetPopup.transform.SetAsLastSibling();
+            RebuildTargetPopup();
         }
 
         private void RebuildTargetPopup()
         {
             if (_targetListContent == null) return;
+            if (_popupForMode)
+            {
+                RebuildModePopup();
+                return;
+            }
             for (int i = _targetListContent.childCount - 1; i >= 0; i--)
                 UnityEngine.Object.Destroy(
                     _targetListContent.GetChild(i).gameObject);
@@ -1125,8 +1224,8 @@ namespace Quest3TriggerUI
                 count++;
             }
             float h = Mathf.Min(360f, 8f + count * 44f);
-            _targetListRect.sizeDelta =
-                new Vector2(236f, Mathf.Max(48f, h));
+            PlaceRight(_targetListRect, 8f, 46f, 236f,
+                Mathf.Max(48f, h));
             // Diag: verify every built row is laid out and hittable —
             // dumps each child's position/size after one layout pass.
             if (count > 0 && Quest3TriggerUIPlugin.Instance != null)
@@ -1158,6 +1257,33 @@ namespace Quest3TriggerUI
             LogErr(sb.ToString());
         }
 
+        // Two-row popup for the apply-mode button; borrows _targetPopup's
+        // list but anchors under the narrower mode button.
+        private void RebuildModePopup()
+        {
+            for (int i = _targetListContent.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(
+                    _targetListContent.GetChild(i).gameObject);
+            string[] names = { "替换", "外观" };
+            for (int i = 0; i < names.Length; i++)
+            {
+                int mode = i;
+                Button rb = NewButton(_targetListContent,
+                    (PersonApplyMode == mode ? "● " : "") + names[i]);
+                Text rt = rb.GetComponentInChildren<Text>();
+                if (rt != null) rt.fontSize = 20;
+                rb.gameObject.AddComponent<LayoutElement>()
+                    .preferredHeight = 40f;
+                rb.onClick.AddListener(delegate
+                {
+                    PersonApplyMode = mode;
+                    _targetPopup.SetActive(false);
+                    RefreshTargetControl();
+                });
+            }
+            PlaceRight(_targetListRect, 252f, 46f, 128f, 96f);
+        }
+
         private Atom EffectiveTarget()
         {
             return LoadTarget != null ? LoadTarget : _dialogTarget;
@@ -1165,8 +1291,10 @@ namespace Quest3TriggerUI
 
         private void RefreshTargetControl()
         {
-            bool show = _dialogTarget != null && !_saveMode &&
-                !_dirPickMode && !_pickMode;
+            // The atom selector is global across dialog flavors — only the
+            // directory picker has no use for it. With no caller target it
+            // starts at "—" and the popup still lists all scene Persons.
+            bool show = !_dirPickMode;
             if (_targetBtn != null)
                 _targetBtn.gameObject.SetActive(show);
             if (!show && _targetPopup != null)
@@ -1177,6 +1305,18 @@ namespace Quest3TriggerUI
                 _targetLabel.text =
                     "人物: " + (eff != null ? eff.uid : "—");
             }
+            // 替换/外观 picker is opt-in per open; the search box yields
+            // its right edge to whichever header controls are visible.
+            if (_modeBtn != null)
+            {
+                _modeBtn.gameObject.SetActive(_personMode);
+                if (_modeLabel != null)
+                    _modeLabel.text =
+                        PersonApplyMode == 0 ? "替换" : "外观";
+            }
+            if (_searchInput != null)
+                PlaceRight(_searchInput.GetComponent<RectTransform>(),
+                    _personMode ? 356f : 252f, 6f, 300f, 36f);
         }
 
         private void BuildPathBar(RectTransform root)
@@ -1880,7 +2020,8 @@ namespace Quest3TriggerUI
             v.RenameInput.gameObject.SetActive(true);
             v.RenameInput.text = it.IsDir
                 ? it.Path.Substring(it.Path.LastIndexOf('/') + 1)
-                : it.FileName;
+                : (PresetFilenameRules.IsPreset(it.FileName)
+                    ? PresetFilenameRules.EditName(it.FileName) : it.FileName);
             v.RenameInput.ActivateInputField();
             v.RenameInput.Select();
             // Point the VR keyboard's text bridge at this field — the ✎
@@ -1918,11 +2059,10 @@ namespace Quest3TriggerUI
                 ? it.Path.Substring(it.Path.LastIndexOf('/') + 1)
                 : it.FileName;
             CancelRename(v);
+            if (!it.IsDir && PresetFilenameRules.IsPreset(it.FileName))
+                nn = PresetFilenameRules.FileName(nn);
             if (nn.Length == 0 || nn == oldLeaf)
                 return;
-            if (!it.IsDir &&
-                !nn.EndsWith(".vap", StringComparison.OrdinalIgnoreCase))
-                nn += ".vap";
             string dst = (_dir.Length > 0 ? _dir + "/" : "") + nn;
             try
             {
@@ -1933,7 +2073,9 @@ namespace Quest3TriggerUI
                     FileManager.MoveFile(it.Path, dst, false);
                     MoveSidecarJpg(it.Path, dst);
                 }
-                SetStatus("已重命名: " + nn);
+                UiAssistHudLink.NotifyDockPresetMoved(it.Path, dst, it.IsDir);
+                SetStatus("已重命名: " + (it.IsDir ? nn : PresetFilenameRules.IsPreset(nn)
+                    ? PresetFilenameRules.EditName(nn) : nn));
             }
             catch (Exception ex)
             {
@@ -2070,8 +2212,9 @@ namespace Quest3TriggerUI
                 _selectedPath = it.Path;
                 _selectedCardName = it.FileName;
                 if (_fileNameInput != null)
-                    _fileNameInput.text = it.FileName;
-                SetStatus("将覆盖: " + it.FileName);
+                    _fileNameInput.text = PresetFilenameRules.IsPreset(it.FileName)
+                        ? PresetFilenameRules.EditName(it.FileName) : it.FileName;
+                SetStatus("将覆盖: " + it.Label);
             }
             else if (_pickMode)
             {
@@ -2829,6 +2972,13 @@ namespace Quest3TriggerUI
             // fall back to intersecting the live pointer ray ourselves.
             if (!TryLocalPoint(e, out p) && !TryRayLocal(out p))
                 return;
+            // The event doesn't name its laser — match the raycast hit to
+            // the left look target to own the press; anything else is the
+            // right hand's pointer.
+            GameObject hit = e.pointerCurrentRaycast.gameObject;
+            GameObject lookL =
+                VrPointerPresentation.CurrentLookTarget(false);
+            _gestureRight = !(hit != null && lookL != null && hit == lookL);
             _dragStart = p;
             _pressIdx = ItemIndexAt(p);
             _pressActive = true;
@@ -3045,6 +3195,8 @@ namespace Quest3TriggerUI
                         FileManager.MoveFile(p, dst, false);
                         MoveSidecarJpg(p, dst);
                     }
+                    UiAssistHudLink.NotifyDockPresetMoved(p, dst,
+                        it != null && it.IsDir);
                     done++;
                 }
                 catch (Exception ex)
@@ -3143,6 +3295,12 @@ namespace Quest3TriggerUI
                     _thumbCache.Remove(src);
                     _thumbCache[dst] = tex;
                 }
+                long stamp;
+                if (_thumbStamp.TryGetValue(src, out stamp))
+                {
+                    _thumbStamp.Remove(src);
+                    _thumbStamp[dst] = stamp;
+                }
                 if (FileManager.FileExists(srcJpg, false, false))
                     FileManager.MoveFile(srcJpg, dstJpg, false);
             }
@@ -3161,6 +3319,9 @@ namespace Quest3TriggerUI
                 Texture2D tex;
                 if (_thumbCache.TryGetValue(src, out tex))
                     _thumbCache[dst] = tex;
+                long stamp;
+                if (_thumbStamp.TryGetValue(src, out stamp))
+                    _thumbStamp[dst] = stamp;
                 if (FileManager.FileExists(srcJpg, false, false))
                     FileManager.CopyFile(srcJpg, dstJpg, false);
             }
@@ -3210,10 +3371,37 @@ namespace Quest3TriggerUI
                             it.DateText = FileManager.FileLastWriteTime(
                                 job.Path, false, false)
                                 .ToString("MM-dd HH:mm");
+                        string jpg = job.Path.Substring(0, job.Path.Length -
+                            Path.GetExtension(job.Path).Length) + ".jpg";
+                        // Freshness: the jpg's write tick is the stamp.
+                        // Overwriting a preset re-shoots its thumbnail,
+                        // bumping the mtime — a moved stamp means the
+                        // cached texture is stale and must be re-decoded.
+                        long stamp = -1L;
+                        if (_jpgSet.Contains(jpg))
+                        {
+                            try
+                            {
+                                stamp = FileManager.FileLastWriteTime(
+                                    jpg, false, false).Ticks;
+                            }
+                            catch { }
+                        }
+                        long cachedStamp;
+                        if (!_thumbStamp.TryGetValue(job.Path,
+                                out cachedStamp) || cachedStamp != stamp)
+                        {
+                            Texture2D old;
+                            if (_thumbCache.TryGetValue(job.Path, out old))
+                            {
+                                _thumbCache.Remove(job.Path);
+                                if (old != null)
+                                    UnityEngine.Object.Destroy(old);
+                            }
+                            _thumbStamp[job.Path] = stamp;
+                        }
                         if (!_thumbCache.ContainsKey(job.Path))
                         {
-                            string jpg = job.Path.Substring(0, job.Path.Length -
-                                Path.GetExtension(job.Path).Length) + ".jpg";
                             if (_jpgSet.Contains(jpg))
                             {
                                 byte[] bytes = File.ReadAllBytes(
@@ -3320,7 +3508,29 @@ namespace Quest3TriggerUI
             string leaf = name;
             if (leaf.IndexOf('/') >= 0)
                 leaf = leaf.Substring(leaf.LastIndexOf('/') + 1);
-            Commit(_dir + "/" + leaf);
+            if (ext.Equals(".vap", StringComparison.OrdinalIgnoreCase))
+                leaf = PresetFilenameRules.FileName(leaf);
+            if (leaf.Length == 0) { SetStatus("请输入文件名"); return; }
+            string destination = _dir + "/" + leaf;
+            // Overwriting a legacy unprefixed favorite: migrate only this
+            // explicitly selected file, so native saving updates that same
+            // favorite rather than leaving it pointing at an outdated copy.
+            if (PresetFilenameRules.IsLegacyOverwrite(_selectedPath, destination))
+            {
+                try
+                {
+                    FileManager.MoveFile(_selectedPath, destination, false);
+                    MoveSidecarJpg(_selectedPath, destination);
+                    UiAssistHudLink.NotifyDockPresetMoved(_selectedPath, destination, false);
+                    _selectedPath = destination;
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("保存准备失败: " + ex.Message);
+                    return;
+                }
+            }
+            Commit(destination);
         }
 
         private void OnNewFolder()
@@ -3433,11 +3643,11 @@ namespace Quest3TriggerUI
                 Vector3 center = (corners[0] + corners[2]) * 0.5f;
                 _canvas.transform.SetParent(host, false);
                 float scaleMul = 1f;
-                if (_pickMode)
+                if (_pickMode || _compact)
                 {
-                    // Preset-dock picking (左栏「新增」): shrink and shift
-                    // right so the left preset dock stays visible and
-                    // clickable while presets are filed into it.
+                    // Preset-dock picking (左栏「新增」/「读取」/「保存」):
+                    // shrink and shift right so the left preset dock stays
+                    // visible and clickable while presets are filed into it.
                     scaleMul = PickModeScale;
                     float winW = win.rect.width * win.lossyScale.x;
                     center += win.right * (winW * PickModeShift);
@@ -3459,7 +3669,7 @@ namespace Quest3TriggerUI
             _canvas.transform.localPosition = new Vector3(0f, 0f, PanelDistance);
             _canvas.transform.localRotation = Quaternion.identity;
             _canvas.transform.localScale = Vector3.one * PanelScale *
-                (_pickMode ? PickModeScale : 1f);
+                ((_pickMode || _compact) ? PickModeScale : 1f);
         }
 
         // Hide the control panel visuals around this panel: deactivate every
@@ -3514,13 +3724,26 @@ namespace Quest3TriggerUI
                         path = p;
                     }
                 }
-                for (int i = 0; i < _hudHidden.Count; i++)
+                for (int i = _hudHidden.Count - 1; i >= 0; i--)
                 {
                     HiddenSibling h = _hudHidden[i];
                     if (h.Go == null)
+                    {
+                        _hudHidden.RemoveAt(i);
                         continue;
+                    }
+                    // Reparenting can turn a previously foreign panel into
+                    // our host. Release its hide state instead of hiding us.
+                    if (IsBrowserBranch(h.Go.transform))
+                    {
+                        SweepTagsOn(h.Go);
+                        _hudHidden.RemoveAt(i);
+                        continue;
+                    }
                     if (h.Cg == null)
                         h.Cg = EnsureHideGroup(h.Go);
+                    if (h.Cg == null)
+                        continue;
                     if (h.Cg.alpha != 0f || h.Cg.blocksRaycasts)
                     {
                         h.Cg.alpha = 0f;
@@ -3553,7 +3776,7 @@ namespace Quest3TriggerUI
                 if (n == "Quest3 Radial Quick Menu" ||
                     n == "Quest3 Full VR Keyboard" ||
                     n == "Quest3 Preset Dock" ||
-                    c.transform.IsChildOf(_canvas.transform))
+                    IsBrowserBranch(c.transform))
                     continue;
                 // Render mode / EventSystem / InputModule are all static
                 // per canvas — cache the verdict so the periodic sweep
@@ -3603,6 +3826,20 @@ namespace Quest3TriggerUI
         private sealed class Q3HideTag : MonoBehaviour
         {
             public CanvasGroup Cg;
+            // Borrowed = Cg is the GO's own pre-existing group (Unity 2018
+            // CanvasGroup is DisallowMultipleComponent, so we can't stack
+            // ours). Restore puts the original values back instead of
+            // destroying it.
+            public bool Borrowed;
+            public float OrigAlpha;
+            public bool OrigBlocks;
+            public bool OrigInteract;
+        }
+
+        private static object TagField(Component c, string name)
+        {
+            System.Reflection.FieldInfo f = c.GetType().GetField(name);
+            return f != null ? f.GetValue(c) : null;
         }
 
         private static CanvasGroup FindTaggedGroup(GameObject go)
@@ -3611,9 +3848,7 @@ namespace Quest3TriggerUI
             {
                 if (c == null || c.GetType().Name != "Q3HideTag")
                     continue;
-                System.Reflection.FieldInfo f = c.GetType().GetField("Cg");
-                CanvasGroup cg = f != null
-                    ? f.GetValue(c) as CanvasGroup : null;
+                CanvasGroup cg = TagField(c, "Cg") as CanvasGroup;
                 if (cg != null)
                     return cg;
             }
@@ -3626,15 +3861,35 @@ namespace Quest3TriggerUI
             if (cg == null)
             {
                 Q3HideTag tag = go.AddComponent<Q3HideTag>();
-                cg = go.AddComponent<CanvasGroup>();
+                cg = go.GetComponent<CanvasGroup>();
+                if (cg != null)
+                {
+                    tag.Borrowed = true;
+                    tag.OrigAlpha = cg.alpha;
+                    tag.OrigBlocks = cg.blocksRaycasts;
+                    tag.OrigInteract = cg.interactable;
+                }
+                else
+                    cg = go.AddComponent<CanvasGroup>();
                 tag.Cg = cg;
             }
             return cg;
         }
 
+        private bool IsBrowserBranch(Transform candidate)
+        {
+            if (_canvas == null || candidate == null)
+                return false;
+            Transform browser = _canvas.transform;
+            return candidate == browser || candidate.IsChildOf(browser) ||
+                browser.IsChildOf(candidate);
+        }
+
         private void HideSibling(GameObject go)
         {
-            if (go == null)
+            // CanvasGroup alpha multiplies through ancestors. Hiding a host
+            // hides the browser too, even though its own canvas stays active.
+            if (go == null || IsBrowserBranch(go.transform))
                 return;
             for (int i = 0; i < _hudHidden.Count; i++)
                 if (_hudHidden[i].Go == go)
@@ -3646,6 +3901,8 @@ namespace Quest3TriggerUI
             // are never touched, so no stale value can leak back. Adopt a
             // leftover tag instead of stacking another group on the object.
             h.Cg = EnsureHideGroup(go);
+            if (h.Cg == null)
+                return;
             h.Cg.alpha = 0f;
             h.Cg.blocksRaycasts = false;
             _hudHidden.Add(h);
@@ -3813,12 +4070,25 @@ namespace Quest3TriggerUI
                     continue;
                 try
                 {
-                    System.Reflection.FieldInfo f =
-                        c.GetType().GetField("Cg");
-                    CanvasGroup cg = f != null
-                        ? f.GetValue(c) as CanvasGroup : null;
+                    CanvasGroup cg = TagField(c, "Cg") as CanvasGroup;
                     if (cg != null)
-                        UnityEngine.Object.Destroy(cg);
+                    {
+                        object b = TagField(c, "Borrowed");
+                        if (b is bool && (bool)b)
+                        {
+                            // VaM's own group — restore, never destroy.
+                            object a = TagField(c, "OrigAlpha");
+                            object rb = TagField(c, "OrigBlocks");
+                            object ri = TagField(c, "OrigInteract");
+                            cg.alpha = a is float ? (float)a : 1f;
+                            cg.blocksRaycasts =
+                                rb is bool ? (bool)rb : true;
+                            cg.interactable =
+                                ri is bool ? (bool)ri : true;
+                        }
+                        else
+                            UnityEngine.Object.Destroy(cg);
+                    }
                 }
                 catch { }
                 UnityEngine.Object.Destroy(c);
@@ -4174,6 +4444,7 @@ namespace Quest3TriggerUI
                 if (kv.Value != null)
                     UnityEngine.Object.Destroy(kv.Value);
             _thumbCache.Clear();
+            _thumbStamp.Clear();
             if (_canvas != null)
             {
                 if (SuperController.singleton != null)
@@ -4334,6 +4605,11 @@ namespace Quest3TriggerUI
                 // browser handle them.
                 if (fb.forceOnlyShowTemplates)
                 { Pass("templates"); return true; }
+                // Directory pickers (cache folder etc.) need arbitrary
+                // filesystem paths incl. other drives — our panel only
+                // knows VaM-relative dirs.
+                if (fb.selectDirectory)
+                { Pass("directory pick"); return true; }
                 // changeDirectory=false keeps the browser's current dir;
                 // mirror that so the panel lands where the caller expects.
                 string dir = changeDirectory

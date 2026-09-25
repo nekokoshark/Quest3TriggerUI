@@ -26,6 +26,16 @@ namespace Quest3TriggerUI
         {
             if (Time.unscaledTime < _nextPresetCheck) return;
             _nextPresetCheck = Time.unscaledTime + 0.5f;
+            // Self-heal: a browser torn down without firing its callback
+            // (host window rebuilt, open-time exception) latches these
+            // forever — dock stays "picking" and new opens are blocked.
+            // IsOpen reads activeSelf, which stays true when only the host
+            // deactivated — HUD collapse still keeps the session alive.
+            if ((_pdPicking || _presetBrowsing) && !VrPresetBrowser.IsOpen)
+            {
+                _pdPicking = false;
+                _presetBrowsing = false;
+            }
             if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
             {
@@ -195,7 +205,98 @@ namespace Quest3TriggerUI
                             Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetEditor(state, scene));
                         }
                     }
-                }, pickMode: true);
+                }, pickMode: true, loadTarget: state.Target);
+            }
+            catch (Exception e) { _presetBrowsing = false; _pdPicking = false; Error(e); }
+        }
+
+        // 读取 — the radial 人物 sub-actions re-homed into the dock: open
+        // the compact pick browser at the active tab's directory; every
+        // click applies the preset through ApplyDockSlot's per-tab section
+        // loader (替换=full person, 外观=minus clothing, 发型/服装/皮肤=
+        // their sections, 化妆=makeup merge) without closing, so several
+        // looks can be tried in one session.
+        private static void OpenDockPresetLoader()
+        {
+            if (_presetBrowsing) return;
+            SuperController sc = SuperController.singleton;
+            Snapshot state = FindEditor(sc);
+            if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
+            string scene = sc.LoadedSceneName;
+            _presetBrowsing = true;
+            _pdPicking = true;
+            try
+            {
+                VrPresetBrowser.ShowDialogFull("读取「" +
+                    PdTabNames[_pdTab] + "」预设", PdTabDir(_pdTab),
+                    "vap", false, null,
+                    delegate(string path, bool closed) {
+                    try
+                    {
+                        if (sc.isLoading || sc.LoadedSceneName != scene || state.Owner == null ||
+                            state.Target == null || sc.GetAtomByUid(state.Target.uid) != state.Target) return;
+                        if (!string.IsNullOrEmpty(path))
+                            ApplyDockSlot(path,
+                                VrPresetBrowser.LoadTarget ?? state.Target);
+                    }
+                    catch (Exception e) { Error(e); }
+                    finally
+                    {
+                        if (closed)
+                        {
+                            _pdPicking = false;
+                            Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetEditor(state, scene));
+                        }
+                    }
+                }, pickMode: true, loadTarget: state.Target,
+                personMode: _pdTab == 0);
+            }
+            catch (Exception e) { _presetBrowsing = false; _pdPicking = false; Error(e); }
+        }
+
+        // 保存 — same per-tab split as the radial person sub-buttons:
+        // 替换/外观 write a full person preset into the shared Appearance
+        // dir, 服装 picks a person .vap to merge the clothing section into,
+        // 化妆 writes a standalone preset of only the worn makeup items.
+        private static void OpenDockPresetSaver()
+        {
+            if (_presetBrowsing) return;
+            SuperController sc = SuperController.singleton;
+            Snapshot state = FindEditor(sc);
+            if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
+            string scene = sc.LoadedSceneName;
+            if (_pdQuick == null)
+                _pdQuick = new SceneQuickActions(Quest3TriggerUIPlugin.Instance);
+            Atom target = state.Target;
+            _presetBrowsing = true;
+            _pdPicking = true;
+            Action<bool> done = delegate(bool closed)
+            {
+                if (!closed) return;
+                _pdPicking = false;
+                Quest3TriggerUIPlugin.Instance.StartCoroutine(
+                    RestorePresetEditor(state, scene));
+            };
+            try
+            {
+                switch (_pdTab)
+                {
+                    case 0: // 人物
+                        _pdQuick.SavePersonPresetFor(target, "人物", true, done);
+                        break;
+                    case 1: // 发型
+                        _pdQuick.SaveHairPresetFor(target, true, done);
+                        break;
+                    case 2: // 服装
+                        _pdQuick.SaveClothingPresetFor(target, true, done);
+                        break;
+                    case 3: // 皮肤
+                        _pdQuick.SaveSkinPresetFor(target, true, done);
+                        break;
+                    case 4: // 化妆
+                        _pdQuick.SaveMakeupPresetFor(target, true, done);
+                        break;
+                }
             }
             catch (Exception e) { _presetBrowsing = false; _pdPicking = false; Error(e); }
         }

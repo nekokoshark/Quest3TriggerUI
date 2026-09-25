@@ -36,9 +36,7 @@ namespace Quest3TriggerUI
 
         private static int FavoriteCapacity()
         {
-            float h = _favListHeight > 0f ? _favListHeight : 400f;
-            return Mathf.Max(1, Mathf.FloorToInt(
-                (h - FavPad * 2f + FavSpacing) / (FavCellH + FavSpacing))) * 2;
+            return FavPageSize;
         }
 
         // ---------- shared pointer → grid plumbing ----------
@@ -132,12 +130,12 @@ namespace Quest3TriggerUI
             float y = Mathf.Clamp(-p.y - top, 0f,
                 Mathf.Max(0f, cells.rect.height - top - bottom - 1f));
             int col = Mathf.Clamp(
-                Mathf.FloorToInt(x / (FavCellW + FavSpacing)), 0, 1);
+                Mathf.FloorToInt(x / (FavCellW + FavSpacing)), 0, FavColumns - 1);
             int row = Mathf.Max(0,
                 Mathf.FloorToInt(y / (FavCellH + FavSpacing)));
             int start = page * capacity;
             int pageCount = Mathf.Clamp(count - start, 0, capacity);
-            int idx = Mathf.Min(row * 2 + col, pageCount);
+            int idx = Mathf.Min(row * FavColumns + col, pageCount);
             if (idx < pageCount &&
                 x - col * (FavCellW + FavSpacing) > (FavCellW + FavSpacing) * 0.5f)
                 idx++;
@@ -158,7 +156,7 @@ namespace Quest3TriggerUI
 
         private static void ClearFavoriteReorder()
         {
-            if (_favoriteDropIndex >= 0) _favDirty = true;
+            if (_favoriteDropIndex >= 0) _favPreviewDirty = true;
             _favoriteDragList = null;
             _favoriteDragUid = null;
             _favoriteDropIndex = -1;
@@ -238,7 +236,7 @@ namespace Quest3TriggerUI
             if (index != _favoriteDropIndex)
             {
                 _favoriteDropIndex = index;
-                _favDirty = true;
+                _favPreviewDirty = true;
             }
         }
 
@@ -254,7 +252,7 @@ namespace Quest3TriggerUI
             items.RemoveAt(from);
             items.Insert(Mathf.Clamp(dst, 0, items.Count), entry);
             SaveFavoriteStores();
-            _favDirty = true;
+            _favPreviewDirty = true;
             Log("fav reorder " + from + "->" + dst + " uid=" + source.Uid);
             return true;
         }
@@ -277,7 +275,7 @@ namespace Quest3TriggerUI
 
         private static void ClearPdReorder()
         {
-            if (_pdDropIndex >= 0) _pdDirty = true;
+            if (_pdDropIndex >= 0) _pdPreviewDirty = true;
             _pdDragList = null;
             _pdDragPath = null;
             _pdDropIndex = -1;
@@ -357,7 +355,7 @@ namespace Quest3TriggerUI
             if (index != _pdDropIndex)
             {
                 _pdDropIndex = index;
-                _pdDirty = true;
+                _pdPreviewDirty = true;
             }
         }
 
@@ -374,7 +372,7 @@ namespace Quest3TriggerUI
             slots.RemoveAt(from);
             slots.Insert(Mathf.Clamp(dst, 0, slots.Count), source.PresetPath);
             SavePdSlots();
-            _pdDirty = true;
+            _pdPreviewDirty = true;
             Log("pd reorder " + from + "->" + dst + " " + source.PresetPath);
             return true;
         }

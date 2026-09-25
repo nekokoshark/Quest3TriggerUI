@@ -224,6 +224,7 @@ namespace Quest3TriggerUI
 
         internal void ShowHold()
         {
+            if (Quest3TriggerUIPlugin.RadialDragBlocked) return;
             if (_canvas == null)
                 Build();
 
@@ -1167,7 +1168,6 @@ namespace Quest3TriggerUI
         }
     }
 }
-
 
 
 

@@ -457,11 +457,10 @@ namespace Quest3TriggerUI
 
         private static bool PointerOverLockBar()
         {
-            GameObject target = VrPointerPresentation.CurrentLookTarget(true);
-            if (target != null && target.GetComponentInParent<AceLockBarTag>() != null)
-                return true;
-            target = VrPointerPresentation.CurrentLookTarget(false);
-            return target != null && target.GetComponentInParent<AceLockBarTag>() != null;
+            GameObject target =
+                VrPointerPresentation.CurrentLookTarget(DragRight());
+            return target != null &&
+                target.GetComponentInParent<AceLockBarTag>() != null;
         }
     }
 }

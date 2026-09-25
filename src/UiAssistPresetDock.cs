@@ -13,27 +13,30 @@ namespace Quest3TriggerUI
     {
         // Preset dock pinned to the LEFT edge of the ACE list — same anatomy
         // as the right favorites bar: a vertical tag strip on the outer edge
-        // (the five fixed tabs 替换/外观/发型/服装/皮肤 plus a ＋新增 row),
-        // a two-column cell grid, and a bottom nav row that only appears when
-        // the tab overflows one page. A slot click applies only the matching
-        // section of a person preset — the same section loaders the radial
-        // menu uses — so a slot never nukes the rest of the person. The 新增
-        // row opens the preset browser in pick mode: every .vap click files
-        // it under the active tab without closing (batch saving); presets
-        // whose type does not match the tab are skipped silently. Dragging
-        // a slot thumbnail out of the dock removes it.
+        // (人物/发型/服装/皮肤/化妆 plus ＋新增/读取/保存 rows), a two-column
+        // cell grid, and a bottom nav row that only appears when the tab
+        // overflows one page. The merged 人物 tab pops 替换/外观 mini
+        // buttons on a clicked thumbnail — full replace vs. same preset
+        // minus clothing. Other tabs apply only their own section of a
+        // person preset — the same section loaders the radial menu uses —
+        // so a slot never nukes the rest of the person. The 新增 row opens
+        // the preset browser in pick mode: every .vap click files it under
+        // the active tab without closing (batch saving); presets whose type
+        // does not match the tab are skipped silently. Dragging a slot
+        // thumbnail out of the dock removes it.
         private static readonly string[] PdTabNames =
-            { "替换", "外观", "发型", "服装", "皮肤" };
-        // Per-tab browse root for 新增 — same mapping as the radial
-        // 人物 sub-buttons: 替换/外观 share the person-preset library,
-        // 发型/服装/皮肤 open their own manager dirs.
+            { "人物", "发型", "服装", "皮肤", "化妆" };
+        // Per-tab browse root — 人物 uses the person-preset library,
+        // 发型/服装/皮肤 open their own manager dirs; 化妆 is a clothing
+        // preset subfolder.
         private static string PdTabDir(int tab)
         {
             switch (tab)
             {
-                case 2: return PluginPaths.HairPresetDir;
-                case 3: return PluginPaths.ClothingPresetDir;
-                case 4: return PluginPaths.SkinPresetDir;
+                case 1: return PluginPaths.HairPresetDir;
+                case 2: return PluginPaths.ClothingPresetDir;
+                case 3: return PluginPaths.SkinPresetDir;
+                case 4: return PluginPaths.ClothingPresetDir + "/化妆";
                 default: return PluginPaths.AppearancePresetDir;
             }
         }
@@ -58,9 +61,26 @@ namespace Quest3TriggerUI
         private static float _pdListHeight;
         private static GameObject _pdList;
         private static Atom _pdAtom;
+        // Per-atom record of what the 化妆 tab last put on: the preset path
+        // and the internalIds of the items it added. Clicking the same
+        // preset again removes exactly those items (not the whole outfit);
+        // loading a different makeup preset swaps them out first.
+        private sealed class MakeupApplied
+        {
+            internal string Path;
+            internal List<string> ItemIds;
+        }
+        private static readonly Dictionary<string, MakeupApplied>
+            _makeupApplied = new Dictionary<string, MakeupApplied>();
         private static SceneQuickActions _pdQuick;
         private static readonly Dictionary<string, Texture2D> _pdThumbs =
             new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+        // Sidecar .jpg write-tick per slot path — same freshness-stamp
+        // scheme as the browser's _thumbStamp: an overwritten preset's
+        // re-shot thumbnail bumps the mtime and gets re-decoded instead
+        // of keeping the stale image forever.
+        private static readonly Dictionary<string, long> _pdThumbStamp =
+            new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
         private static string PdSlotsPath
         {
@@ -84,6 +104,13 @@ namespace Quest3TriggerUI
             internal string Path;
             internal RawImage Thumb;
         }
+        // Marks the 替换/外观 mini-button overlay so the press pipeline's
+        // drag-source resolver does not treat a tap on it as grabbing the
+        // underlying slot.
+        private sealed class PdOverlayTag : MonoBehaviour { }
+        // One shared overlay hops between cells of the 人物 tab.
+        private static GameObject _pdPersonOverlay;
+        private static string _pdOverlayPath;
 
         // Called from UpdatePresetButtons while the ACE editor is alive.
         private static void UpdatePresetDock(Snapshot state, GameObject list)
@@ -133,7 +160,7 @@ namespace Quest3TriggerUI
                     0, (int)FavPad);
                 grid.childAlignment = TextAnchor.UpperCenter;
                 grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-                grid.constraintCount = 2;
+                grid.constraintCount = FavColumns;
                 cellsGo.AddComponent<PdDockTag>();
                 CreatePdNav();
 
@@ -146,6 +173,15 @@ namespace Quest3TriggerUI
         private static void ClearPresetDock()
         {
             ClearPdReorder();
+            _pdVisibleCells.Clear();
+            _pdKeptCells.Clear();
+            _pdHintCell = null;
+            _pdPreviewDirty = false;
+            _pdThumbQueue.Clear();
+            _pdThumbQueued.Clear();
+            _dockDeleteMode = false;
+            _dockDeleteButton = null;
+            _dockDeleteLabel = null;
             _pdPageTargets.Clear();
             _pdAtom = null;
             _pdList = null;
@@ -174,6 +210,7 @@ namespace Quest3TriggerUI
             foreach (Texture2D t in _pdThumbs.Values)
                 if (t != null) UnityEngine.Object.Destroy(t);
             _pdThumbs.Clear();
+            _pdThumbStamp.Clear();
         }
 
         private static void TickPresetDock()
@@ -185,12 +222,14 @@ namespace Quest3TriggerUI
             SuperController sc = SuperController.singleton;
             // Unlike the favorites bar this stays up while its own pick
             // browser is open — the browser sits over the editor (right of
-            // this dock), and seeing slots land live is the point. Picking
-            // mode also ignores MainHUDVisible: the browser deactivates the
-            // main HUD branch that would otherwise flip every side bar off.
-            bool visible = sc != null &&
-                (_pdPicking ||
-                 (_pdList.activeInHierarchy && sc.MainHUDVisible));
+            // this dock), and seeing slots land live is the point (the
+            // browser only alpha-hides the HUD, so activeInHierarchy stays
+            // true anyway). But MainHUDVisible must gate BOTH branches:
+            // hiding the control panel while browsing used to leave the
+            // dock alive, riding the vanishing list's corners downward —
+            // the "dock slides off like it's falling" bug.
+            bool visible = sc != null && sc.MainHUDVisible &&
+                (_pdPicking || _pdList.activeInHierarchy);
             if (_pdDock.gameObject.activeSelf != visible)
                 _pdDock.gameObject.SetActive(visible);
             if (!visible) return;
@@ -220,11 +259,12 @@ namespace Quest3TriggerUI
                     _pdDock.rotation =
                         Quaternion.LookRotation(away, list.up);
             }
-            if (_pdDirty)
+            if (_pdDirty || _pdPreviewDirty)
             {
-                _pdDirty = false;
                 RebuildPdCells();
+                _pdDirty = false;
             }
+            TickPdThumbnails();
         }
 
         // Vertical tab strip on the dock's outer (left) edge — same idiom as
@@ -249,6 +289,21 @@ namespace Quest3TriggerUI
                 y += FavTagRowH + FavTagGap;
             }
             CreatePdAddRow(y);
+            y += FavTagRowH + FavTagGap;
+            // 读取/保存: the radial 人物 sub-actions re-homed into the dock —
+            // whichever tab is selected decides which preset section they
+            // mean.
+            CreatePdIoRow("读 取", y, new Color(0.13f, 0.24f, 0.32f, 1f),
+                OpenDockPresetLoader);
+            y += FavTagRowH + FavTagGap;
+            CreatePdIoRow("保 存", y, new Color(0.30f, 0.22f, 0.12f, 1f),
+                OpenDockPresetSaver);
+            y += FavTagRowH + FavTagGap;
+            GameObject deleteRow = CreatePdIoRow("删 除", y,
+                new Color(0.28f, 0.15f, 0.15f, 1f), ToggleDockDeleteMode);
+            _dockDeleteButton = deleteRow.GetComponent<Image>();
+            _dockDeleteLabel = deleteRow.GetComponentInChildren<Text>();
+            PaintDockDeleteMode();
             y += FavTagRowH;
             _pdTabStrip.sizeDelta = new Vector2(PdStripW, y);
             PdPaintTabs();
@@ -322,7 +377,15 @@ namespace Quest3TriggerUI
         // TagCreate row: opens the preset browser in pick mode.
         private static void CreatePdAddRow(float y)
         {
-            GameObject row = new GameObject("PdAdd", typeof(RectTransform));
+            CreatePdIoRow("＋ 新增", y, new Color(0.13f, 0.30f, 0.20f, 1f),
+                OpenPresetDockPicker);
+        }
+
+        private static GameObject CreatePdIoRow(string label, float y, Color bg,
+            Action action)
+        {
+            GameObject row = new GameObject("PdIo " + label,
+                typeof(RectTransform));
             RectTransform rect = (RectTransform)row.transform;
             rect.SetParent(_pdTabStrip, false);
             rect.anchorMin = new Vector2(0f, 1f);
@@ -330,11 +393,11 @@ namespace Quest3TriggerUI
             rect.pivot = new Vector2(0f, 1f);
             rect.anchoredPosition = new Vector2(0f, -y);
             rect.sizeDelta = new Vector2(PdStripW, FavTagRowH);
-            Image bg = row.AddComponent<Image>();
-            bg.color = new Color(0.13f, 0.30f, 0.20f, 1f);
-            bg.raycastTarget = true;
+            Image image = row.AddComponent<Image>();
+            image.color = bg;
+            image.raycastTarget = true;
             Button button = row.AddComponent<Button>();
-            button.targetGraphic = bg;
+            button.targetGraphic = image;
             button.transition = Selectable.Transition.None;
             button.onClick.AddListener(delegate
             {
@@ -343,7 +406,7 @@ namespace Quest3TriggerUI
                 if (Quest3TriggerUIPlugin.ClothingDragActive ||
                     Time.unscaledTime < _favoriteClickAfter) return;
                 VrHaptics.Press();
-                OpenPresetDockPicker();
+                action();
             });
             Text text = new GameObject("Label", typeof(RectTransform))
                 .AddComponent<Text>();
@@ -353,12 +416,13 @@ namespace Quest3TriggerUI
             tr.anchorMax = Vector2.one;
             tr.offsetMin = Vector2.zero;
             tr.offsetMax = Vector2.zero;
-            text.text = "＋ 新增";
+            text.text = label;
             text.alignment = TextAnchor.MiddleCenter;
             text.fontSize = 14;
             text.color = Color.white;
             text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             text.raycastTarget = false;
+            return row;
         }
 
         private static void PdPaintTabs()
@@ -373,8 +437,14 @@ namespace Quest3TriggerUI
         }
 
         // Which tab row (if any) the pointer is over — cursor-plane first
-        // (tracks mid-drag), look target as the fallback.
+        // (tracks mid-drag), look target as the fallback. Dock drags answer
+        // to the hand that started them.
         private static int PresetDockTabUnderPointer()
+        {
+            return PresetDockTabUnderPointer(DragRight());
+        }
+
+        private static int PresetDockTabUnderPointer(bool right)
         {
             Vector2 local;
             for (int i = 0; i < PdTabCount; i++)
@@ -383,24 +453,20 @@ namespace Quest3TriggerUI
                 if (row != null && PointerOnRect(row, out local))
                     return i;
             }
-            GameObject t = VrPointerPresentation.CurrentLookTarget(true);
+            GameObject t = VrPointerPresentation.CurrentLookTarget(right);
             PdTabButtonTag tag = t != null
                 ? t.GetComponentInParent<PdTabButtonTag>() : null;
-            if (tag == null)
-            {
-                t = VrPointerPresentation.CurrentLookTarget(false);
-                tag = t != null
-                    ? t.GetComponentInParent<PdTabButtonTag>() : null;
-            }
             return tag != null ? tag.Index : -1;
         }
 
         private static bool PointerOverPresetDock()
         {
-            GameObject t = VrPointerPresentation.CurrentLookTarget(true);
-            if (t != null && t.GetComponentInParent<PdDockTag>() != null)
-                return true;
-            t = VrPointerPresentation.CurrentLookTarget(false);
+            return PointerOverPresetDock(DragRight());
+        }
+
+        private static bool PointerOverPresetDock(bool right)
+        {
+            GameObject t = VrPointerPresentation.CurrentLookTarget(right);
             if (t != null && t.GetComponentInParent<PdDockTag>() != null)
                 return true;
             // Preview rebuilds replace slot objects — hit the persistent
@@ -408,6 +474,49 @@ namespace Quest3TriggerUI
             // a removal (same fallback as the favorites bar).
             Vector2 p;
             return PointerOnRect(_pdDock, out p);
+        }
+
+        // Drag-to-file entry for the preset browser: the tab row under the
+        // pointer wins, else the active tab when over the dock body, else
+        // -1 (pointer not on the dock at all). The caller names the hand
+        // that owns its gesture — the pointer that pressed, not whichever
+        // laser happens to rest on the dock.
+        internal static int PresetDockTabAtPointer(bool right)
+        {
+            if (_pdDock == null || !_pdDock.gameObject.activeSelf)
+                return -1;
+            int tab = PresetDockTabUnderPointer(right);
+            if (tab >= 0) return tab;
+            return PointerOverPresetDock(right) ? _pdTab : -1;
+        }
+
+        // Batch variant of FileDockPreset — one save + one rebuild for the
+        // whole drop. Paths already present or of an incompatible preset
+        // type are silently skipped (returns how many actually landed).
+        internal static int FileDockPresets(int tab,
+            IEnumerable<string> paths)
+        {
+            EnsurePdSlots();
+            if (tab < 0 || tab >= PdTabCount || paths == null) return 0;
+            List<string> slots = _pdSlots[tab];
+            int added = 0;
+            foreach (string p in paths)
+            {
+                if (string.IsNullOrEmpty(p) || slots.Contains(p)) continue;
+                if (!DockAccepts(tab, p)) continue;
+                slots.Add(p);
+                added++;
+            }
+            if (added == 0) return 0;
+            SavePdSlots();
+            if (tab == _pdTab)
+                _pdPage = Mathf.Max(0,
+                    Mathf.CeilToInt(slots.Count / (float)PdPageCapacity) - 1);
+            // Dropped onto another tab's row — switch to it so the result
+            // is visible (PdSelectTab no-ops when it is the active tab).
+            PdSelectTab(tab);
+            _pdDirty = true;
+            return added;
         }
 
         private static void PdSelectTab(int idx)
@@ -516,21 +625,15 @@ namespace Quest3TriggerUI
         // of stealing a cell row.
         private static int PdPageCapacity
         {
-            get
-            {
-                float h = _pdListHeight > 0f ? _pdListHeight : 400f;
-                return Mathf.Max(1, Mathf.FloorToInt(
-                    (h - FavPad * 2f + FavSpacing) /
-                    (FavCellH + FavSpacing))) * 2;
-            }
+            get { return FavPageSize; }
         }
 
         private static void RebuildPdCells()
         {
             if (_pdCells == null) return;
             EnsurePdSlots();
-            foreach (Transform child in _pdCells)
-                UnityEngine.Object.Destroy(child.gameObject);
+            _pdKeptCells.Clear();
+            _pdCellPosition = 0;
             List<string> slots = PdDisplaySlots();
             int count = slots.Count;
             int capacity = PdPageCapacity;
@@ -544,14 +647,12 @@ namespace Quest3TriggerUI
                 CreatePdSlot(slots[i]);
             if (count == 0)
                 CreatePdHintSlot();
+            FinishPdCells();
             if (_pdNav != null && _pdNav.activeSelf != nav)
                 _pdNav.SetActive(nav);
             if (nav && _pdPageText != null)
                 _pdPageText.text = (_pdPage + 1) + "/" + _pdPages;
-            int rowsShown = Mathf.Max(1,
-                Mathf.CeilToInt(Mathf.Max(1, end - start) / 2f));
-            float cellsH = FavPad * 2f + rowsShown *
-                (FavCellH + FavSpacing) - FavSpacing;
+            float cellsH = FavGridH;
             _pdCells.sizeDelta = new Vector2(FavColW, cellsH);
             // Dock: [left-edge tab strip][cells] horizontally, cells + nav row
             // vertically — the exact mirror of the favorites bar.
@@ -565,7 +666,9 @@ namespace Quest3TriggerUI
         // Empty-tab placeholder, mirroring the favorites bar's FavHint cell.
         private static void CreatePdHintSlot()
         {
+            if (_pdHintCell != null) return;
             GameObject slot = new GameObject("PdHint", typeof(RectTransform));
+            _pdHintCell = slot;
             slot.transform.SetParent(_pdCells, false);
             Image bg = slot.AddComponent<Image>();
             bg.color = new Color(0.3f, 0.5f, 1f, 0.18f);
@@ -589,6 +692,7 @@ namespace Quest3TriggerUI
 
         private static void CreatePdSlot(string path)
         {
+            if (ReusePdCell(path)) return;
             GameObject cell = new GameObject("PdSlot", typeof(RectTransform));
             RectTransform cr = (RectTransform)cell.transform;
             cr.SetParent(_pdCells, false);
@@ -635,6 +739,8 @@ namespace Quest3TriggerUI
             PdSlotTag tag = cell.AddComponent<PdSlotTag>();
             tag.Path = path;
             tag.Thumb = thumb;
+            _pdVisibleCells.Add(tag);
+            PlacePdCell(tag);
             Button button = cell.AddComponent<Button>();
             button.targetGraphic = bg;
             button.transition = Selectable.Transition.None;
@@ -643,9 +749,131 @@ namespace Quest3TriggerUI
             {
                 if (Quest3TriggerUIPlugin.ClothingDragActive ||
                     Time.unscaledTime < _favoriteClickAfter) return;
-                ApplyDockSlot(captured);
+                if (DeletePresetOnClick(captured)) return;
+                // 人物 tab: a click pops the 替换/外观 choice overlay on
+                // this thumbnail instead of applying immediately.
+                if (_pdTab == 0)
+                    TogglePdPersonOverlay(cr, captured);
+                else
+                    ApplyDockSlot(captured);
             });
             ApplyPdThumb(tag);
+        }
+
+        // ---------- 人物 tab: 替换/外观 mini-button overlay ----------
+
+        private static void TogglePdPersonOverlay(
+            RectTransform cell, string path)
+        {
+            if (_pdPersonOverlay != null &&
+                _pdPersonOverlay.activeSelf &&
+                _pdPersonOverlay.transform.parent == cell)
+            {
+                _pdPersonOverlay.SetActive(false);
+                return;
+            }
+            EnsurePdPersonOverlay();
+            _pdOverlayPath = path;
+            RectTransform rt = (RectTransform)_pdPersonOverlay.transform;
+            rt.SetParent(cell, false);
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            // Cover the thumbnail, leave the name strip visible.
+            rt.offsetMax = new Vector2(0f, -PdNameH);
+            rt.SetAsLastSibling();
+            _pdPersonOverlay.SetActive(true);
+            VrHaptics.Press();
+        }
+
+        private static void EnsurePdPersonOverlay()
+        {
+            if (_pdPersonOverlay != null) return;
+            GameObject go = new GameObject("PdPersonOverlay",
+                typeof(RectTransform));
+            go.AddComponent<PdOverlayTag>();
+            go.AddComponent<PdDockTag>();
+            Image bg = go.AddComponent<Image>();
+            bg.color = new Color(0f, 0f, 0f, 0.72f);
+            bg.raycastTarget = true;
+            RectTransform rt = (RectTransform)go.transform;
+            CreatePdOverlayButton(rt, "替 换", -1f,
+                new Color(0.45f, 0.16f, 0.16f, 1f),
+                delegate { ApplyPdPersonChoice(true); });
+            CreatePdOverlayButton(rt, "外 观", 1f,
+                new Color(0.13f, 0.30f, 0.20f, 1f),
+                delegate { ApplyPdPersonChoice(false); });
+            _pdPersonOverlay = go;
+            go.SetActive(false);
+        }
+
+        private static void CreatePdOverlayButton(RectTransform parent,
+            string label, float side, Color color,
+            UnityEngine.Events.UnityAction action)
+        {
+            GameObject go = new GameObject("PdChoice " + label,
+                typeof(RectTransform));
+            go.AddComponent<PdOverlayTag>();
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(parent, false);
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = new Vector2(
+                side * (FavCellW * 0.25f + 1f), 0f);
+            rect.sizeDelta = new Vector2(FavCellW * 0.5f - 8f, 34f);
+            Image bg = go.AddComponent<Image>();
+            bg.color = color;
+            bg.raycastTarget = true;
+            Button button = go.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate
+            {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                VrHaptics.Press();
+                action();
+            });
+            Text text = new GameObject("Label", typeof(RectTransform))
+                .AddComponent<Text>();
+            RectTransform tr = (RectTransform)text.transform;
+            tr.SetParent(rect, false);
+            tr.anchorMin = Vector2.zero;
+            tr.anchorMax = Vector2.one;
+            tr.offsetMin = Vector2.zero;
+            tr.offsetMax = Vector2.zero;
+            text.text = label;
+            text.alignment = TextAnchor.MiddleCenter;
+            text.fontSize = 13;
+            text.color = Color.white;
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.raycastTarget = false;
+        }
+
+        private static void ApplyPdPersonChoice(bool full)
+        {
+            if (_pdPersonOverlay != null)
+                _pdPersonOverlay.SetActive(false);
+            string path = _pdOverlayPath;
+            if (string.IsNullOrEmpty(path)) return;
+            Atom target = _pdAtom;
+            if (target == null) return;
+            if (_pdQuick == null)
+                _pdQuick = new SceneQuickActions(
+                    Quest3TriggerUIPlugin.Instance);
+            try
+            {
+                JSONStorable ap =
+                    target.GetStorableByID("AppearancePresets");
+                if (ap == null) return;
+                if (full)
+                    _pdQuick.LoadFullAppearancePreset(target, ap, path);
+                else
+                    _pdQuick.LoadAppearanceWithoutClothing(
+                        target, ap, path);
+            }
+            catch (Exception e) { Error(e); }
         }
 
         private static string PdDisplayName(string path)
@@ -660,17 +888,36 @@ namespace Quest3TriggerUI
             return file;
         }
 
-        private static void ApplyPdThumb(PdSlotTag tag)
+        private static void LoadPdThumb(PdSlotTag tag)
         {
+            string jpg = tag.Path.Substring(0, tag.Path.Length -
+                Path.GetExtension(tag.Path).Length) + ".jpg";
+            string full = FileManager.GetFullPath(jpg);
+            long stamp = -1L;
+            try
+            {
+                if (File.Exists(full))
+                    stamp = File.GetLastWriteTimeUtc(full).Ticks;
+            }
+            catch { }
             Texture2D tex;
+            long cachedStamp;
+            if (!_pdThumbStamp.TryGetValue(tag.Path, out cachedStamp) ||
+                cachedStamp != stamp)
+            {
+                Texture2D old;
+                if (_pdThumbs.TryGetValue(tag.Path, out old))
+                {
+                    _pdThumbs.Remove(tag.Path);
+                    if (old != null) UnityEngine.Object.Destroy(old);
+                }
+                _pdThumbStamp[tag.Path] = stamp;
+            }
             if (!_pdThumbs.TryGetValue(tag.Path, out tex))
             {
                 tex = null;
                 try
                 {
-                    string jpg = tag.Path.Substring(0, tag.Path.Length -
-                        Path.GetExtension(tag.Path).Length) + ".jpg";
-                    string full = FileManager.GetFullPath(jpg);
                     if (File.Exists(full))
                     {
                         byte[] bytes = File.ReadAllBytes(full);
@@ -691,6 +938,90 @@ namespace Quest3TriggerUI
 
         // ---------- slots persistence ----------
 
+        // Called only after a local file operation succeeds. A favorite is
+        // a preset reference, not a copy: both loading and its sidecar must
+        // follow the move. Update in place to preserve tab membership/order.
+        internal static void NotifyDockPresetMoved(string source,
+            string destination, bool directory)
+        {
+            try
+            {
+                EnsurePdSlots();
+                bool changed = false;
+                for (int tab = 0; tab < PdTabCount; tab++)
+                {
+                    List<string> slots = _pdSlots[tab];
+                    for (int i = 0; i < slots.Count; i++)
+                    {
+                        string oldPath = slots[i];
+                        string newPath = RebaseDockPresetPath(oldPath,
+                            source, destination, directory);
+                        if (oldPath == newPath) continue;
+                        slots[i] = newPath;
+                        Texture2D old;
+                        if (_pdThumbs.TryGetValue(oldPath, out old))
+                        {
+                            _pdThumbs.Remove(oldPath);
+                            if (old != null) UnityEngine.Object.Destroy(old);
+                        }
+                        _pdThumbStamp.Remove(oldPath);
+                        changed = true;
+                    }
+                }
+                if (!changed) return;
+                _pdOverlayPath = RebaseDockPresetPath(_pdOverlayPath,
+                    source, destination, directory);
+                foreach (MakeupApplied applied in _makeupApplied.Values)
+                    applied.Path = RebaseDockPresetPath(applied.Path,
+                        source, destination, directory);
+                ClearPdReorder();
+                if (_pdPersonOverlay != null)
+                    _pdPersonOverlay.SetActive(false);
+                SavePdSlots();
+                _pdDirty = true;
+                // Rebind live cells before old textures are destroyed at
+                // frame end; do not leave visible cells pointing at them.
+                if (_pdCells != null)
+                {
+                    RebuildPdCells();
+                    _pdDirty = false;
+                }
+                Log("预设收藏引用已同步移动/重命名。");
+            }
+            catch (Exception e) { Error(e); }
+        }
+
+        private static string RebaseDockPresetPath(string path,
+            string source, string destination, bool directory)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            string current = NormalizeDockLocalPath(path);
+            string from = NormalizeDockLocalPath(source);
+            string to = NormalizeDockLocalPath(destination);
+            if (current == null || from == null || to == null) return path;
+            if (string.Equals(current, from, StringComparison.OrdinalIgnoreCase))
+                return to;
+            if (directory && current.StartsWith(from + "/",
+                    StringComparison.OrdinalIgnoreCase))
+                return to + current.Substring(from.Length);
+            return path;
+        }
+
+        private static string NormalizeDockLocalPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            path = path.Replace('\\', '/');
+            // Package addresses are not local files and must not be guessed.
+            if (path.IndexOf(":/", StringComparison.Ordinal) > 1) return null;
+            string root = Path.GetFullPath(Paths.GameRootPath)
+                .Replace('\\', '/').TrimEnd('/');
+            string full = Path.GetFullPath(Path.IsPathRooted(path)
+                ? path : Path.Combine(Paths.GameRootPath, path))
+                .Replace('\\', '/').TrimEnd('/');
+            return full.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase)
+                ? full.Substring(root.Length + 1) : full;
+        }
+
         private static void EnsurePdSlots()
         {
             if (_pdLoaded) return;
@@ -701,17 +1032,31 @@ namespace Quest3TriggerUI
             {
                 string file = PdSlotsPath;
                 if (!File.Exists(file)) return;
-                foreach (string line in File.ReadAllLines(file))
+                string[] lines = File.ReadAllLines(file);
+                // "#v2" header = current five-tab layout. Anything else is
+                // the legacy six-tab file — merge 替换+外观 into 人物 and
+                // shift the rest down one index.
+                bool v2 = lines.Length > 0 && lines[0].Trim() == "#v2";
+                bool migrated = false;
+                foreach (string line in lines)
                 {
                     int sep = line.IndexOf('|');
                     if (sep <= 0) continue;
                     int tab;
-                    if (!int.TryParse(line.Substring(0, sep), out tab) ||
-                        tab < 0 || tab >= PdTabCount) continue;
+                    if (!int.TryParse(line.Substring(0, sep), out tab))
+                        continue;
+                    if (!v2)
+                    {
+                        if (tab < 0 || tab > 5) continue;
+                        tab = tab <= 1 ? 0 : tab - 1;
+                        migrated = true;
+                    }
+                    if (tab < 0 || tab >= PdTabCount) continue;
                     string path = line.Substring(sep + 1).Trim();
                     if (path.Length > 0 && !_pdSlots[tab].Contains(path))
                         _pdSlots[tab].Add(path);
                 }
+                if (migrated) SavePdSlots();
             }
             catch (Exception e) { Error(e); }
         }
@@ -720,7 +1065,7 @@ namespace Quest3TriggerUI
         {
             try
             {
-                List<string> lines = new List<string>();
+                List<string> lines = new List<string> { "#v2" };
                 for (int i = 0; i < PdTabCount; i++)
                 {
                     if (_pdSlots[i] == null) continue;
@@ -758,19 +1103,22 @@ namespace Quest3TriggerUI
             int kind = SceneQuickActions.ClassifyPresetFile(path, "character");
             switch (tab)
             {
-                case 0: // 替换: whole-person replacement needs a person preset
-                    return kind == 2;
-                case 1: // 外观: person preset or an appearance-only preset
+                case 0: // 人物: person preset or an appearance-only preset
                     return kind >= 1;
-                case 2: // 发型: person preset or a hair preset
+                case 1: // 发型: person preset or a hair preset
                     return kind == 2 ||
                         SceneQuickActions.ClassifyPresetFile(path, "hair") == 1;
-                case 3: // 服装: person preset or a clothing preset
+                case 2: // 服装: person preset or a clothing preset
                     return kind == 2 ||
                         SceneQuickActions.ClassifyPresetFile(
                             path, "clothing") == 1;
-                case 4: // 皮肤: person preset or anything carrying skin data
+                case 3: // 皮肤: person preset or anything carrying skin data
                     return kind == 2 || PresetHasSkinStorable(path);
+                case 4: // 化妆: clothing presets only — person presets
+                        // must not land here even though they carry a
+                        // clothing section
+                    return SceneQuickActions.ClassifyPresetFile(
+                            path, "clothing") == 1;
             }
             return false;
         }
@@ -822,9 +1170,9 @@ namespace Quest3TriggerUI
             return true;
         }
 
-        private static void ApplyDockSlot(string path)
+        private static void ApplyDockSlot(string path, Atom target = null)
         {
-            Atom target = _pdAtom;
+            target = target ?? _pdAtom;
             if (target == null) return;
             if (_pdQuick == null)
                 _pdQuick = new SceneQuickActions(Quest3TriggerUIPlugin.Instance);
@@ -832,24 +1180,25 @@ namespace Quest3TriggerUI
             {
                 switch (_pdTab)
                 {
-                    case 0: // 替换: full person preset, clothing+hair included
+                    case 0: // 人物 via the 读取 browser — its header
+                            // dropdown (VrPresetBrowser.PersonApplyMode)
+                            // picks 替换 (full person incl. clothing) or
+                            // 外观 (appearance only, keeps clothing).
                     {
                         JSONStorable ap =
                             target.GetStorableByID("AppearancePresets");
                         if (ap != null)
-                            _pdQuick.LoadFullAppearancePreset(target, ap, path);
+                        {
+                            if (VrPresetBrowser.PersonApplyMode == 0)
+                                _pdQuick.LoadFullAppearancePreset(
+                                    target, ap, path);
+                            else
+                                _pdQuick.LoadAppearanceWithoutClothing(
+                                    target, ap, path);
+                        }
                         break;
                     }
-                    case 1: // 外观: same preset minus the clothing section
-                    {
-                        JSONStorable ap =
-                            target.GetStorableByID("AppearancePresets");
-                        if (ap != null)
-                            _pdQuick.LoadAppearanceWithoutClothing(
-                                target, ap, path);
-                        break;
-                    }
-                    case 2: // 发型
+                    case 1: // 发型
                         _pdQuick.LoadExtractedPreset(target, path,
                             "HairPresets", "Hair preset",
                             delegate(JSONClass src)
@@ -858,7 +1207,7 @@ namespace Quest3TriggerUI
                                     src, "hair");
                             }, true);
                         break;
-                    case 3: // 服装 (replaces, never merges)
+                    case 2: // 服装 (replaces, never merges)
                         _pdQuick.LoadExtractedPreset(target, path,
                             "ClothingPresets", "Clothing preset",
                             delegate(JSONClass src)
@@ -867,7 +1216,43 @@ namespace Quest3TriggerUI
                                     src, "clothing");
                             });
                         break;
-                    case 4: // 皮肤
+                    case 4: // 化妆: merges — swaps only the preset's own
+                            // makeup items; clicking the applied preset
+                            // again removes exactly those items
+                    {
+                        MakeupApplied state;
+                        _makeupApplied.TryGetValue(target.uid, out state);
+                        bool same = state != null && state.Path == path;
+                        List<string> remove = state == null
+                            ? null : state.ItemIds;
+                        bool add = !same;
+                        var applied = new List<string>();
+                        bool built = false;
+                        _pdQuick.LoadExtractedPreset(target, path,
+                            "ClothingPresets", "化妆",
+                            delegate(JSONClass src)
+                            {
+                                JSONClass merged = SceneQuickActions
+                                    .BuildMakeupClothingPreset(src, target,
+                                        remove, add, applied);
+                                built = merged != null;
+                                return merged;
+                            });
+                        if (built)
+                        {
+                            if (add)
+                            {
+                                if (state == null)
+                                    state = new MakeupApplied();
+                                state.Path = path;
+                                state.ItemIds = applied;
+                                _makeupApplied[target.uid] = state;
+                            }
+                            else _makeupApplied.Remove(target.uid);
+                        }
+                        break;
+                    }
+                    case 3: // 皮肤
                         _pdQuick.LoadExtractedPreset(target, path,
                             "AppearancePresets", "Skin preset",
                             SceneQuickActions.ExtractSkinPreset);
