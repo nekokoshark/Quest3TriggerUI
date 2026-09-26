@@ -207,6 +207,9 @@ namespace Quest3TriggerUI
             _favKeptCells.Clear();
             _favHintCell = null;
             _favPreviewDirty = false;
+            _favBuildSlots = null;
+            _favBuildIdx = 0;
+            _favBuildVisual = false;
             _favScrollY = 0f;
             _favContentH = 0f;
             _favView = null;
@@ -1033,10 +1036,19 @@ namespace Quest3TriggerUI
                     Vector3.Cross(away, list.up).sqrMagnitude > 0.0001f)
                     _favDock.rotation = Quaternion.LookRotation(away, list.up);
             }
-            if (_favDirty || _favPreviewDirty)
+            if (_favDirty || _favPreviewDirty || _favBuildSlots != null)
             {
-                RebuildFavoriteCells();
-                _favDirty = false;
+                // Consume the dirty edge instead of latching it as the
+                // restart arg — otherwise every frame restarts the pump and
+                // the fill never gets past the first batch.
+                bool restart = _favDirty || _favPreviewDirty;
+                if (restart)
+                {
+                    _favBuildVisual = _favDirty;
+                    _favDirty = _favPreviewDirty = false;
+                }
+                if (PumpFavCells(FavBuildPerTick, restart))
+                    _favBuildVisual = false;
             }
             TickDockScroll(true);
             TickFavoriteVisuals();
@@ -1077,17 +1089,41 @@ namespace Quest3TriggerUI
             text.raycastTarget = false;
         }
 
-        private static void RebuildFavoriteCells()
+        // Same incremental-fill model as the preset dock: the favorites bar
+        // used to construct every cell in the frame it first became visible,
+        // stacking a burst of GameObject creation on top of the editor's own
+        // open cost. The pump spreads it across ticks instead.
+        private static List<string[]> _favBuildSlots;
+        private static int _favBuildIdx;
+        private const int FavBuildPerTick = 12;
+        private static int _favBuildTicks;
+        private static bool _favBuildVisual;
+
+        private static bool PumpFavCells(int budget, bool restart)
         {
-            if (_favCells == null) return;
-            _favKeptCells.Clear();
-            _favCellPosition = 0;
-            List<string[]> favorites = FavoriteDisplayOrder();
-            int count = favorites.Count;
+            if (restart) { _favBuildSlots = null; _favBuildTicks = 0; }
+            if (_favCells == null) { _favBuildSlots = null; return true; }
+            if (_favBuildSlots == null)
+            {
+                _favKeptCells.Clear();
+                _favCellPosition = 0;
+                _favBuildSlots = FavoriteDisplayOrder();
+                _favBuildIdx = 0;
+            }
+            _favBuildTicks++;
+            int count = _favBuildSlots.Count;
             // All entries get a cell — the viewport mask + scroll offset do
             // the slicing now, and uid-keyed reuse keeps rebuilds cheap.
-            for (int i = 0; i < count; i++)
-                CreateFavoriteSlot(favorites[i][0]);
+            // ~2ms/tick is the real budget; the count cap is a sanity bound.
+            long tickStart = Mark();
+            while (_favBuildIdx < count && budget-- > 0)
+            {
+                CreateFavoriteSlot(_favBuildSlots[_favBuildIdx++][0]);
+                if (_favBuildIdx < count && ElapsedMs(tickStart) >= 2)
+                    break;
+            }
+            if (_favBuildIdx < count) return false;
+            _favBuildSlots = null;
             if (count == 0)
                 CreateEmptyHintSlot();
             FinishFavoriteCells();
@@ -1100,6 +1136,10 @@ namespace Quest3TriggerUI
             ApplyFavoritesDockWidth();
             _favDock.sizeDelta = new Vector2(_favDock.sizeDelta.x,
                 Mathf.Max(FavGridH, RequiredTagStripHeight()));
+            if (_favBuildTicks > 1)
+                Log("收藏栏格子分批填充完成：" + count + " 格/" +
+                    _favBuildTicks + " tick");
+            return true;
         }
 
         // An empty bar must still be findable: one dashed-feel placeholder cell

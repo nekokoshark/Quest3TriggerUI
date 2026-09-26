@@ -959,7 +959,12 @@ internal void OpenPersonPreset()
                 if (string.IsNullOrEmpty(pm.storeName))
                     pm.storeName = "Preset";
                 nameParam.val = name;
-                presets.CallAction("StorePresetWithScreenshot");
+                // StorePreset (not *WithScreenshot): the aim-and-select
+                // screenshot pass ate its first capture as a skip. We write
+                // the sidecar jpg ourselves from the already-rendered eye
+                // frame — instant, no mode flip, no lost first shot.
+                presets.CallAction("StorePreset");
+                PresetThumbCapture.Queue(path, null);
                 int storeSlash = path.LastIndexOfAny(new char[] { '/', '\\' });
                 if (storeSlash > 0)
                     PresetSaveDirs.Set(storableId, path.Substring(0, storeSlash));
@@ -976,6 +981,56 @@ internal void OpenPersonPreset()
         // target (not the closest person), the browser is the compact
         // dock-adjacent variant, and onDone(didClose) lets the dock restore
         // the editor UI when the dialog closes. ----
+
+        // Dock save-mode overwrite: store the editor atom straight onto the
+        // .vap the clicked cell references. Same rules as the save dialog —
+        // existing person .vap merges via the per-tab intercepts, pure-type
+        // files go through the native store. VAR-embedded presets refuse.
+        internal bool DockStorePreset(Atom target, int tab, string path)
+        {
+            if (target == null || string.IsNullOrEmpty(path)) return false;
+            if (FileManager.IsPackagePath(path))
+            {
+                LogError("preset overwrite: VAR-embedded presets cannot be rewritten.");
+                return false;
+            }
+            string storableId;
+            string label;
+            Func<Atom, string, bool> intercept = null;
+            switch (tab)
+            {
+                case 1:
+                    storableId = "HairPresets"; label = "发型";
+                    intercept = HairStoreIntercept;
+                    break;
+                case 2:
+                    storableId = "ClothingPresets"; label = "服装";
+                    intercept = ClothingStoreIntercept;
+                    break;
+                case 3:
+                    storableId = "SkinPresets"; label = "皮肤";
+                    intercept = SkinStoreIntercept;
+                    break;
+                case 4:
+                    StoreMakeupPresetFile(target, path);
+                    return true;
+                default:
+                    storableId = "AppearancePresets"; label = "人物";
+                    break;
+            }
+            if (intercept != null && intercept(target, path))
+                return true;
+            MeshVR.PresetManagerControl presets =
+                target.GetStorableByID(storableId) as MeshVR.PresetManagerControl;
+            if (presets == null)
+            {
+                LogError(label + " preset save: " + storableId +
+                    " is unavailable on " + target.uid + ".");
+                return false;
+            }
+            StorePresetToPath(presets, path, storableId, label);
+            return true;
+        }
 
         internal void SavePersonPresetFor(Atom target, string label,
             bool small, Action<bool> onDone)
@@ -3518,7 +3573,7 @@ internal void OpenPersonPreset()
             return atom.mainController.transform;
         }
 
-        private static bool IsGender(Atom atom, string gender)
+        internal static bool IsGender(Atom atom, string gender)
         {
             DAZCharacterSelector geometry =
                 atom.GetStorableByID("geometry") as DAZCharacterSelector;

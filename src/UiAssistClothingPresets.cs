@@ -50,12 +50,21 @@ namespace Quest3TriggerUI
                 if (state == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 GameObject list = Read(state.Editor.GetType(), state.Editor, "aceScrollListGO") as GameObject;
                 if (list == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                bool fresh = !(_presetList == list &&
+                    ReferenceEquals(_presetEditor, state.Editor) &&
+                    _editorVisibilityButton != null);
+                // One-line cost breakdown per editor open: which sidebar
+                // build eats the frame the bars appear on.
+                long t = fresh ? System.Diagnostics.Stopwatch.GetTimestamp() : 0L;
                 UpdatePresetDock(state, list);
+                long tDock = ElapsedMs(t); t = Mark();
                 UpdateFavoritesBar(state, list);
+                long tFav = ElapsedMs(t); t = Mark();
                 UpdateBanBar(state, list);
+                long tBan = ElapsedMs(t); t = Mark();
                 UpdateLockBar(state, list);
-                if (_presetList == list && ReferenceEquals(_presetEditor, state.Editor) &&
-                    _editorVisibilityButton != null) return;
+                long tLock = ElapsedMs(t); t = Mark();
+                if (!fresh) return;
                 ClearPresetButtons();
                 object canvas = Read(state.Editor.GetType(), state.Editor, "_uiButtonCanvas");
                 _presetList = list;
@@ -65,6 +74,9 @@ namespace Quest3TriggerUI
                 _editorVisibilityButton = CreatePresetButton(canvas, list, "隐藏", 36f,
                     ToggleEditorVisibility);
                 BindPanelPresentation(canvas, list);
+                Log("[ACE] sidebars: dock=" + tDock + "ms fav=" + tFav +
+                    "ms ban=" + tBan + "ms lock=" + tLock +
+                    "ms button+bind=" + ElapsedMs(t) + "ms");
             }
             catch (Exception e) { ClearPresetButtons(); _nextPresetCheck = Time.unscaledTime + 5f; Error(e); }
         }
@@ -196,6 +208,7 @@ namespace Quest3TriggerUI
             _presetBrowsing = true;
             _presetState = state;
             _pdPicking = true;
+            _pdBrowseKind = 1;
             try
             {
                 VrPresetBrowser.ShowDialogFull("收藏预设到「" +
@@ -239,6 +252,7 @@ namespace Quest3TriggerUI
             _presetBrowsing = true;
             _presetState = state;
             _pdPicking = true;
+            _pdBrowseKind = 2;
             try
             {
                 VrPresetBrowser.ShowDialogFull("读取「" +
@@ -251,7 +265,8 @@ namespace Quest3TriggerUI
                             state.Target == null || sc.GetAtomByUid(state.Target.uid) != state.Target) return;
                         if (!string.IsNullOrEmpty(path))
                             ApplyDockSlot(path,
-                                VrPresetBrowser.LoadTarget ?? state.Target);
+                                VrPresetBrowser.LoadTarget ??
+                                PdEffectiveTarget());
                     }
                     catch (Exception e) { Error(e); }
                     finally
@@ -262,7 +277,8 @@ namespace Quest3TriggerUI
                             Quest3TriggerUIPlugin.Instance.StartCoroutine(RestorePresetEditor(state, scene));
                         }
                     }
-                }, pickMode: true, loadTarget: state.Target,
+                }, pickMode: true,
+                loadTarget: PdEffectiveTarget() ?? state.Target,
                 personMode: _pdTab == 0);
             }
             catch (Exception e) { _presetBrowsing = false; _pdPicking = false; Error(e); }
@@ -286,10 +302,17 @@ namespace Quest3TriggerUI
             _presetBrowsing = true;
             _presetState = state;
             _pdPicking = true;
+            _pdBrowseKind = 3;
+            // While the save dialog is up, dock clicks repurpose: thumbnail
+            // = overwrite-save onto that preset, name strip = rename.
+            _pdSaveBrowsing = true;
+            PaintDockSaveMode();
             Action<bool> done = delegate(bool closed)
             {
                 if (!closed) return;
                 _pdPicking = false;
+                _pdSaveBrowsing = false;
+                PaintDockSaveMode();
                 Quest3TriggerUIPlugin.Instance.StartCoroutine(
                     RestorePresetEditor(state, scene));
             };

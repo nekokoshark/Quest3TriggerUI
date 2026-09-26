@@ -22,7 +22,7 @@ namespace Quest3TriggerUI
                 AceFavSlotTag tag = _favVisibleCells[i];
                 if (tag == null || tag.Uid != uid || _favKeptCells.Contains(tag)) continue;
                 PlaceFavoriteCell(tag);
-                if (_favDirty) QueueFavoriteVisual(tag);
+                if (_favBuildVisual) QueueFavoriteVisual(tag);
                 return true;
             }
             return false;
@@ -65,6 +65,48 @@ namespace Quest3TriggerUI
             }
         }
 
+        // Tab switch wipes the grid outright: the user wants a blank panel
+        // playing the fill animation, not a half-old/half-new mix while
+        // the pump replaces cells in place. Overlays parented to cells die
+        // with them; the decoded-texture cache (_pdThumbs) survives.
+        private static void ClearPdCellsNow()
+        {
+            for (int i = 0; i < _pdVisibleCells.Count; i++)
+            {
+                PdSlotTag tag = _pdVisibleCells[i];
+                if (tag != null)
+                {
+                    tag.gameObject.SetActive(false);
+                    Object.Destroy(tag.gameObject);
+                }
+            }
+            _pdVisibleCells.Clear();
+            _pdKeptCells.Clear();
+            _pdCellPosition = 0;
+            if (_pdHintCell != null)
+            {
+                _pdHintCell.SetActive(false);
+                Object.Destroy(_pdHintCell);
+                _pdHintCell = null;
+            }
+            _pdThumbQueue.Clear();
+            _pdThumbQueued.Clear();
+            _pdBuildSlots = null;
+            _pdHzTag = null;
+            if (_pdHzPanel != null) _pdHzPanel.gameObject.SetActive(false);
+            if (_pdPersonOverlay != null)
+            { Object.Destroy(_pdPersonOverlay); _pdPersonOverlay = null; }
+            if (_pdSaveOverlay != null)
+            { Object.Destroy(_pdSaveOverlay); _pdSaveOverlay = null; _pdSaveTag = null; }
+            if (_pdRenameOverlay != null)
+            {
+                Object.Destroy(_pdRenameOverlay);
+                _pdRenameOverlay = null; _pdRenameInput = null;
+                _pdRenamePath = null;
+                VrTextInputBridge.Clear();
+            }
+        }
+
         private static bool ReusePdCell(string path)
         {
             for (int i = 0; i < _pdVisibleCells.Count; i++)
@@ -72,7 +114,7 @@ namespace Quest3TriggerUI
                 PdSlotTag tag = _pdVisibleCells[i];
                 if (tag == null || tag.Path != path || _pdKeptCells.Contains(tag)) continue;
                 PlacePdCell(tag);
-                if (_pdDirty) ApplyPdThumb(tag);
+                if (_pdBuildThumbs) ApplyPdThumb(tag);
                 return true;
             }
             return false;

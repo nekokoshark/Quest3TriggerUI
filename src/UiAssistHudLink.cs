@@ -147,6 +147,7 @@ namespace Quest3TriggerUI
             if (controller == null) { CancelPending(); ReleaseDockNavSuppression(); _observed = false; return; }
             if (controller.isLoading) CancelPending();
             ApplyPanelPresentation();
+            EnsureAceOpenProbe();
             TickDockNavSuppression();
             TickPresetDock();
             TickFavoritesBar();

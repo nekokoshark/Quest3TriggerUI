@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -42,9 +42,6 @@ namespace Quest3TriggerUI
         private static float _lastGcTime;
         private static bool _hasGc;
         private const long GcGrowthLimit = 256L * 1024 * 1024;
-        // Backstop for debris outside release-debt tracking. Debt itself always
-        // forces a sweep; a quiet session pays at most one sweep per 10 minutes.
-        private const float SweepHardBoundSeconds = 600f;
         private static bool _gcPending;
         private static WeakReference _gcOwner;
         private static float _gcRequestedAt, _gcQuietSince, _gcNextCheck;
@@ -58,6 +55,7 @@ namespace Quest3TriggerUI
             internal long activity;
             internal long images, loads, deregisters, noops;
             internal long released;
+            internal ResourceLedger.ReleaseSnapshot releaseSnapshot;
             internal string kind;
             internal System.Diagnostics.Stopwatch clock;
             internal bool completed, success, valid, consumed;
@@ -73,6 +71,35 @@ namespace Quest3TriggerUI
             internal float created;
             internal bool sweepSkipped;
         }
+
+        // A proof that was blocked only by "ledger still walking" is parked
+        // here and re-evaluated from Tick once the ledger drains; a timeout
+        // or any new release debt falls back to a real sweep — the deferred
+        // request is never silently dropped.
+        // The wait is bounded by liveness, not the clock: keep waiting while
+        // the ledger is still producing evidence (revisions/pending moving),
+        // and sweep once the pipeline has clearly stalled. ProofWaitSeconds
+        // remains only as a far outer bound for pathological churn.
+        private const float ProofWaitSeconds = 60f;
+        private const float ProofStallSeconds = 6f;
+        // Skipped proofs tolerate a handful of unverifiable assets each; the
+        // running total is real UUA debt (orphans only UUA can reach). The
+        // budget caps it and the next proof pays a sweep; an idle catch-up
+        // clears the tab when the scene has been quiet for a minute.
+        private const int DebtBudgetAssets = 96;
+        private const float IdleSweepSeconds = 60f;
+        private static int _skippedDebt;
+        private static float _idleSince = -1f;
+        private static long _idleActivity = -1;
+        private static Ticket _proofTicket;
+        private static long _proofReleased, _proofSignature;
+        private static float _proofDeadline, _proofNext, _proofStalledAt;
+        private static string _proofLastReason;
+
+        // While a proof is parked the release-audit must run even when the
+        // ledger is not settled — otherwise pending-reconciliation never
+        // resolves inside the deadline and the deferral always times out.
+        internal static bool ProofPending { get { return _proofTicket != null; } }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MemoryStatus
@@ -231,6 +258,7 @@ namespace Quest3TriggerUI
                 __state.deregisters = Interlocked.Read(ref _deregisterEvents);
                 __state.noops = Interlocked.Read(ref _noopDeregisters);
                 __state.before = Capture(sel);
+                __state.releaseSnapshot = ResourceLedger.BeginReleaseSnapshot(sel);
                 __state.valid = __state.before != null;
                 Log("preset candidate: kind=" + __state.kind + " atom=" + atom.uid + " snapshot=" +
                     (__state.before == null ? "not ready" : __state.before.Length.ToString()) + " epoch=" + __state.activity);
@@ -368,11 +396,13 @@ namespace Quest3TriggerUI
         {
             if (SkipUnchangedGC != null && !SkipUnchangedGC.Value) return "GC gate disabled";
             if (pending == null || !pending.sweepSkipped) return "native sweep/unscoped";
-            string reason = VerifyTransaction(pending.ticket, headroom);
+            string reason = VerifyTransaction(pending.ticket, true);
             if (reason != null) return reason;
-            if (!_hasGc) return "no GC baseline";
-            if (now - _lastGcTime >= 120f) return "GC time bound";
-            if (managedBytes <= 0 || managedBytes - _lastGcBytes >= GcGrowthLimit) return "managed growth/unknown";
+            // A verified no-change transaction produced zero garbage — there
+            // is nothing for a forced GC to time well, and at a ~32GB heap
+            // !headroom is permanently true, so the pressure bound fired a
+            // 6s+ GC on every no-op load. Real pressure is still collected by
+            // the runtime's own allocation-driven GC.
             return null;
         }
 
@@ -435,7 +465,30 @@ namespace Quest3TriggerUI
 
         internal static void Tick()
         {
+            float tickNow = Time.realtimeSinceStartup;
             UuaSweepTelemetry.Tick(Interlocked.Read(ref _released));
+            if (_proofTicket != null && tickNow >= _proofNext)
+            {
+                _proofNext = tickNow + 0.25f;
+                ResolveDeferredProof(tickNow);
+            }
+            // Idle catch-up: tolerated stragglers are real debt only UUA can
+            // reach. Verified no-change loads never collect it, so when the
+            // scene has been quiet for a minute, settle the tab ourselves —
+            // a sweep while the user stands still in VR costs nothing felt.
+            long act = Interlocked.Read(ref _activity);
+            if (_skippedDebt > 0 && _proofTicket == null &&
+                (_lastSweep == null || _lastSweep.isDone) &&
+                Ready() && !WardrobeJanitor.ImagesBusy())
+            {
+                if (act != _idleActivity) { _idleActivity = act; _idleSince = tickNow; }
+                else if (tickNow - _idleSince >= IdleSweepSeconds)
+                {
+                    _idleSince = tickNow;
+                    SubmitProofSweep(null, "idle debt catch-up; skippedDebt=" + _skippedDebt);
+                }
+            }
+            else { _idleActivity = act; _idleSince = tickNow; }
             // No pending native request: no polling, scans or spontaneous GC.
             if (!_gcPending || Time.realtimeSinceStartup < _gcNextCheck || _active != null) return;
             float now = Time.realtimeSinceStartup;
@@ -453,6 +506,118 @@ namespace Quest3TriggerUI
             }
             catch (Exception e) { reason = "deferred GC verification " + e.GetType().Name; }
             RunGc(reason);
+        }
+
+        // "Evidence still being gathered" is not a rejection: both strings
+        // describe the ledger's own async pipelines not having finished yet.
+        private static bool ProofStillSettling(string proof)
+        {
+            return proof != null && (proof.IndexOf("ledger still walking",
+                    StringComparison.Ordinal) == 0 ||
+                proof.IndexOf("pending-reconciliation",
+                    StringComparison.Ordinal) >= 0 ||
+                proof.IndexOf("still settling", StringComparison.Ordinal) >= 0);
+        }
+
+        private static void ResolveDeferredProof(float now)
+        {
+            Ticket ticket = _proofTicket;
+            long released = Interlocked.Read(ref _released);
+            // Debt that appeared after the snapshot cannot be covered by this
+            // proof — abandon it and pay the sweep now.
+            if (released != _proofReleased)
+            {
+                SubmitProofSweep(ticket, "deferred proof cancelled: new release debt +" +
+                    (released - _proofReleased));
+                return;
+            }
+            if (_lastSweep != null && !_lastSweep.isDone)
+            {
+                // An in-flight sweep submitted after the deferral already
+                // covers the parked debt — drop the proof, no second pass.
+                if (_sweepReleased >= _proofReleased)
+                {
+                    _proofTicket = null;
+                    Log("deferred UUA proof dropped: in-flight sweep covers the debt");
+                    return;
+                }
+                // It predates the debt — wait it out, then re-evaluate.
+                return;
+            }
+            string proof;
+            int uncovered;
+            try
+            {
+                if (ResourceLedger.TryProveRelease(
+                    ticket == null ? null : ticket.releaseSnapshot, out proof, out uncovered))
+                {
+                    // Covered but over budget: the tolerated stragglers are
+                    // real debt only a sweep can reach — pay it now.
+                    if (_skippedDebt + uncovered > DebtBudgetAssets)
+                    {
+                        SubmitProofSweep(ticket, "release debt budget " +
+                            (_skippedDebt + uncovered) + ">" + DebtBudgetAssets);
+                        return;
+                    }
+                    _skippedDebt += uncovered;
+                    _proofTicket = null;
+                    _skipped++;
+                    Log("skip covered character UUA: " + proof + "; debt=" +
+                        _skippedDebt + " (deferred proof settled)");
+                    return;
+                }
+            }
+            catch (Exception e) { proof = "proof threw " + e.GetType().Name; }
+            // Both transient states mean "evidence still being gathered" —
+            // the ledger walking the new owners, or the release audit not
+            // finished with a retired asset yet. Wait while that evidence is
+            // demonstrably still arriving; a stalled pipeline (or the far
+            // outer bound) pays the sweep instead of waiting forever.
+            if (ProofStillSettling(proof))
+            {
+                // Surface what is actually holding the proof — the last load
+                // burned the full outer bound and the logs could not say
+                // whether a churned owner or unsettled assets were the cause.
+                if (proof != _proofLastReason)
+                { _proofLastReason = proof; Log("deferred proof waiting: " + proof); }
+                // Every "still walking" blocker is an EXTERNAL wait, not a
+                // pipeline stall: an unwalkable owner waits on the character
+                // load, and a dirty owner is re-dirtied by the texture-event
+                // tail (or the ledger Tick is frozen by isLoading) — either
+                // way its walk restarts without consuming nodes, so the work
+                // signature cannot see it. Only the outer bound applies.
+                bool waitsOnLoad = proof.IndexOf("ledger still walking", StringComparison.Ordinal) >= 0;
+                long sig = ResourceLedger.ProgressSignature;
+                if (sig != _proofSignature) { _proofSignature = sig; _proofStalledAt = now; }
+                if (now < _proofDeadline &&
+                    (waitsOnLoad || now - _proofStalledAt < ProofStallSeconds))
+                    return;
+                SubmitProofSweep(ticket, waitsOnLoad ? "deferred proof wait bound; last=" + proof :
+                    now - _proofStalledAt >= ProofStallSeconds
+                    ? "deferred proof stalled: " + proof : "deferred proof wait bound; last=" + proof);
+                return;
+            }
+            SubmitProofSweep(ticket, "deferred proof rejected: " + proof);
+        }
+
+        private static void SubmitProofSweep(Ticket ticket, string why)
+        {
+            _proofTicket = null;
+            long released = Interlocked.Read(ref _released);
+            var sample = UuaSweepTelemetry.Begin("character",
+                ticket == null ? null : ticket.kind,
+                why, released, released - _sweepReleased);
+            AsyncOperation op;
+            try { op = Resources.UnloadUnusedAssets(); }
+            catch { UuaSweepTelemetry.Failed(sample); throw; }
+            UuaSweepTelemetry.Submitted(sample, op);
+            _lastSweep = op;
+            _sweepReleased = released;
+            _lastSweepTime = Time.realtimeSinceStartup;
+            _skipped = 0;
+            _skippedDebt = 0;
+            Log("run native character sweep: " + why + "; releases=" + released +
+                " activity=" + Interlocked.Read(ref _activity));
         }
 
         private static void RunGc(string reason)
@@ -480,7 +645,16 @@ namespace Quest3TriggerUI
             string reason = "unscoped/manual";
             try
             {
-                reason = Reason(ticket, Time.realtimeSinceStartup, MemoryHeadroom());
+                bool proofDeferred;
+                reason = Reason(ticket, Time.realtimeSinceStartup, MemoryHeadroom(), out proofDeferred);
+                if (proofDeferred)
+                {
+                    ticket.consumed = true;
+                    if (pending != null) pending.sweepSkipped = true;
+                    Log("defer covered character UUA: ledger still settling; releases=" +
+                        Interlocked.Read(ref _released) + " activity=" + Interlocked.Read(ref _activity));
+                    return null;
+                }
                 if (reason == null)
                 {
                     ticket.consumed = true;
@@ -492,6 +666,15 @@ namespace Quest3TriggerUI
             }
             catch (Exception e) { reason = "verification " + e.GetType().Name; }
             if (ticket != null) ticket.consumed = true;
+            // Avoid submitting a second global mark pass while the previous
+            // one is still in flight. The new release debt remains uncovered
+            // because _sweepReleased is intentionally not advanced here.
+            if (ticket != null && _lastSweep != null && !_lastSweep.isDone)
+            {
+                Log("reuse in-flight character sweep; release debt remains uncovered=" +
+                    (Interlocked.Read(ref _released) - _sweepReleased));
+                return _lastSweep;
+            }
             long released = Interlocked.Read(ref _released);
             var sample = UuaSweepTelemetry.Begin("character", ticket == null ? null : ticket.kind + ":" +
                 (ticket.before == null || ticket.before.Length == 0 ? "unknown" : ticket.before[0].ToString()),
@@ -504,22 +687,95 @@ namespace Quest3TriggerUI
             _sweepReleased = released;
             _lastSweepTime = Time.realtimeSinceStartup;
             _skipped = 0;
+            _skippedDebt = 0;
+            // A real submission covers every release up to now — any parked
+            // proof is superseded.
+            if (_proofTicket != null)
+            {
+                Log("deferred UUA proof superseded by sweep submission");
+                _proofTicket = null;
+            }
             Log("run native character sweep: " + reason + "; releases=" + released + " activity=" + Interlocked.Read(ref _activity));
             return op;
         }
 
-        private static string Reason(Ticket ticket, float now, bool headroom)
+        private static string Reason(Ticket ticket, float now, bool headroom, out bool deferred)
         {
+            deferred = false;
             if (ticket != null && ticket.consumed) return "consumed transaction";
             string reason = VerifyTransaction(ticket, headroom);
-            if (reason != null) return reason;
-            if (_lastSweep == null || !_lastSweep.isDone) return "no completed sweep";
-            // Loading completion/texture refcount notifications after a prior
-            // sweep do not themselves create UUA debt. Native last-user texture
-            // release already Destroy()s its texture. Instance unloads can leave
-            // asset/bundle references and must still be covered by a real sweep.
-            if (_sweepReleased != Interlocked.Read(ref _released)) return "uncovered instance release";
-            if (now - _lastSweepTime >= SweepHardBoundSeconds) return "periodic full sweep";
+            if (reason != null)
+            {
+                // End marks the ticket invalid when the character actually
+                // changed.  That is exactly the transaction for which the
+                // release ledger can prove that UUA is covered; requiring
+                // VerifyTransaction.valid here made the proof branch
+                // unreachable and every real replacement stayed "unverified".
+                bool proofLifecycleReady = SuperController.singleton != null &&
+                    !SuperController.singleton.isLoading && !SceneLoadAccelerator.SceneLoadActive;
+                bool proofOwnerAlive = ticket != null && ticket.owner != null && ticket.owner.IsAlive;
+                if ((reason == "unverified transaction" ||
+                     reason == "instance release during transaction" ||
+                     reason == "instance change/not ready") &&
+                    ticket != null && ticket.completed && ticket.success &&
+                    proofOwnerAlive && proofLifecycleReady)
+                {
+                    bool releaseChanged = ticket.released != Interlocked.Read(ref _released);
+                    bool instanceChanged = false;
+                    try { instanceChanged = !Equal(ticket.before, Capture(ticket.owner.Target as DAZCharacterSelector)); }
+                    catch (Exception e) { Log("covered character UUA proof unavailable: capture " + e.GetType().Name); }
+                    string proof; int uncovered;
+                    if (releaseChanged || instanceChanged)
+                    {
+                    if (ResourceLedger.TryProveRelease(ticket == null ? null : ticket.releaseSnapshot, out proof, out uncovered))
+                    {
+                        if (_skippedDebt + uncovered > DebtBudgetAssets)
+                            return "release debt budget " + (_skippedDebt + uncovered) + ">" + DebtBudgetAssets;
+                        _skippedDebt += uncovered;
+                        Log("skip covered character UUA: " + proof + "; debt=" + _skippedDebt +
+                            "; releases=" + Interlocked.Read(ref _released));
+                        return null;
+                    }
+                    // UUA fires exactly while the ledger is still walking the
+                    // newly loaded person and the release audit has not
+                    // reconciled retired assets yet — those are timing
+                    // artifacts, not evidence.  Park the proof and let Tick
+                    // re-evaluate once the pipelines drain; every other
+                    // rejection is real and the sweep proceeds.
+                    if (ProofStillSettling(proof) && _proofTicket == null)
+                    {
+                        _proofTicket = ticket;
+                        _proofLastReason = null;
+                        _proofReleased = Interlocked.Read(ref _released);
+                        _proofSignature = ResourceLedger.ProgressSignature;
+                        _proofStalledAt = now;
+                        _proofDeadline = now + ProofWaitSeconds;
+                        _proofNext = now;
+                        deferred = true;
+                        return null;
+                    }
+                    Log("covered character UUA proof rejected: " + proof);
+                    }
+                    else if (reason == "unverified transaction")
+                    {
+                        Log("covered character UUA proof unavailable: no release or instance delta");
+                    }
+                }
+                else if ((reason == "unverified transaction" ||
+                          reason == "instance release during transaction" ||
+                          reason == "instance change/not ready") && ticket != null)
+                {
+                    Log("covered character UUA proof gate skipped: ticket=" + ticket.completed +
+                        " success=" + ticket.success + " ownerAlive=" + proofOwnerAlive +
+                        " lifecycleReady=" + proofLifecycleReady + " imagesBusy=" + WardrobeJanitor.ImagesBusy());
+                }
+                return reason;
+            }
+            // Verified no-change: this transaction released nothing, so it
+            // must not be the bill collector for tolerated-straggler debt —
+            // a self-load sweeping releases=21 orphaned it into exactly the
+            // stall the gate exists to prevent. Debt is bounded by
+            // DebtBudgetAssets on skipping loads plus the idle catch-up.
             return null;
         }
 
@@ -528,7 +784,6 @@ namespace Quest3TriggerUI
             if (Enabled != null && !Enabled.Value) return "disabled";
             if (ticket == null || !ticket.completed || !ticket.valid) return "unverified transaction";
             if (!Ready()) return "loading";
-            if (!headroom) return "memory pressure/unknown";
             // Release debt is the ledger that matters for UUA; async bookkeeping
             // events alone do not turn a same-state transaction into a real one.
             if (ticket.released != Interlocked.Read(ref _released)) return "instance release during transaction";
@@ -597,6 +852,9 @@ namespace Quest3TriggerUI
             _imageEvents = _loadEvents = _deregisterEvents = _noopDeregisters = 0;
             _lastSweepTime = 0;
             _skipped = 0;
+            _skippedDebt = 0;
+            _idleSince = -1f;
+            _idleActivity = -1;
             _lastGcBytes = 0;
             _lastGcTime = 0;
             _hasGc = false;

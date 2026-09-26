@@ -25,15 +25,24 @@ namespace Quest3TriggerUI
             internal Stopwatch clock;
             internal AsyncOperation operation;
             internal long released;
+            internal int retiredWatermark;
             internal bool finished;
         }
+
+        // A completed sweep is itself reference evidence: anything retired
+        // before submission that is still alive afterwards was provably
+        // referenced at mark time. The ledger consumes this to promote
+        // stragglers to "sweep-survivor" instead of counting them as debt
+        // on every swap.
+        internal static Action<Sample> SweepCompleted;
 
         internal static Sample Begin(string origin, string scope, string reason, long released, long debt)
         {
             try
             {
                 if (Pending.Count >= 16) { Emit("overflow; observation omitted; policy unchanged"); return null; }
-                var s = new Sample { id = Session + "-" + (++_sequence), released = released };
+                var s = new Sample { id = Session + "-" + (++_sequence), released = released,
+                    retiredWatermark = ResourceLedgerIndex.RetiredWatermark };
                 string before = Snapshot();
                 s.clock = Stopwatch.StartNew();
                 Emit("begin id=" + s.id + " origin=" + Clean(origin) + " scope=" + Clean(scope) +
@@ -82,6 +91,11 @@ namespace Quest3TriggerUI
             Emit("end id=" + s.id + " status=" + status + " observedMs=" + s.clock.ElapsedMilliseconds +
                 " releaseDelta=" + (released - s.released) + " unloaded=unknown " + Snapshot());
             s.operation = null;
+            if (status == "complete" && SweepCompleted != null)
+            {
+                try { SweepCompleted(s); }
+                catch (Exception) { }
+            }
         }
 
         private static string Snapshot()

@@ -11,8 +11,13 @@ namespace Quest3TriggerUI
 
         private static void ToggleDockDeleteMode()
         {
+            // While the save dialog owns dock clicks, deletion stays off.
+            if (!_dockDeleteMode && _pdSaveBrowsing) return;
             _dockDeleteMode = !_dockDeleteMode;
             if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
+            CancelDockRename();
+            if (_pdSaveOverlay != null) _pdSaveOverlay.SetActive(false);
+            _pdSaveTag = null;
             PaintDockDeleteMode();
         }
 

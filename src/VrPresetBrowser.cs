@@ -226,6 +226,14 @@ namespace Quest3TriggerUI
             return exts.Count == 0 ? null : exts.ToArray();
         }
 
+        // Dock tab click while a session is open: jump the live dialog to
+        // that category dir in place (RetargetInPlace itself keeps _dir).
+        internal static void NavigateIfOpen(string dir)
+        {
+            if (IsOpen && _instance != null && !string.IsNullOrEmpty(dir))
+                _instance.NavTo(dir);
+        }
+
         internal static void Shutdown()
         {
             if (_instance != null)

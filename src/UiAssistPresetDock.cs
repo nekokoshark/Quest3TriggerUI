@@ -56,6 +56,9 @@ namespace Quest3TriggerUI
         // While the dock's own pick browser is open the dock must survive —
         // _presetBrowsing would otherwise clear every side bar.
         private static bool _pdPicking;
+        // Which dock function owns the open browser session — tab clicks
+        // re-open that same function pointed at the new tab's directory.
+        private static int _pdBrowseKind; // 0 none, 1 新增, 2 读取, 3 保存
         private static readonly List<string>[] _pdSlots =
             new List<string>[PdTabCount];
         private static int _pdTab;
@@ -63,6 +66,13 @@ namespace Quest3TriggerUI
         private static float _pdListHeight;
         private static GameObject _pdList;
         private static Atom _pdAtom;
+        // Load-target row: null = auto (nearest woman to the view); a
+        // manual pick sticks until that atom leaves the scene. Only
+        // female persons are ever offered or applied to.
+        private static Atom _pdLoadTarget;
+        private static Text _pdTargetLabel;
+        private static float _pdTargetRefresh;
+        private static GameObject _pdTargetPopup;
         // Per-atom record of what the 化妆 tab last put on: the preset path
         // and the internalIds of the items it added. Clicking the same
         // preset again removes exactly those items (not the whole outfit);
@@ -108,6 +118,9 @@ namespace Quest3TriggerUI
             // Slot background — scroll visibility toggles this off so a
             // masked cell outside the viewport can't catch a laser hit.
             internal Image Bg;
+            // The name strip's Image — raycastTarget flips on in save mode
+            // so its Button wins clicks over the cell's own Button.
+            internal Image NameHit;
         }
         // Marks the 替换/外观 mini-button overlay so the press pipeline's
         // drag-source resolver does not treat a tap on it as grabbing the
@@ -127,7 +140,9 @@ namespace Quest3TriggerUI
             if (_pdDock != null) return;
             try
             {
+                long shellT = Mark();
                 EnsurePdSlots();
+                long tSlots = ElapsedMs(shellT); shellT = Mark();
                 GameObject go = new GameObject("Quest3 Preset Dock",
                     typeof(RectTransform));
                 go.SetActive(false);
@@ -144,11 +159,13 @@ namespace Quest3TriggerUI
                 Image bg = go.AddComponent<Image>();
                 bg.color = new Color(0f, 0f, 0f, 0.32f);
                 bg.raycastTarget = true;
+                long tGo = ElapsedMs(shellT); shellT = Mark();
 
                 // Cells hug the dock's right edge (the side facing the ACE
                 // list); the tab strip takes the outer left edge — the
                 // mirror image of the favorites bar's [cells|tags] layout.
                 CreatePdTabStrip();
+                long tStrip = ElapsedMs(shellT); shellT = Mark();
                 // Cells live in a masked viewport — same scroll model as
                 // the favorites bar (anchoredPosition.y is the offset).
                 GameObject viewGo = new GameObject("View",
@@ -183,8 +200,21 @@ namespace Quest3TriggerUI
                     FavTagGap + PdStripW + FavColW, -FavPad, PdGridH,
                     out _pdScrollTrack, out _pdScrollThumb);
 
+                // Final footprint up front: TickPresetDock anchors the dock
+                // off the list edge using rect.width — during the incremental
+                // cell fill a still-default sizeDelta would slide the dock
+                // halfway into the editor panel.
+                _pdDock.sizeDelta = new Vector2(
+                    FavTagGap + PdStripW + FavColW,
+                    Mathf.Max(64f, Mathf.Max(PdGridH,
+                        _pdTabStrip.sizeDelta.y + FavPad * 2f)));
+                long tView = ElapsedMs(shellT); shellT = Mark();
+
                 SuperController.singleton.AddCanvas(_pdCanvas);
                 _pdDirty = true;
+                Log("[ACE] dock shell: slots=" + tSlots + " go=" + tGo +
+                    " strip=" + tStrip + " view=" + tView +
+                    " addCanvas=" + ElapsedMs(shellT) + "ms");
             }
             catch (Exception e) { ClearPresetDock(); Error(e); }
         }
@@ -201,12 +231,26 @@ namespace Quest3TriggerUI
             _dockDeleteMode = false;
             _dockDeleteButton = null;
             _dockDeleteLabel = null;
+            _pdSaveBrowsing = false;
+            _pdBrowseKind = 0;
+            _pdSaveOverlay = null;
+            _pdSaveTag = null;
+            _pdRenameOverlay = null;
+            _pdRenameInput = null;
+            _pdRenamePath = null;
             _pdScrollY = 0f;
             _pdContentH = 0f;
+            _pdBuildSlots = null;
+            _pdBuildIdx = 0;
+            _pdBuildThumbs = false;
             _pdView = null;
             _pdScrollTrack = null;
             _pdScrollThumb = null;
             _pdAtom = null;
+            _pdLoadTarget = null;
+            _pdTargetLabel = null;
+            _pdTargetRefresh = 0f;
+            _pdTargetPopup = null;
             _pdList = null;
             _pdPositionLogged = false;
             _pdDirty = true;
@@ -217,6 +261,7 @@ namespace Quest3TriggerUI
             }
             _pdCanvas = null;
             _pdTabStrip = null;
+            PresetPreheat.Label = null;
             for (int i = 0; i < PdTabCount; i++)
             {
                 _pdTabBgs[i] = null;
@@ -228,6 +273,9 @@ namespace Quest3TriggerUI
                 _pdDock = null;
                 _pdCells = null;
             }
+            _pdHzTag = null;
+            _pdHzPanel = null;
+            _pdHzImage = null;
             foreach (Texture2D t in _pdThumbs.Values)
                 if (t != null) UnityEngine.Object.Destroy(t);
             _pdThumbs.Clear();
@@ -251,6 +299,21 @@ namespace Quest3TriggerUI
             // the "dock slides off like it's falling" bug.
             bool visible = sc != null && sc.MainHUDVisible &&
                 (_pdPicking || _pdList.activeInHierarchy);
+            if (_pdDirty || _pdPreviewDirty || _pdBuildSlots != null)
+            {
+                // Consume the dirty edge instead of latching it as the
+                // restart arg — otherwise every frame restarts the pump and
+                // the fill never gets past the first batch.
+                bool restart = _pdDirty || _pdPreviewDirty;
+                if (restart)
+                {
+                    _pdBuildThumbs = _pdDirty;
+                    _pdDirty = _pdPreviewDirty = false;
+                }
+                if (PumpPdCells(PdBuildPerTick, restart))
+                    _pdBuildThumbs = false;
+            }
+            if (visible) TickPdThumbnails();
             if (_pdDock.gameObject.activeSelf != visible)
                 _pdDock.gameObject.SetActive(visible);
             if (!visible) return;
@@ -280,13 +343,158 @@ namespace Quest3TriggerUI
                     _pdDock.rotation =
                         Quaternion.LookRotation(away, list.up);
             }
-            if (_pdDirty || _pdPreviewDirty)
-            {
-                RebuildPdCells();
-                _pdDirty = false;
-            }
             TickDockScroll(false);
-            TickPdThumbnails();
+            TickPdHoverZoom();
+            // Target label tracks the auto pick while unconfirmed; manual
+            // picks keep their name until that atom leaves the scene.
+            if (_pdTargetLabel != null &&
+                Time.unscaledTime >= _pdTargetRefresh)
+            {
+                _pdTargetRefresh = Time.unscaledTime + 0.5f;
+                Atom t = PdEffectiveTarget();
+                _pdTargetLabel.text = t != null ? t.name : "无女性角色";
+            }
+        }
+
+        // ---------- hover zoom: 1s rest on a thumbnail shows it 3x ----------
+
+        private const float PdHoverZoomSeconds = 1f;
+        private const float PdHoverZoomScale = 3f;
+        private static PdSlotTag _pdHzTag;
+        private static float _pdHzSince;
+        private static RectTransform _pdHzPanel;
+        private static RawImage _pdHzImage;
+
+        private static PdSlotTag HoveredPdSlot()
+        {
+            for (int h = 0; h < 2; h++)
+            {
+                GameObject look =
+                    VrPointerPresentation.CurrentLookTarget(h == 0);
+                if (look == null) continue;
+                // The 替换/外观 overlay floats above the slot — hits on it
+                // belong to the mini buttons, not to hover-zoom.
+                if (look.GetComponentInParent<PdOverlayTag>() != null)
+                    return null;
+                PdSlotTag tag =
+                    look.GetComponentInParent<PdSlotTag>();
+                if (tag != null && tag.Thumb != null &&
+                    tag.Thumb.texture != null &&
+                    tag.gameObject.activeInHierarchy)
+                    return tag;
+            }
+            return null;
+        }
+
+        private static void TickPdHoverZoom()
+        {
+            bool busy =
+                Quest3TriggerUIPlugin.ClothingDragCandidate != null ||
+                Quest3TriggerUIPlugin.ClothingDragActive ||
+                _favoriteDragList != null || _pdDragList != null ||
+                _dockDeleteMode || _pdSaveBrowsing;
+            PdSlotTag hit = busy ? null : HoveredPdSlot();
+            if (hit != _pdHzTag)
+            {
+                SetPdZoom(false);
+                _pdHzTag = hit;
+                _pdHzSince = Time.unscaledTime;
+                if (hit != null)
+                    Log("Q3 pdzoom: hovering " + hit.Path);
+            }
+            // A destroyed tag compares equal to null in Unity — the early
+            // return must still hide the panel or it floats loose forever.
+            if (_pdHzTag == null)
+            {
+                SetPdZoom(false);
+                return;
+            }
+            // The slot can be destroyed mid-hover by a rebuild, or masked out
+            // by a scroll — both must drop the overlay instead of leaving a
+            // floating copy where the cell used to be.
+            if (_pdHzTag.Thumb == null)
+            {
+                _pdHzTag = null;
+                SetPdZoom(false);
+                return;
+            }
+            if (_pdHzPanel != null && _pdHzPanel.gameObject.activeSelf)
+            {
+                SyncPdZoom(_pdHzTag);
+                return;
+            }
+            if (Time.unscaledTime - _pdHzSince >= PdHoverZoomSeconds)
+            {
+                Log("Q3 pdzoom: apply " + _pdHzTag.Path);
+                ApplyPdZoom(_pdHzTag);
+            }
+        }
+
+        private static void EnsurePdZoomPanel()
+        {
+            if (_pdHzPanel != null || _pdDock == null) return;
+            GameObject go = new GameObject("PdHoverZoom",
+                typeof(RectTransform));
+            _pdHzPanel = (RectTransform)go.transform;
+            _pdHzPanel.SetParent(_pdDock, false);
+            Image bg = go.AddComponent<Image>();
+            bg.color = new Color(0f, 0f, 0f, 0.85f);
+            bg.raycastTarget = false;
+            GameObject imgGo = new GameObject("Thumb",
+                typeof(RectTransform));
+            RectTransform imgRect = (RectTransform)imgGo.transform;
+            imgRect.SetParent(go.transform, false);
+            imgRect.anchorMin = Vector2.zero;
+            imgRect.anchorMax = Vector2.one;
+            imgRect.offsetMin = new Vector2(4f, 4f);
+            imgRect.offsetMax = new Vector2(-4f, -4f);
+            _pdHzImage = imgGo.AddComponent<RawImage>();
+            _pdHzImage.raycastTarget = false;
+            go.SetActive(false);
+        }
+
+        private static void ApplyPdZoom(PdSlotTag tag)
+        {
+            EnsurePdZoomPanel();
+            if (_pdHzPanel == null || tag.Thumb == null ||
+                tag.Thumb.texture == null)
+                return;
+            _pdHzImage.texture = tag.Thumb.texture;
+            _pdHzPanel.gameObject.SetActive(true);
+            _pdHzPanel.SetAsLastSibling();
+            SyncPdZoom(tag);
+        }
+
+        private static void SyncPdZoom(PdSlotTag tag)
+        {
+            RectTransform cell = tag.transform as RectTransform;
+            if (cell == null || _pdDock == null)
+            {
+                SetPdZoom(false);
+                return;
+            }
+            // A cell scrolled outside the viewport is masked but still sits at
+            // a world position — the zoom must hide with it, not float loose.
+            Vector3 cellCenter = _pdView != null
+                ? _pdView.InverseTransformPoint(
+                    cell.TransformPoint(cell.rect.center))
+                : Vector3.zero;
+            if (_pdView == null || !_pdView.rect.Contains(cellCenter))
+            {
+                SetPdZoom(false);
+                return;
+            }
+            Vector3 local = _pdDock.InverseTransformPoint(
+                cell.TransformPoint(cell.rect.center));
+            _pdHzPanel.localPosition = new Vector3(local.x, local.y, 0f);
+            _pdHzPanel.sizeDelta =
+                cell.rect.size * PdHoverZoomScale;
+        }
+
+        private static void SetPdZoom(bool on)
+        {
+            if (_pdHzPanel != null)
+                _pdHzPanel.gameObject.SetActive(on);
         }
 
         // Vertical tab strip on the dock's outer (left) edge — same idiom as
@@ -312,12 +520,23 @@ namespace Quest3TriggerUI
             }
             CreatePdAddRow(y);
             y += FavTagRowH + FavTagGap;
+            // Load-target row: shows the female person presets apply to —
+            // auto-tracks the nearest woman in view until the user picks
+            // one manually via the popup.
+            GameObject targetRow = CreatePdIoRow("对象…", y,
+                new Color(0.20f, 0.20f, 0.35f, 1f), TogglePdTargetPopup);
+            _pdTargetLabel = targetRow.GetComponentInChildren<Text>();
+            if (_pdTargetLabel != null) _pdTargetLabel.fontSize = 12;
+            y += FavTagRowH + FavTagGap;
             // 读取/保存: the radial 人物 sub-actions re-homed into the dock —
             // whichever tab is selected decides which preset section they
             // mean.
             CreatePdIoRow("读 取", y, new Color(0.13f, 0.24f, 0.32f, 1f),
                 OpenDockPresetLoader);
             y += FavTagRowH + FavTagGap;
+            // 保存 opens the save browser as before — while it (or any
+            // dock-initiated browser session) is up, thumbnail clicks
+            // overwrite-save and name-strip clicks rename; no mode toggle.
             CreatePdIoRow("保 存", y, new Color(0.30f, 0.22f, 0.12f, 1f),
                 OpenDockPresetSaver);
             y += FavTagRowH + FavTagGap;
@@ -326,9 +545,30 @@ namespace Quest3TriggerUI
             _dockDeleteButton = deleteRow.GetComponent<Image>();
             _dockDeleteLabel = deleteRow.GetComponentInChildren<Text>();
             PaintDockDeleteMode();
+            y += FavTagRowH + FavTagGap;
+            // 预热: generate .vamcache disk files for every texture the
+            // 人物 tab's presets reference, so a cold preset stops paying
+            // the decode+compress cost on first load. Already-cached
+            // presets are skipped.
+            GameObject preheatRow = CreatePdIoRow("预 热", y,
+                new Color(0.16f, 0.30f, 0.30f, 1f), TogglePresetPreheat);
+            PresetPreheat.Label = preheatRow.GetComponentInChildren<Text>();
             y += FavTagRowH;
             _pdTabStrip.sizeDelta = new Vector2(PdStripW, y);
             PdPaintTabs();
+        }
+
+        private static void TogglePresetPreheat()
+        {
+            EnsurePdSlots();
+            PresetPreheat.Toggle(_pdSlots[0]);
+        }
+
+        // cfg-triggered (one-shot flag) preheat uses the same entry point.
+        internal static List<string> PersonPresetPaths()
+        {
+            EnsurePdSlots();
+            return _pdSlots[0];
         }
 
         private static void AddPdStripCaption(string value, float y)
@@ -546,22 +786,81 @@ namespace Quest3TriggerUI
             if (idx == _pdTab) return;
             _pdTab = idx;
             _pdScrollY = 0f;
+            // Wipe the old tab's cells immediately — the new tab fills a
+            // blank panel instead of squeezing new thumbnails over old ones.
+            ClearPdCellsNow();
             PdPaintTabs();
             _pdDirty = true;
+            // A dock-initiated browser session follows the tab: same
+            // function (新增/读取/保存), retargeted to the tab's directory.
+            if (_pdPicking && VrPresetBrowser.IsOpen)
+            {
+                try
+                {
+                    switch (_pdBrowseKind)
+                    {
+                        case 1: OpenPresetDockPicker(); break;
+                        case 2: OpenDockPresetLoader(); break;
+                        case 3: OpenDockPresetSaver(); break;
+                    }
+                    VrPresetBrowser.NavigateIfOpen(PdTabDir(_pdTab));
+                }
+                catch (Exception e) { Error(e); }
+            }
         }
 
+        // Incremental build state: the first paint after the ACE editor opens
+        // used to create ~90 cells (each ~5 GameObjects) in one frame — a
+        // multi-hundred-ms spike on top of UIAssist's own open cost. The pump
+        // below spreads creation over ticks; path-keyed reuse still applies.
+        private static List<string> _pdBuildSlots;
+        private static int _pdBuildIdx;
+        private const int PdBuildPerTick = 12;
+        private static int _pdBuildTicks;
+        private static bool _pdBuildThumbs;
+
+        // Full synchronous rebuild — used by the move/rename rebind path,
+        // which must finish before stale thumbnails die at frame end.
         private static void RebuildPdCells()
         {
-            if (_pdCells == null) return;
+            _pdBuildThumbs = _pdDirty;
+            PumpPdCells(int.MaxValue, true);
+            _pdBuildThumbs = false;
+            _pdDirty = false;
+            _pdPreviewDirty = false;
+        }
+
+        private static bool PumpPdCells(int budget, bool restart)
+        {
+            if (restart) { _pdBuildSlots = null; _pdBuildTicks = 0; }
+            if (_pdCells == null)
+            {
+                _pdBuildSlots = null;
+                return true;
+            }
             EnsurePdSlots();
-            _pdKeptCells.Clear();
-            _pdCellPosition = 0;
-            List<string> slots = PdDisplaySlots();
-            int count = slots.Count;
+            if (_pdBuildSlots == null)
+            {
+                _pdKeptCells.Clear();
+                _pdCellPosition = 0;
+                _pdBuildSlots = PdDisplaySlots();
+                _pdBuildIdx = 0;
+            }
+            _pdBuildTicks++;
+            int count = _pdBuildSlots.Count;
             // All entries get a cell — the viewport mask + scroll offset do
             // the slicing now, and path-keyed reuse keeps rebuilds cheap.
-            for (int i = 0; i < count; i++)
-                CreatePdSlot(slots[i]);
+            // ~2ms per tick is the real budget (a loaded heap makes cell
+            // cost vary wildly); the count cap is just a sanity bound.
+            long tickStart = Mark();
+            while (_pdBuildIdx < count && budget-- > 0)
+            {
+                CreatePdSlot(_pdBuildSlots[_pdBuildIdx++]);
+                if (_pdBuildIdx < count && ElapsedMs(tickStart) >= 2)
+                    break;
+            }
+            if (_pdBuildIdx < count) return false;
+            _pdBuildSlots = null;
             if (count == 0)
                 CreatePdHintSlot();
             FinishPdCells();
@@ -577,6 +876,10 @@ namespace Quest3TriggerUI
                 : _pdTabStrip.sizeDelta.y + FavPad * 2f;
             _pdDock.sizeDelta = new Vector2(FavTagGap + PdStripW + FavColW,
                 Mathf.Max(64f, Mathf.Max(PdGridH, stripNeed)));
+            if (_pdBuildTicks > 1)
+                Log("预设栏格子分批填充完成：" + count + " 格/" +
+                    _pdBuildTicks + " tick");
+            return true;
         }
 
         // Empty-tab placeholder, mirroring the favorites bar's FavHint cell.
@@ -636,7 +939,9 @@ namespace Quest3TriggerUI
             nbr.offsetMax = new Vector2(0f, PdNameH);
             Image nbgi = nameBg.AddComponent<Image>();
             nbgi.color = new Color(0f, 0f, 0f, 0.55f);
-            nbgi.raycastTarget = false;
+            // Only clickable while the save browser is up — otherwise
+            // name-strip taps fall through to the cell's own apply click.
+            nbgi.raycastTarget = _pdSaveBrowsing;
             Text name = new GameObject("Label", typeof(RectTransform))
                 .AddComponent<Text>();
             RectTransform ntr = (RectTransform)name.transform;
@@ -656,8 +961,19 @@ namespace Quest3TriggerUI
             tag.Path = path;
             tag.Thumb = thumb;
             tag.Bg = bg;
+            tag.NameHit = nbgi;
             _pdVisibleCells.Add(tag);
             PlacePdCell(tag);
+            Button nameBtn = nameBg.AddComponent<Button>();
+            nameBtn.targetGraphic = nbgi;
+            nameBtn.transition = Selectable.Transition.None;
+            PdSlotTag nameTag = tag;
+            nameBtn.onClick.AddListener(delegate
+            {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                BeginDockRename(nameTag);
+            });
             Button button = cell.AddComponent<Button>();
             button.targetGraphic = bg;
             button.transition = Selectable.Transition.None;
@@ -667,6 +983,10 @@ namespace Quest3TriggerUI
                 if (Quest3TriggerUIPlugin.ClothingDragActive ||
                     Time.unscaledTime < _favoriteClickAfter) return;
                 if (DeletePresetOnClick(captured)) return;
+                // Save mode: thumbnail click = overwrite-save to this preset
+                // (拍照/覆盖/另存 overlay); the name strip's own button wins
+                // clicks there and opens rename instead.
+                if (SavePresetOnClick(tag, cr)) return;
                 // 人物 tab: a click pops the 替换/外观 choice overlay on
                 // this thumbnail instead of applying immediately.
                 if (_pdTab == 0)
@@ -774,7 +1094,7 @@ namespace Quest3TriggerUI
                 _pdPersonOverlay.SetActive(false);
             string path = _pdOverlayPath;
             if (string.IsNullOrEmpty(path)) return;
-            Atom target = _pdAtom;
+            Atom target = PdEffectiveTarget();
             if (target == null) return;
             if (_pdQuick == null)
                 _pdQuick = new SceneQuickActions(
@@ -1085,9 +1405,156 @@ namespace Quest3TriggerUI
             return true;
         }
 
+        // ---------- load target: nearest woman, user-overridable ----------
+
+        // Female-only: presets are only ever applied to women. Manual pick
+        // wins while that atom is still in the scene; otherwise the row
+        // tracks whichever woman is nearest the view.
+        private static Atom PdEffectiveTarget()
+        {
+            SuperController sc = SuperController.singleton;
+            Atom t = _pdLoadTarget;
+            if (t != null)
+            {
+                bool alive = false;
+                try
+                {
+                    alive = sc != null && sc.GetAtomByUid(t.uid) == t &&
+                        SceneQuickActions.IsGender(t, "Female");
+                }
+                catch { }
+                if (alive) return t;
+                _pdLoadTarget = null;
+            }
+            return SceneQuickActions.FindClosestFemale();
+        }
+
+        private static void TogglePdTargetPopup()
+        {
+            if (_pdDock == null) return;
+            if (_pdTargetPopup != null && _pdTargetPopup.activeSelf)
+            {
+                _pdTargetPopup.SetActive(false);
+                return;
+            }
+            RebuildPdTargetPopup();
+        }
+
+        private static void RebuildPdTargetPopup()
+        {
+            if (_pdTargetPopup == null)
+            {
+                GameObject go = new GameObject("PdTargetPopup",
+                    typeof(RectTransform));
+                go.AddComponent<PdDockTag>();
+                RectTransform rt = (RectTransform)go.transform;
+                rt.SetParent(_pdDock, false);
+                rt.anchorMin = new Vector2(0f, 1f);
+                rt.anchorMax = new Vector2(0f, 1f);
+                rt.pivot = new Vector2(0f, 1f);
+                rt.anchoredPosition = new Vector2(FavTagGap, -FavPad);
+                Image bg = go.AddComponent<Image>();
+                bg.color = new Color(0.08f, 0.10f, 0.14f, 0.97f);
+                bg.raycastTarget = true;
+                _pdTargetPopup = go;
+            }
+            RectTransform panel = (RectTransform)_pdTargetPopup.transform;
+            // Old rows die with the panel's children.
+            for (int i = panel.childCount - 1; i >= 0; i--)
+                UnityEngine.Object.Destroy(panel.GetChild(i).gameObject);
+            Atom eff = PdEffectiveTarget();
+            var women = new List<Atom>();
+            SuperController sc = SuperController.singleton;
+            if (sc != null)
+            {
+                List<Atom> atoms = sc.GetAtoms();
+                for (int i = 0; i < atoms.Count; i++)
+                {
+                    Atom a = atoms[i];
+                    try
+                    {
+                        if (a == null || a.type != "Person" ||
+                            !SceneQuickActions.IsGender(a, "Female"))
+                            continue;
+                    }
+                    catch { continue; }
+                    women.Add(a);
+                }
+            }
+            const float rowH = 26f, gap = 4f, pad = 6f;
+            int rows = women.Count;
+            float need = pad * 2f + Mathf.Max(1, rows) * rowH +
+                Mathf.Max(0, rows - 1) * gap;
+            panel.sizeDelta = new Vector2(FavColW,
+                Mathf.Min(PdGridH, need));
+            if (rows == 0)
+            {
+                Text none = new GameObject("None", typeof(RectTransform))
+                    .AddComponent<Text>();
+                RectTransform nr = (RectTransform)none.transform;
+                nr.SetParent(panel, false);
+                nr.anchorMin = Vector2.zero;
+                nr.anchorMax = Vector2.one;
+                nr.offsetMin = Vector2.zero;
+                nr.offsetMax = Vector2.zero;
+                none.text = "场景中没有女性角色";
+                none.alignment = TextAnchor.MiddleCenter;
+                none.fontSize = 14;
+                none.color = new Color(1f, 1f, 1f, 0.7f);
+                none.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                none.raycastTarget = false;
+            }
+            for (int i = 0; i < rows; i++)
+            {
+                Atom a = women[i];
+                GameObject row = new GameObject("PdTarget " + a.name,
+                    typeof(RectTransform));
+                RectTransform rr = (RectTransform)row.transform;
+                rr.SetParent(panel, false);
+                rr.anchorMin = new Vector2(0f, 1f);
+                rr.anchorMax = new Vector2(1f, 1f);
+                rr.pivot = new Vector2(0.5f, 1f);
+                rr.anchoredPosition = new Vector2(0f, -pad - i * (rowH + gap));
+                rr.sizeDelta = new Vector2(-pad * 2f, rowH);
+                Image ib = row.AddComponent<Image>();
+                ib.color = a == eff
+                    ? new Color(0.14f, 0.42f, 0.22f, 1f)
+                    : new Color(0.16f, 0.18f, 0.24f, 1f);
+                ib.raycastTarget = true;
+                Button rb = row.AddComponent<Button>();
+                rb.targetGraphic = ib;
+                rb.transition = Selectable.Transition.None;
+                Atom pick = a;
+                rb.onClick.AddListener(delegate
+                {
+                    _pdLoadTarget = pick;
+                    _pdTargetPopup.SetActive(false);
+                    _pdTargetRefresh = 0f; // repaint the row label now
+                    VrHaptics.Confirm();
+                });
+                Text rt = new GameObject("Label", typeof(RectTransform))
+                    .AddComponent<Text>();
+                RectTransform tr = (RectTransform)rt.transform;
+                tr.SetParent(rr, false);
+                tr.anchorMin = Vector2.zero;
+                tr.anchorMax = Vector2.one;
+                tr.offsetMin = new Vector2(6f, 0f);
+                tr.offsetMax = new Vector2(-6f, 0f);
+                rt.text = (a == eff ? "● " : "") + a.name;
+                rt.alignment = TextAnchor.MiddleLeft;
+                rt.fontSize = 13;
+                rt.color = Color.white;
+                rt.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                rt.raycastTarget = false;
+            }
+            _pdTargetPopup.SetActive(true);
+            _pdTargetPopup.transform.SetAsLastSibling();
+            VrHaptics.Press();
+        }
+
         private static void ApplyDockSlot(string path, Atom target = null)
         {
-            target = target ?? _pdAtom;
+            target = target ?? PdEffectiveTarget();
             if (target == null) return;
             if (_pdQuick == null)
                 _pdQuick = new SceneQuickActions(Quest3TriggerUIPlugin.Instance);

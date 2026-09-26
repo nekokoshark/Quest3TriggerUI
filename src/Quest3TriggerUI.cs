@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.261";
+        public const string PluginVersion = "4.6.266";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -405,6 +405,10 @@ namespace Quest3TriggerUI
                 "Keep matching live same-base clothing/hair active during preset reset; restore all target parameters and reset physics normally.");
             PresetHairRenderBatch.Enabled = Config.Bind("PresetLoading", "BatchHairRenderUpdates", true,
                 "Combine repeated hair render-particle updates within parameter restore; preserves density, physics and final parameter values.");
+            ResourceLedger.Enabled = Config.Bind("ResourceLedger", "Enabled", true,
+                "Incremental weak observed asset edges for Person bodies and clothing only; never unloads assets or changes UUA.");
+            ResourceLedger.DumpRequested = Config.Bind("ResourceLedger", "DumpRequested", false,
+                "One-shot TSV snapshot of observed resource edges, including pending/incomplete status.");
             PresetSweepGate.Enabled = Config.Bind("PresetLoading", "SkipUnchangedCharacterSweep", true,
                 "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 600s request-time bound.");
             PresetSweepGate.SkipUnchangedGC = Config.Bind("PresetLoading", "SkipUnchangedPresetGC", true,
@@ -466,6 +470,8 @@ namespace Quest3TriggerUI
             _memSnapshotEntry = Config.Bind(
                 "Diagnostics", "MemorySnapshot", false,
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
+            Config.Bind("Diagnostics", "PreheatPersonsNow", false,
+                "One-shot: warm the disk texture cache (.vamcache) for every preset in the preset dock's 人物 tab; auto-resets, equivalent to the dock's 预热 row.");
             Config.Bind("Diagnostics", "EyeMaterialSnapshot", false,
                 "Read-only one-shot eye/lash material bindings in the log; auto-resets, no scene changes.");
             _memWatchEntry = Config.Bind(
@@ -478,6 +484,7 @@ namespace Quest3TriggerUI
             PresetDeltaApply.Install();
             PresetHairRenderBatch.Install();
             PresetSweepGate.Install();
+            ResourceLedger.Install();
             TextureUploadReuse.Install();
             TextureInFlight.Install();
             TextureCompletionBudget.Install();
@@ -662,6 +669,7 @@ namespace Quest3TriggerUI
             SceneLoadAccelerator.Tick();
             SceneResyncCoalesce.Tick();
             ScenePreheat.Tick();
+            PresetPreheat.Tick();
             LoadAttributionProbe.Mark(2);
             if (_duplicateSweepFrame >= 0 && Time.frameCount >= _duplicateSweepFrame)
             {
@@ -749,6 +757,7 @@ namespace Quest3TriggerUI
             WardrobeJanitor.Tick();
             LoadAttributionProbe.Mark(5);
             PresetSweepGate.Tick();
+            ResourceLedger.Tick();
             LoadAttributionProbe.Mark(6);
 
             if (!InputRuntimeActive || SuperController.singleton == null)
@@ -878,7 +887,8 @@ namespace Quest3TriggerUI
                 bool snap = text.Contains("MemorySnapshot = true");
                 bool eye = text.Contains("EyeMaterialSnapshot = true");
                 bool evict = text.Contains("AudioCacheEvictNow = true");
-                if (!snap && !evict && !eye)
+                bool preheat = text.Contains("PreheatPersonsNow = true");
+                if (!snap && !evict && !eye && !preheat)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -888,6 +898,8 @@ namespace Quest3TriggerUI
                 text = text.Replace(
                     "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
                 text = text.Replace("EyeMaterialSnapshot = true", "EyeMaterialSnapshot = false");
+                text = text.Replace("PreheatPersonsNow = true",
+                    "PreheatPersonsNow = false");
                 // GetBytes re-emits the BOM because the decoded string
                 // still carries the \uFEFF character.
                 System.IO.File.WriteAllBytes(
@@ -897,6 +909,8 @@ namespace Quest3TriggerUI
                 if (snap) MemoryProbe.Dump();
                 if (eye) CharacterMaterialProbe.Dump();
                 if (evict) AudioCacheJanitor.SweepNow();
+                if (preheat) PresetPreheat.Start(
+                    UiAssistHudLink.PersonPresetPaths());
             }
             catch (Exception ex)
             {
@@ -1104,6 +1118,7 @@ namespace Quest3TriggerUI
             BodySmootherCompatibility.Shutdown();
             PresetDeltaApply.Shutdown();
             PresetHairRenderBatch.Shutdown();
+            ResourceLedger.Shutdown();
             PresetSweepGate.Shutdown();
             TextureUploadReuse.Shutdown();
             TextureInFlight.Shutdown();
@@ -1711,7 +1726,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
 
 
 
