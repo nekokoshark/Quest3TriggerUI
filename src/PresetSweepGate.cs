@@ -435,6 +435,7 @@ namespace Quest3TriggerUI
 
         internal static void Tick()
         {
+            UuaSweepTelemetry.Tick(Interlocked.Read(ref _released));
             // No pending native request: no polling, scans or spontaneous GC.
             if (!_gcPending || Time.realtimeSinceStartup < _gcNextCheck || _active != null) return;
             float now = Time.realtimeSinceStartup;
@@ -492,7 +493,13 @@ namespace Quest3TriggerUI
             catch (Exception e) { reason = "verification " + e.GetType().Name; }
             if (ticket != null) ticket.consumed = true;
             long released = Interlocked.Read(ref _released);
-            var op = Resources.UnloadUnusedAssets();
+            var sample = UuaSweepTelemetry.Begin("character", ticket == null ? null : ticket.kind + ":" +
+                (ticket.before == null || ticket.before.Length == 0 ? "unknown" : ticket.before[0].ToString()),
+                reason, released, released - _sweepReleased);
+            AsyncOperation op;
+            try { op = Resources.UnloadUnusedAssets(); }
+            catch { UuaSweepTelemetry.Failed(sample); throw; }
+            UuaSweepTelemetry.Submitted(sample, op);
             _lastSweep = op;
             _sweepReleased = released;
             _lastSweepTime = Time.realtimeSinceStartup;
@@ -579,6 +586,7 @@ namespace Quest3TriggerUI
 
         internal static void Shutdown()
         {
+            UuaSweepTelemetry.Shutdown();
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null;
             _factory = null;

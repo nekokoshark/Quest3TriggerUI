@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.260";
+        public const string PluginVersion = "4.6.261";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -406,7 +406,7 @@ namespace Quest3TriggerUI
             PresetHairRenderBatch.Enabled = Config.Bind("PresetLoading", "BatchHairRenderUpdates", true,
                 "Combine repeated hair render-particle updates within parameter restore; preserves density, physics and final parameter values.");
             PresetSweepGate.Enabled = Config.Bind("PresetLoading", "SkipUnchangedCharacterSweep", true,
-                "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 120s request-time bound.");
+                "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 600s request-time bound.");
             PresetSweepGate.SkipUnchangedGC = Config.Bind("PresetLoading", "SkipUnchangedPresetGC", true,
                 "Skip verified unchanged preset GC at low growth; settle pending native preset GC after async loading (30s cap), or immediately at 75% RAM pressure. Keep 256MiB/120s GC limits and manual cleanup.");
             BumpNormalRowConverter.Enabled = Config.Bind(
@@ -1711,8 +1711,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
-
 
 
 
