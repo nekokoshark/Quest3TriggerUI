@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.241";
+        public const string PluginVersion = "4.6.260";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -401,9 +401,29 @@ namespace Quest3TriggerUI
             PresetInstanceReuse.Enabled = Config.Bind(
                 "TextureLoading", "ReusePresetInstances", true,
                 "Temporarily retain ready same-base clothing/hair instances across native preset reset; restore all parameters normally.");
+            PresetDeltaApply.Enabled = Config.Bind("PresetLoading", "DeltaActiveItems", true,
+                "Keep matching live same-base clothing/hair active during preset reset; restore all target parameters and reset physics normally.");
+            PresetHairRenderBatch.Enabled = Config.Bind("PresetLoading", "BatchHairRenderUpdates", true,
+                "Combine repeated hair render-particle updates within parameter restore; preserves density, physics and final parameter values.");
+            PresetSweepGate.Enabled = Config.Bind("PresetLoading", "SkipUnchangedCharacterSweep", true,
+                "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 120s request-time bound.");
+            PresetSweepGate.SkipUnchangedGC = Config.Bind("PresetLoading", "SkipUnchangedPresetGC", true,
+                "Skip verified unchanged preset GC at low growth; settle pending native preset GC after async loading (30s cap), or immediately at 75% RAM pressure. Keep 256MiB/120s GC limits and manual cleanup.");
             BumpNormalRowConverter.Enabled = Config.Bind(
                 "TextureLoading", "BumpNormalThreeRows", true,
                 "Use three scratch rows for native-equivalent bump-to-normal conversion; preserve output format and resolution.");
+            TextureUploadReuse.Enabled = Config.Bind("TextureLoading", "ReuseBeforeUpload", true,
+                "Reuse a compatible completed native texture before duplicate upload; preserve callbacks and force reload.");
+            TextureInFlight.Enabled = Config.Bind("TextureLoading", "ShareInFlightDecode", true,
+                "Share identical in-flight worker decode results; native callbacks and byte reservations remain independent.");
+            TextureCompletionBudget.Enabled = Config.Bind("TextureLoading", "BudgetCompletionQueue", true,
+                "Keep native four completions; drain up to 16 cheap items within 2ms/32MiB soft budgets.");
+            TextureMetadataReuse.Enabled = Config.Bind("TextureLoading", "ReuseRequestMetadata", true,
+                "Reuse admission metadata in the same request after cache file stamp checks.");
+            TextureScratchLifetime.Enabled = Config.Bind("TextureLoading", "ReleaseDecodeScratchEarly", true,
+                "Release GDI source after drawing and destination after pixel copy; unchanged image processing.");
+            TextureCacheWriteBudget.Enabled = Config.Bind("TextureLoading", "AccountCacheWrites", true,
+                "Charge asynchronous cache-write arrays to the existing texture admission budget until completion.");
             TextureDecodeBudget.Enabled = Config.Bind(
                 "TextureLoading", "DecodeBudgetEnabled", true,
                 "Bound estimated pending/decoding/upload-wait texture bytes; preserves image quality.");
@@ -455,6 +475,16 @@ namespace Quest3TriggerUI
             Instance = this;
             Log = Logger;
             BodySmootherCompatibility.Install();
+            PresetDeltaApply.Install();
+            PresetHairRenderBatch.Install();
+            PresetSweepGate.Install();
+            TextureUploadReuse.Install();
+            TextureInFlight.Install();
+            TextureCompletionBudget.Install();
+            TextureMetadataReuse.Install();
+            TextureScratchLifetime.Install();
+            TextureCacheWriteBudget.Install();
+            TextureDecodeBudget.ColdEstimate = ColdTextureHeader.Estimate;
             PinyinEngine.Initialize();
             PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
             _auxiliaryUiView = VrAuxiliaryUiView.Begin();
@@ -610,6 +640,7 @@ namespace Quest3TriggerUI
 
         private void Update()
         {
+            LoadAttributionProbe.BeginFrame();
             long __frameBudgetT0 = FrameBudgetProbe.MarkUpdateStart();
             try
             {
@@ -617,6 +648,7 @@ namespace Quest3TriggerUI
             }
             finally
             {
+                LoadAttributionProbe.EndFrame();
                 FrameBudgetProbe.MarkUpdateEnd(__frameBudgetT0);
             }
         }
@@ -625,10 +657,12 @@ namespace Quest3TriggerUI
         {
             if (!_updateLogged) { _updateLogged = true; Logger.LogInfo("payload update asm=" + GetType().Assembly.GetHashCode()); }
             UiAssistHudLink.Observe();
+            LoadAttributionProbe.Mark(1);
             BrowserAssistScanAccelerator.Tick();
             SceneLoadAccelerator.Tick();
             SceneResyncCoalesce.Tick();
             ScenePreheat.Tick();
+            LoadAttributionProbe.Mark(2);
             if (_duplicateSweepFrame >= 0 && Time.frameCount >= _duplicateSweepFrame)
             {
                 _duplicateSweepFrame = -1;
@@ -671,6 +705,7 @@ namespace Quest3TriggerUI
                 _presetBrowserFileTools.Tick();
 
             HairPerfProbe.Tick();
+            LoadAttributionProbe.Mark(3);
             AtomClonePool.Tick();
             BodySmootherCompatibility.Tick();
             // Config file self-watch: the hot-loaded payload can't rely on
@@ -710,7 +745,11 @@ namespace Quest3TriggerUI
             }
             AudioDeviceFollower.Tick();
             AudioCacheJanitor.Tick();
+            LoadAttributionProbe.Mark(4);
             WardrobeJanitor.Tick();
+            LoadAttributionProbe.Mark(5);
+            PresetSweepGate.Tick();
+            LoadAttributionProbe.Mark(6);
 
             if (!InputRuntimeActive || SuperController.singleton == null)
                 return;
@@ -726,7 +765,9 @@ namespace Quest3TriggerUI
                 _physicsHairCollEntry.Value != PhysicsBudget.HairCollisionMode)
                 PhysicsBudget.HairCollisionMode = _physicsHairCollEntry.Value;
             PhysicsBudget.Tick();
+            LoadAttributionProbe.Mark(7);
             _keyboard.Tick();
+            LoadAttributionProbe.Mark(8);
             if (_quickActionRevision != _keyboard.QuickActionRevision)
             {
                 _quickActionRevision = _keyboard.QuickActionRevision;
@@ -738,6 +779,7 @@ namespace Quest3TriggerUI
             HairDebugMode.Tick();
             ClothingRegionMode.Tick();
             PluginListMode.Tick();
+            LoadAttributionProbe.Mark(9);
             int frame = Time.frameCount;
             // The drag answers to whichever hand's trigger armed it —
             // candidate.RightPointer picks the state machine so a left-hand
@@ -1052,6 +1094,7 @@ namespace Quest3TriggerUI
         {
             PinyinEngine.Shutdown();
             UiAssistHudLink.Reset(); DlssUiOverlay.Stop();
+            UiNavSuppress.ReleaseAll();
             if (_auxiliaryUiView != null) DestroyImmediate(_auxiliaryUiView.gameObject);
             HairDebugMode.Shutdown();
             VrShotCameras.Shutdown();
@@ -1059,6 +1102,16 @@ namespace Quest3TriggerUI
             PluginListMode.Shutdown();
             WardrobeJanitor.Shutdown();
             BodySmootherCompatibility.Shutdown();
+            PresetDeltaApply.Shutdown();
+            PresetHairRenderBatch.Shutdown();
+            PresetSweepGate.Shutdown();
+            TextureUploadReuse.Shutdown();
+            TextureInFlight.Shutdown();
+            TextureCompletionBudget.Shutdown();
+            TextureMetadataReuse.Shutdown();
+            TextureScratchLifetime.Shutdown();
+            TextureCacheWriteBudget.Shutdown();
+            LoadAttributionProbe.Shutdown();
             // An undestroyed recorder outlives this runtime through the
             // AudioListener tap and writes to its .audio.wav forever.
             if (VrVideoRecorder.Current != null)
@@ -1658,18 +1711,6 @@ internal static bool SuppressRightInput()
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

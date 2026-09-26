@@ -13,6 +13,11 @@ namespace Quest3TriggerUI
         private static object _presetEditor;
         private static float _nextPresetCheck;
         private static bool _presetBrowsing;
+        // Editor snapshot captured when the browser was opened; if a second
+        // mode button is pressed while it is still open, FindEditor may no
+        // longer see the (hidden) editor — reuse this so the button can
+        // retarget the open dialog instead of going dead.
+        private static Snapshot _presetState;
 
         private static void ClearPresetButtons()
         {
@@ -36,6 +41,7 @@ namespace Quest3TriggerUI
             {
                 _pdPicking = false;
                 _presetBrowsing = false;
+                _presetState = null;
             }
             if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
@@ -87,12 +93,14 @@ namespace Quest3TriggerUI
 
         private static void BrowseClothingPresetSave()
         {
-            if (_presetBrowsing) return;
             SuperController sc = SuperController.singleton;
             Snapshot state = FindEditor(sc);
+            if ((state == null || state.Target == null) && _presetBrowsing)
+                state = _presetState;
             if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
             string scene = sc.LoadedSceneName;
             _presetBrowsing = true;
+            _presetState = state;
             try
             {
                 string startDir = PresetSaveDirs.Get("ClothingPresets", PluginPaths.ClothingPresetDir);
@@ -179,12 +187,14 @@ namespace Quest3TriggerUI
         // _presetBrowsing.
         private static void OpenPresetDockPicker()
         {
-            if (_presetBrowsing) return;
             SuperController sc = SuperController.singleton;
             Snapshot state = FindEditor(sc);
+            if ((state == null || state.Target == null) && _presetBrowsing)
+                state = _presetState;
             if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
             string scene = sc.LoadedSceneName;
             _presetBrowsing = true;
+            _presetState = state;
             _pdPicking = true;
             try
             {
@@ -220,12 +230,14 @@ namespace Quest3TriggerUI
         // looks can be tried in one session.
         private static void OpenDockPresetLoader()
         {
-            if (_presetBrowsing) return;
             SuperController sc = SuperController.singleton;
             Snapshot state = FindEditor(sc);
+            if ((state == null || state.Target == null) && _presetBrowsing)
+                state = _presetState;
             if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
             string scene = sc.LoadedSceneName;
             _presetBrowsing = true;
+            _presetState = state;
             _pdPicking = true;
             try
             {
@@ -262,15 +274,17 @@ namespace Quest3TriggerUI
         // 化妆 writes a standalone preset of only the worn makeup items.
         private static void OpenDockPresetSaver()
         {
-            if (_presetBrowsing) return;
             SuperController sc = SuperController.singleton;
             Snapshot state = FindEditor(sc);
+            if ((state == null || state.Target == null) && _presetBrowsing)
+                state = _presetState;
             if (state == null || state.Target == null) { Log("请先在服装编辑器中选择角色。"); return; }
             string scene = sc.LoadedSceneName;
             if (_pdQuick == null)
                 _pdQuick = new SceneQuickActions(Quest3TriggerUIPlugin.Instance);
             Atom target = state.Target;
             _presetBrowsing = true;
+            _presetState = state;
             _pdPicking = true;
             Action<bool> done = delegate(bool closed)
             {
@@ -323,7 +337,7 @@ namespace Quest3TriggerUI
                 Call(state.Control, null, "OnEnable");
                 _nextPresetCheck = 0f;
             }
-            finally { _presetBrowsing = false; }
+            finally { _presetBrowsing = false; _presetState = null; }
         }
     }
 }

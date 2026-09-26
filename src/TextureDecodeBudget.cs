@@ -15,15 +15,20 @@ namespace Quest3TriggerUI
         internal static ConfigEntry<bool> Enabled;
         internal static ConfigEntry<int> BudgetMiB;
         internal static ConfigEntry<bool> EarlyDiscard;
+        internal static Func<long> PendingCacheBytes;
+        internal static Func<ImageLoaderThreaded.QueuedImage, long> ColdEstimate;
         private const long MiB = 1024L * 1024L;
         private static readonly Dictionary<ImageLoaderThreaded.QueuedImage, long> Held =
             new Dictionary<ImageLoaderThreaded.QueuedImage, long>();
         private static Harmony _harmony;
         private static long _reserved, _peak;
         private static int _admitted, _deferred, _discarded;
+        private static int _headerSized;
+        private static long _headerTicks;
         private static long _nextMemoryCheck;
         private static ulong _available = ulong.MaxValue;
         private static ulong _commitAvailable = ulong.MaxValue;
+        private static ulong _totalPhysical;
         private static bool _batch;
         private static WeakReference _probeHead;
         private static long _probeEstimate, _probeTicks, _probeDeadline;
@@ -129,6 +134,15 @@ namespace Quest3TriggerUI
             return count == 0 || (reserved <= budget && estimate <= budget - reserved);
         }
 
+        internal static bool FitsWithWrites(long reserved, long estimate, long budget, int count, long writes)
+        {
+            // Do not start an oversize request while a previous cache write still
+            // owns its byte array. Writers never wait on admission, so they drain.
+            writes = Math.Max(0, writes);
+            long held = writes > long.MaxValue - reserved ? long.MaxValue : reserved + writes;
+            return Fits(held, estimate, budget, count == 0 && writes == 0 ? 0 : 1);
+        }
+
         private static long CurrentBudget()
         {
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -141,6 +155,7 @@ namespace Quest3TriggerUI
                 {
                     _available = status.availablePhysical;
                     _commitAvailable = status.availablePageFile;
+                    _totalPhysical = status.totalPhysical;
                 }
             }
             long limit = Math.Max(256, Math.Min(8192, BudgetMiB == null ? 2048 : BudgetMiB.Value)) * MiB;
@@ -149,7 +164,18 @@ namespace Quest3TriggerUI
             // availablePageFile is system COMMIT headroom, not disk free space.
             if (_commitAvailable != ulong.MaxValue)
                 limit = Math.Min(limit, Math.Max(256L * MiB, (long)(_commitAvailable / 4)));
-            return limit;
+            return BeforePressureBudget(limit, _totalPhysical, _available);
+        }
+
+        internal static long BeforePressureBudget(long limit, ulong total, ulong available)
+        {
+            if (total == 0 || available > total) return limit;
+            // Reserve space before the 75% pressure line; external trimming at
+            // 80% otherwise wins before our old 85% GC guard can do anything.
+            ulong used = total - available;
+            ulong ceiling = total / 100 * 75;
+            ulong room = used < ceiling ? ceiling - used : 0;
+            return Math.Min(limit, Math.Max(256L * MiB, (long)(room / 2)));
         }
 
         private static void BeforeDispatch()
@@ -178,6 +204,17 @@ namespace Quest3TriggerUI
             cacheSized = TextureCacheEstimate.TryEstimate(q, out known);
             _probeTicks += System.Diagnostics.Stopwatch.GetTimestamp() - start;
             if (cacheSized) estimate = known;
+            else if (ColdEstimate != null && System.Diagnostics.Stopwatch.GetTimestamp() < _probeDeadline)
+            {
+                long begin = System.Diagnostics.Stopwatch.GetTimestamp();
+                try
+                {
+                    long cold = ColdEstimate(q);
+                    if (cold > 0) { estimate = cold; _headerSized++; }
+                }
+                catch (Exception e) { Log("cold header retained conservative estimate: " + e.GetType().Name); }
+                _headerTicks += System.Diagnostics.Stopwatch.GetTimestamp() - begin;
+            }
             _probeHead = new WeakReference(q);
             _probeEstimate = estimate;
             _probeHit = cacheSized;
@@ -215,7 +252,8 @@ namespace Quest3TriggerUI
             long budget;
             try { budget = CurrentBudget(); }
             catch { budget = 2048L * MiB; }
-            if (!Fits(_reserved, estimate, budget, Held.Count))
+            long pendingWriteBytes = PendingCacheBytes == null ? 0 : PendingCacheBytes();
+            if (!FitsWithWrites(_reserved, estimate, budget, Held.Count, pendingWriteBytes))
             {
                 _deferred++;
                 return false; // Leave original head intact; next frame follows Finish.
@@ -258,11 +296,15 @@ namespace Quest3TriggerUI
                     " earlyDiscarded=" + _discarded + " cacheSized=" + _cacheSized +
                     " cacheProbeMs=" + (_probeTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
                     " peakReservedMiB=" + (_peak / MiB) +
+                    " headerSized=" + _headerSized + " headerMs=" + (_headerTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
+                    " pendingWriteMiB=" + ((PendingCacheBytes == null ? 0 : PendingCacheBytes()) / MiB) +
+                    " directCopies=" + TextureScratchLifetime.DirectCopies +
                     " (estimate, not actual memory; not a preset completion signal)");
                 _batch = false;
                 _admitted = _deferred = _discarded = 0;
                 _peak = _probeTicks = 0;
                 _cacheSized = 0;
+                _headerSized = 0; _headerTicks = 0;
             }
         }
 
@@ -273,7 +315,9 @@ namespace Quest3TriggerUI
             Held.Clear();
             _reserved = _peak = _nextMemoryCheck = 0;
             _admitted = _deferred = _discarded = 0;
+            _headerSized = 0; _headerTicks = 0; ColdEstimate = null;
             _available = _commitAvailable = ulong.MaxValue;
+            _totalPhysical = 0;
             _batch = false;
             _probeHead = null;
             _probeEstimate = _probeTicks = _probeDeadline = 0;

@@ -397,6 +397,16 @@ namespace Quest3TriggerUI
                     nb.Hide();
             }
             catch { }
+            // Already on screen: re-point the same dialog at the new role
+            // instead of re-running open — the active tab, scroll offset,
+            // search text and sort order all stay where the user left them.
+            if (_canvas.gameObject.activeSelf)
+            {
+                RetargetInPlace(title, filter, saveMode, defaultSaveName,
+                    cb, cbFull, dirPick, pickMode, loadTarget, compact,
+                    personMode);
+                return;
+            }
             LogErr("Q3 browser open: dir=" + suggestedDir +
                 " save=" + saveMode);
             _title = string.IsNullOrEmpty(title) ? "文件浏览" : title;
@@ -484,6 +494,47 @@ namespace Quest3TriggerUI
             RefreshGrid();
             RestoreScroll(_tabs[_activeTab]);
             LogErr("Q3 browser shown: dir=" + _dir);
+        }
+
+        // Mode-button click while the dialog is already open: adopt the new
+        // caller's role and callback in place. Nothing about tabs, the
+        // current directory, grid scroll or sort is touched; only when the
+        // filter actually changes does the grid need a rebuild.
+        private void RetargetInPlace(
+            string title, string filter, bool saveMode,
+            string defaultSaveName, Action<string> cb,
+            Action<string, bool> cbFull, bool dirPick, bool pickMode,
+            Atom loadTarget, bool compact, bool personMode)
+        {
+            _title = string.IsNullOrEmpty(title) ? "文件浏览" : title;
+            string[] exts = ParseFilter(filter);
+            string next = exts != null ? exts[0] : "";
+            bool filterChanged = next != _filter;
+            _filterExts = exts;
+            _filter = next;
+            _saveMode = saveMode;
+            _dirPickMode = dirPick;
+            _pickMode = pickMode;
+            _compact = compact;
+            _personMode = personMode;
+            _popupForMode = false;
+            _dialogTarget = loadTarget;
+            _cb = cb;
+            _cbFull = cbFull;
+            ResetGesture();
+            if (_saveRow != null)
+                _saveRow.SetActive(_saveMode);
+            if (_saveMode && _fileNameInput != null)
+                _fileNameInput.text = (_filter == "vap" || _filter.Length == 0)
+                    ? PresetFilenameRules.EditName(defaultSaveName) : (defaultSaveName ?? "");
+            if (_dirPickMode)
+                SetStatus("选择目录：进入目标文件夹后点「打开」");
+            else if (_pickMode)
+                SetStatus("点选预设即存入收藏栏，可连续点选多个");
+            RefreshTargetControl();
+            Recenter();
+            if (filterChanged) RefreshGrid();
+            LogErr("Q3 browser retarget: dir=" + _dir + " save=" + saveMode);
         }
 
         private static bool ValidDir(string dir)
@@ -615,20 +666,20 @@ namespace Quest3TriggerUI
         // the panel — VaM routes wheel through its own Widget pipeline, so
         // plain Unity UI never receives IScrollHandler callbacks.
         private bool _navSuppressed;
-        private bool _navPrevDisableAll;
 
         private void Tick()
         {
             // While the pointer rests on this panel, suppress VaM scene
             // navigation so the same thumbstick/wheel input that scrolls the
-            // list doesn't also fly the player around.
-            SuperController sc = SuperController.singleton;
-            if (sc != null && HideHudWhileOpen)
+            // list doesn't also fly the player around. Named-holder release
+            // (UiNavSuppress) — save/restore on the raw flag can write back a
+            // stale true captured while another writer held it (e.g. during
+            // a preset load), locking navigation for good.
+            if (HideHudWhileOpen)
             {
                 if (_pointerInside && !_navSuppressed)
                 {
-                    _navPrevDisableAll = sc.disableAllNavigation;
-                    sc.disableAllNavigation = true;
+                    UiNavSuppress.Acquire("preset-browser");
                     _navSuppressed = true;
                 }
                 else if (!_pointerInside && _navSuppressed)
@@ -957,13 +1008,7 @@ namespace Quest3TriggerUI
             if (!_navSuppressed)
                 return;
             _navSuppressed = false;
-            try
-            {
-                SuperController sc = SuperController.singleton;
-                if (sc != null)
-                    sc.disableAllNavigation = _navPrevDisableAll;
-            }
-            catch { }
+            UiNavSuppress.Release("preset-browser");
         }
 
         // Drag/press state must not survive a hide — the next open would
@@ -2095,7 +2140,7 @@ namespace Quest3TriggerUI
                 try
                 {
                     if (it.IsDir)
-                        FileManager.DeleteDirectory(it.Path, false);
+                        FileManager.DeleteDirectory(it.Path, true);
                     else
                         FileManager.DeleteFile(it.Path);
                     SetStatus("已删除: " + it.Label);
@@ -3130,7 +3175,7 @@ namespace Quest3TriggerUI
         {
             if (Time.unscaledTime < _batchDeleteArmUntil)
             {
-                int done = 0;
+                int done = 0, failed = 0;
                 foreach (string p in new List<string>(_selPaths))
                 {
                     try
@@ -3140,14 +3185,15 @@ namespace Quest3TriggerUI
                         GridItem it = _items.Find(
                             x => x.Path == p);
                         if (it != null && it.IsDir)
-                            FileManager.DeleteDirectory(p, false);
+                            FileManager.DeleteDirectory(p, true);
                         else
                             FileManager.DeleteFile(p);
                         done++;
                     }
-                    catch { }
+                    catch { failed++; }
                 }
-                SetStatus("已删除 " + done + " 项");
+                SetStatus("已删除 " + done + " 项" +
+                    (failed > 0 ? "(" + failed + " 失败)" : ""));
                 _selPaths.Clear();
                 _batchDeleteArmUntil = 0f;
                 UpdateSelBar();
@@ -3556,6 +3602,18 @@ namespace Quest3TriggerUI
         {
             Action<string> cb = _cb;
             Action<string, bool> cbf = _cbFull;
+            if (_saveMode && cbf != null)
+            {
+                // Save dialogs stay open after a save — several presets can
+                // be written in one session; the caller still gets
+                // closed=true when the user actually exits.
+                cbf(path, false);
+                RefreshGrid();
+                int slash = path.LastIndexOf('/');
+                SetStatus("已保存: " +
+                    (slash >= 0 ? path.Substring(slash + 1) : path));
+                return;
+            }
             _cb = null;
             _cbFull = null;
             Close();

@@ -29,8 +29,7 @@ namespace Quest3TriggerUI
 
         // While our scroll owns the stick, VaM scene navigation must not
         // also react to it (same suppression the preset browser uses).
-        private static bool _dockNavSuppressed;
-        private static bool _dockNavPrev;
+        // Held via UiNavSuppress — named holders, no save/restore races.
         private static float _dockNavDemandAt = -10f;
 
         private static float DockMaxScroll(float contentH, float viewH)
@@ -254,29 +253,16 @@ namespace Quest3TriggerUI
         // last scroll so a hidden dock can never leave nav locked on.
         private static void TickDockNavSuppression()
         {
-            bool want = Time.unscaledTime - _dockNavDemandAt < 0.25f;
-            SuperController sc = SuperController.singleton;
-            if (sc == null) return;
-            if (want && !_dockNavSuppressed)
-            {
-                _dockNavPrev = sc.disableAllNavigation;
-                sc.disableAllNavigation = true;
-                _dockNavSuppressed = true;
-            }
-            else if (!want && _dockNavSuppressed)
-            {
-                sc.disableAllNavigation = _dockNavPrev;
-                _dockNavSuppressed = false;
-            }
+            if (Time.unscaledTime - _dockNavDemandAt < 0.25f)
+                UiNavSuppress.Acquire("dock-scroll");
+            else
+                UiNavSuppress.Release("dock-scroll");
         }
 
         private static void ReleaseDockNavSuppression()
         {
             _dockNavDemandAt = -10f;
-            if (!_dockNavSuppressed) return;
-            _dockNavSuppressed = false;
-            SuperController sc = SuperController.singleton;
-            if (sc != null) sc.disableAllNavigation = _dockNavPrev;
+            UiNavSuppress.Release("dock-scroll");
         }
 
         // Thin indicator bar docked to the viewport's right edge — a visual

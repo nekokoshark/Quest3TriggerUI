@@ -642,7 +642,7 @@ namespace Quest3TriggerUI
             return __exception;
         }
 
-        private static Atom OwnerOf(MeshVR.PresetManager pm)
+        internal static Atom OwnerOf(MeshVR.PresetManager pm)
         {
             if (pm == null || PmField == null) return null;
             // Only executed on a preset event; a handful of managers, not the

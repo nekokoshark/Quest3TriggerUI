@@ -144,7 +144,7 @@ namespace Quest3TriggerUI
         internal static void Observe()
         {
             SuperController controller = SuperController.singleton;
-            if (controller == null) { CancelPending(); _observed = false; return; }
+            if (controller == null) { CancelPending(); ReleaseDockNavSuppression(); _observed = false; return; }
             if (controller.isLoading) CancelPending();
             ApplyPanelPresentation();
             TickDockNavSuppression();
@@ -161,7 +161,7 @@ namespace Quest3TriggerUI
             if (visible) AfterShow(controller); else Suspend(controller);
         }
         internal static void CancelPending() { _pending = null; }
-        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; CancelPending(); _observed = false; }
+        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; _presetState = null; CancelPending(); _observed = false; }
         private static void Log(string message)
         {
             if (Quest3TriggerUIPlugin.Log != null) Quest3TriggerUIPlugin.Log.LogInfo(message);
