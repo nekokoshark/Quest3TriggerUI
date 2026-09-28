@@ -141,6 +141,7 @@ namespace Quest3TriggerUI
             if (now < _nextSweep) return;
             _nextSweep = now + SweepEvery;
             if (WardrobeJanitor.ImagesBusy()) return;
+            if (LoadWindow.PresetBusy) { LoadWindow.NoteDeferred("TexOrphanSweep"); return; }
             ResolveFields();
             var loader = ImageLoaderThreaded.singleton;
             if (loader == null || _cacheF == null || _countF == null || _trackedF == null) return;
@@ -151,18 +152,30 @@ namespace Quest3TriggerUI
             if (cache == null || counts == null || tracked == null) return;
             int released = 0;
             long releasedBytes = 0, unusedBytes = 0;
+            int cacheEntries = 0, countedLive = 0, zeroCount = 0, zeroUnseen = 0, zeroProtected = 0;
+            long zeroUnseenBytes = 0;
             try
             {
                 foreach (var kv in cache)
                 {
                     Texture2D t = kv.Value;
                     if (t == null) continue;
+                    cacheEntries++;
                     int id = t.GetInstanceID();
                     if (!Seen.Add(id)) continue;
                     Candidate entry;
-                    if (!Candidates.TryGetValue(id, out entry) || !ReferenceEquals(entry.texture.Target, t) || entry.protectedConsumer) continue;
+                    bool known = Candidates.TryGetValue(id, out entry) && ReferenceEquals(entry.texture.Target, t);
                     int count;
-                    if (counts.TryGetValue(t, out count) && count > 0) { entry.since = -1; continue; }
+                    if (counts.TryGetValue(t, out count) && count > 0)
+                    {
+                        countedLive++;
+                        if (known && !entry.protectedConsumer) entry.since = -1;
+                        continue;
+                    }
+                    // No live refcount: GPT-audit suspects live in this bucket.
+                    zeroCount++;
+                    if (!known) { zeroUnseen++; zeroUnseenBytes += EstimateBytes(t); continue; }
+                    if (entry.protectedConsumer) { zeroProtected++; continue; }
                     if (entry.since < 0) entry.since = now;
                     entry.bytes = MemoryProbe.TexBytes(t.width, t.height, MemoryProbe.FormatBpp(t.format), t.mipmapCount);
                     unusedBytes += entry.bytes;
@@ -198,6 +211,16 @@ namespace Quest3TriggerUI
                 released = Evict.Count;
             }
             finally { ClearScratch(); }
+            if (now >= _nextCensus)
+            {
+                _nextCensus = now + CensusEvery;
+                WardrobeJanitor.Log("orphan census cache=" + cacheEntries +
+                    " counted=" + countedLive + " zeroCount=" + zeroCount +
+                    "(seen=" + (zeroCount - zeroUnseen - zeroProtected) +
+                    " protected=" + zeroProtected +
+                    " unseen=" + zeroUnseen + "/" + (zeroUnseenBytes / 1048576) + "MiB)" +
+                    " evicted=" + released);
+            }
             if (released > 0)
             {
                 WardrobeJanitor.Log("cache ownership released=" + released + " estimatedMiB=" +
@@ -205,6 +228,15 @@ namespace Quest3TriggerUI
                 // No observer strong references survive into Unity's sweep.
                 WardrobeJanitor.KickUnusedAssets();
             }
+        }
+
+        private static float _nextCensus;
+        private const float CensusEvery = 60f;
+
+        private static long EstimateBytes(Texture2D t)
+        {
+            try { return MemoryProbe.TexBytes(t.width, t.height, MemoryProbe.FormatBpp(t.format), t.mipmapCount); }
+            catch { return 0; }
         }
 
         private static void ResolveFields()

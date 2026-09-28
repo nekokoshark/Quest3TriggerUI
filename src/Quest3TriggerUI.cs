@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.266";
+        public const string PluginVersion = "4.6.286";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -361,28 +361,16 @@ namespace Quest3TriggerUI
 
             ConfigEntry<bool> preheatAuto = Config.Bind(
                 "Preheat", "Enabled", true,
-                "Load one scene shortly after startup, while the game is still on the menu, so the first scene the user opens reuses the process-wide costs (Unity asset realization, morph banks, clothing-item tables) instead of paying them. Nothing is restarted and no VaM file is touched. false = never preheat automatically.");
+                "Shortly after startup, while still on the menu, realize the Person prefab and instantiate its morph-bank prefabs so the process-wide catalogue caches (_dirEntryCache/_morphInitCache — the whole-VAR morph scan shared by every later person) are paid up front. No person clone pool, no scene rehearsal. false = never preheat automatically.");
             ConfigEntry<float> preheatDelay = Config.Bind(
                 "Preheat", "DelaySeconds", 30f,
                 "Seconds after coming up before the startup preheat runs. Keep it long enough that the engine is fully initialized.");
-            ConfigEntry<string> preheatTarget = Config.Bind(
-                "Preheat", "TargetScene", "",
-                "Only used when Mode=fixed. A light single-character scene pays the same process-wide costs for much less of its own artwork.");
             ScenePreheat.Auto = preheatAuto;
             ScenePreheat.DelaySeconds = preheatDelay;
-            ConfigEntry<string> preheatMode = Config.Bind(
-                "Preheat", "Mode", "headless",
-                "headless (default): pay the process-wide costs without loading any scene — call the character-selector catalogue builders (morph banks, character tables, clothing/hair item tables) directly and pre-clone 3 generic Person prefabs into the atom clone pool for AddAtom adoption. cheapest = load VaM's own single-character container (Saves\\scene\\default.json). last = preheat the scene opened most recently. fixed = preheat the path in TargetScene.");
-            ScenePreheat.TargetScene = preheatTarget;
-            ScenePreheat.Mode = preheatMode;
             ScenePreheat.Source = Config;
             AudioDeviceFollower.Enabled = Config.Bind(
                 "Audio", "FollowDefaultDevice", true,
                 "Keeps VaM's audio on the Windows default output device: when the default changes, the Unity audio engine is reset once so it rebinds (all playing sounds restart). false = never follow.").Value;
-            ConfigEntry<bool> preClonePersons = Config.Bind(
-                "Preheat", "PreClonePersons", true,
-                "Experimental: after the scene preheat realizes prefabs, also pre-Instantiate dormant clones of the scene's Person atoms (measured ~10s and ~100MB each, paid while browsing instead of during the load) and let scene atom creation adopt them via AddAtom's native no-instantiate path. false = preheat only realizes assets.");
-            AtomClonePool.Enabled = preClonePersons.Value;
             AudioCacheJanitor.Enabled = Config.Bind(
                 "Audio", "CacheEviction", true,
                 "Evict audio clips that no AudioSource has referenced for CacheGraceSeconds — VaM caches every decoded clip forever in URLAudioClipManager/EmbeddedAudioClipManager (~2GB observed). Evicted URL clips re-decode lazily if needed again.");
@@ -405,12 +393,8 @@ namespace Quest3TriggerUI
                 "Keep matching live same-base clothing/hair active during preset reset; restore all target parameters and reset physics normally.");
             PresetHairRenderBatch.Enabled = Config.Bind("PresetLoading", "BatchHairRenderUpdates", true,
                 "Combine repeated hair render-particle updates within parameter restore; preserves density, physics and final parameter values.");
-            ResourceLedger.Enabled = Config.Bind("ResourceLedger", "Enabled", true,
-                "Incremental weak observed asset edges for Person bodies and clothing only; never unloads assets or changes UUA.");
-            ResourceLedger.DumpRequested = Config.Bind("ResourceLedger", "DumpRequested", false,
-                "One-shot TSV snapshot of observed resource edges, including pending/incomplete status.");
             PresetSweepGate.Enabled = Config.Bind("PresetLoading", "SkipUnchangedCharacterSweep", true,
-                "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 600s request-time bound.");
+                "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 120s request-time bound.");
             PresetSweepGate.SkipUnchangedGC = Config.Bind("PresetLoading", "SkipUnchangedPresetGC", true,
                 "Skip verified unchanged preset GC at low growth; settle pending native preset GC after async loading (30s cap), or immediately at 75% RAM pressure. Keep 256MiB/120s GC limits and manual cleanup.");
             BumpNormalRowConverter.Enabled = Config.Bind(
@@ -428,6 +412,16 @@ namespace Quest3TriggerUI
                 "Release GDI source after drawing and destination after pixel copy; unchanged image processing.");
             TextureCacheWriteBudget.Enabled = Config.Bind("TextureLoading", "AccountCacheWrites", true,
                 "Charge asynchronous cache-write arrays to the existing texture admission budget until completion.");
+            TextureCacheBc7Convert.Enabled = Config.Bind("TextureLoading", "ConvertCacheToBc7", true,
+                "Re-encode an uncompressed RGBA32/RGB24 image cache as BC7 in the background right after the game read it, so the next load reads a quarter of the bytes. Only runs while that texture is still cached and no scene is loading; the pair is swapped in one rename and journalled so an interrupted swap is repaired at the next start.");
+            TextureCacheBc7Convert.ToolPath = Config.Bind("TextureLoading", "Bc7ToolPath", "",
+                "Optional path to texconv.exe (DirectXTex). Empty tries the plugin folder, then XnView MP. Without a tool the automatic conversion stays off.");
+            TextureCacheBc7Convert.DiagnoseLayout = Config.Bind("TextureLoading", "DiagnoseBc7CacheLayout", true,
+                "One-off startup probe that asks Unity for the storage size of BC7 chains on non multiple-of-four dimensions and logs it. Set false once that layout question is settled.");
+            TextureCacheBc7Convert.IdleSeconds = Config.Bind("TextureLoading", "Bc7IdleSeconds", 180,
+                "Seconds without any input before a background re-encode may start. 0 disables the in-session path so conversion only happens after the game exits.");
+            TextureCacheBc7Convert.ConvertOnExit = Config.Bind("TextureLoading", "Bc7ConvertOnExit", true,
+                "Hand the entries collected this session to a hidden helper that converts them one at a time after the game has exited.");
             TextureDecodeBudget.Enabled = Config.Bind(
                 "TextureLoading", "DecodeBudgetEnabled", true,
                 "Bound estimated pending/decoding/upload-wait texture bytes; preserves image quality.");
@@ -464,14 +458,33 @@ namespace Quest3TriggerUI
             TextureOrphanSweeper.MaxPerSweep = Config.Bind(
                 "Wardrobe", "TexOrphanMaxPerSweep", 16,
                 "Max orphan cache entries released per 10s sweep — spreads the work.");
+            SceneOrphanSweep.SliceMs = Config.Bind(
+                "Wardrobe", "OrphanSweepSliceMs", 3f,
+                "Per-frame CPU budget (ms) for the post-scene-load orphan sweep. It used to run every leg inside one frame (measured 10.8s freeze); the same work is now spread across frames under this budget. Range 0.5 (lightest, slowest) to 16 (heaviest, fastest).");
+            SceneOrphanSweep.SweepObjects = Config.Bind(
+                "Wardrobe", "OrphanSweepObjects", false,
+                "Include the GameObject census leg of the post-scene-load orphan sweep (groups inactive (Clone) trees, feeds the clone-kill pass). Measured 16.1s of a 17.7s sweep with zero kills, so it is off unless a clone leak is suspected.");
+            SceneOrphanSweep.MeasureGC = Config.Bind(
+                "Wardrobe", "OrphanSweepMeasureGC", false,
+                "The sweep additionally forces a full GC just to log liveMiB vs retained heap. Off: the same numbers come from the scheduled PresetSweepGate GC without a multi-second collect inside the sweep.");
+            DecodedBufferPool.Enabled = Config.Bind(
+                "Wardrobe", "DecodedBufferPool", true,
+                "Pool QueuedImage.raw decode buffers by exact size — reuses the arrays instead of allocating ~1.5GB of throwaway managed bytes per person preset load.");
+            DecodedBufferPool.BudgetMiB = Config.Bind(
+                "Wardrobe", "DecodedBufferPoolBudgetMiB", 1536,
+                "Total byte cap for pooled decode buffers; excess arrays are left to GC.");
+            TextureCacheByteReuse.Enabled = Config.Bind(
+                "TextureLoading", "ReuseCachedTextureBytes", true,
+                "Read a completed .vamcache through the exact-length decode pool instead of a fresh allocation. A preset switch served entirely from the texture cache still allocated 0.4-1.4GB of throwaway managed bytes per cycle (texture-budget managedDecodeMiB). Any deviation from the native read falls back to the native read.");
+            TextureCacheByteReuse.MinBytesKB = Config.Bind(
+                "TextureLoading", "ReuseCachedTextureBytesMinKB", 256,
+                "Smallest cached texture (KB) worth pooling; thumbnails, meta files and other small reads stay on the native path.");
             WardrobeJanitor.PurgeMorphDeltas = Config.Bind(
                 "Wardrobe", "PurgeMorphDeltas", true,
                 "The post-load purge also calls UnloadRuntimeMorphDeltas (the same call VaM's optimize-memory makes) to drop the previous preset's runtime morph deltas.");
             _memSnapshotEntry = Config.Bind(
                 "Diagnostics", "MemorySnapshot", false,
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
-            Config.Bind("Diagnostics", "PreheatPersonsNow", false,
-                "One-shot: warm the disk texture cache (.vamcache) for every preset in the preset dock's 人物 tab; auto-resets, equivalent to the dock's 预热 row.");
             Config.Bind("Diagnostics", "EyeMaterialSnapshot", false,
                 "Read-only one-shot eye/lash material bindings in the log; auto-resets, no scene changes.");
             _memWatchEntry = Config.Bind(
@@ -484,14 +497,21 @@ namespace Quest3TriggerUI
             PresetDeltaApply.Install();
             PresetHairRenderBatch.Install();
             PresetSweepGate.Install();
-            ResourceLedger.Install();
             TextureUploadReuse.Install();
             TextureInFlight.Install();
             TextureCompletionBudget.Install();
             TextureMetadataReuse.Install();
             TextureScratchLifetime.Install();
             TextureCacheWriteBudget.Install();
+            TextureCacheBc7Convert.Install();
+            CharacterLoadTrace.Enabled = Config.Bind("Diagnostics", "TraceCharacterLoads", true,
+                "Write one Quest3TriggerUI.charactertrace_<stamp>.tsv window per person/appearance preset load: every phase the plugin and the loader log, plus hitches and memory, keyed by request id.");
+            CharacterLoadTrace.Install();
+            LongFrameWatch.Install();
             TextureDecodeBudget.ColdEstimate = ColdTextureHeader.Estimate;
+            GenBridge.AdoptPreviousGeneration();
+            DecodedBufferPool.Adopt();
+            DecodedBufferPool.Publish();
             PinyinEngine.Initialize();
             PinyinEngine.EnsureLoaded();   // background — 48MB dict parse
             _auxiliaryUiView = VrAuxiliaryUiView.Begin();
@@ -546,7 +566,7 @@ namespace Quest3TriggerUI
                 "title bar=hold-to-move; " +
                 "scene load=staged timing + dependency cache + in-process switch; " +
                 "keys=in-process Unity Input bridge + VaM window; VR Chinese IME=pinyin composition + clickable candidates; " +
-                "desktop focus independent; preheat=headless startup (catalogue builders + 3-person clone pool); no SteamVR dependency.");
+                "desktop focus independent; preheat=headless startup (person prefab + morph-bank catalogue caches, no clone pool); no SteamVR dependency.");
             RuntimeReady = true;
             _duplicateSweepFrame = Time.frameCount + 2;
             Logger.LogInfo("payload awake asm=" + GetType().Assembly.GetHashCode() +
@@ -555,7 +575,8 @@ namespace Quest3TriggerUI
 
         private void RemoveDuplicateRuntimeInstances()
         {
-            int removed = 0;
+            int removed = 0, staleObjects = 0;
+            var staleGos = new System.Collections.Generic.HashSet<GameObject>();
             MonoBehaviour[] behaviours = Resources.FindObjectsOfTypeAll<MonoBehaviour>();
             for (int i = 0; i < behaviours.Length; i++)
             {
@@ -563,24 +584,201 @@ namespace Quest3TriggerUI
                 if (candidate == null || ReferenceEquals(candidate, this))
                     continue;
                 Type t = candidate.GetType();
-                // Versioned payloads name the runtime
-                // Quest3TriggerUI.v<tag>.Quest3TriggerUIPlugin; byte-loaded
-                // duplicates of any generation must die, including the
-                // legacy flat-name class and the same-name bridge shim
-                // emitted by other assemblies.
-                if (t.Name != "Quest3TriggerUIPlugin" || t.Namespace == null ||
+                if (t.Namespace == null ||
                     !t.Namespace.StartsWith("Quest3TriggerUI") ||
                     t.Assembly == GetType().Assembly)
                     continue;
                 try { if (!string.IsNullOrEmpty(t.Assembly.Location)) continue; }
                 catch { }
-
-                UnityEngine.Object.DestroyImmediate(candidate);
-                removed++;
+                // Runtime instances live on the shared loader gameObject —
+                // destroy the component only, never the host object.
+                if (t.Name == "Quest3TriggerUIPlugin")
+                {
+                    UnityEngine.Object.DestroyImmediate(candidate);
+                    removed++;
+                    continue;
+                }
+                // GenAnchor carries the cross-generation handoff store — it
+                // must survive this sweep or the shared dictionaries die
+                // with its GameObject. GenBridge.EnsureAnchor destroys the
+                // old component itself once the fields are harvested.
+                if (t.Name == "GenAnchor") continue;
+                // Leftover UI objects from older payload generations (dock
+                // cells, browser rows, keyboard keys) pin their whole byte-
+                // loaded assembly — statics, pooled buffers, thumbnails — in
+                // memory forever, since Mono can never unload it. Destroying
+                // the gameObject releases the entire subtree.
+                //
+                // But only when the host carries nobody else's scripts:
+                // a stale tag component sitting on a VaM/plugin-owned
+                // object (e.g. our drag markers on BrowserAssist buttons)
+                // must come off alone — destroying the host would leave
+                // the owner's managed collections pointing at dead
+                // objects, which is exactly the BA row-refactor NRE.
+                GameObject host = candidate.gameObject;
+                if (host != null && SceneOrphanSweep.HostHasAlienScript(host))
+                {
+                    UnityEngine.Object.DestroyImmediate(candidate);
+                    removed++;
+                }
+                else if (host != null) staleGos.Add(host);
             }
+            foreach (GameObject go in staleGos)
+            {
+                UnityEngine.Object.Destroy(go);
+                staleObjects++;
+            }
+            ClearForeignPools();
+            SweepStaleGenerations();
             if (removed > 0)
                 Logger.LogWarning("Removed " + removed +
                     " duplicate Quest3TriggerUI runtime instance(s) and their overlapping canvases.");
+            if (staleObjects > 0)
+                Logger.LogInfo("Destroyed " + staleObjects +
+                    " stale UI objects from older payload generations (frees their assemblies' statics).");
+        }
+
+        // Older payload assemblies can never unload under Mono, but their
+        // static pools still pin the buffers they hold. Ask each foreign
+        // DecodedBufferPool to drop its arrays via reflection.
+        private void ClearForeignPools()
+        {
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (assembly == GetType().Assembly) continue;
+                Type pool;
+                try { pool = assembly.GetType("Quest3TriggerUI.DecodedBufferPool"); }
+                catch { continue; }
+                if (pool == null)
+                {
+                    Type[] types;
+                    try { types = assembly.GetTypes(); }
+                    catch { continue; }
+                    for (int i = 0; i < types.Length; i++)
+                    {
+                        Type t = types[i];
+                        if (t != null && t.Name == "DecodedBufferPool" &&
+                            t.Namespace != null && t.Namespace.StartsWith("Quest3TriggerUI"))
+                        { pool = t; break; }
+                    }
+                }
+                if (pool == null) continue;
+                MethodInfo clear = pool.GetMethod("Clear",
+                    BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                try { if (clear != null) clear.Invoke(null, null); } catch { }
+            }
+        }
+
+        // Byte-loaded payload assemblies can never unload under Mono, so each
+        // hot-load generation leaks whatever still references it. Two pins are
+        // recoverable in-process:
+        //   1. Harmony patches installed by dead generations — the global patch
+        //      registry keeps their HarmonyMethod delegates, which pin the old
+        //      assembly's code AND keep executing it (double handlers).
+        //   2. Writable reference-type static fields — pools, thumbnail
+        //      caches, listener lists, coroutine state — that survive even
+        //      after every GameObject from that generation is destroyed.
+        // Remove stale patches first so no dead code runs after its statics
+        // are nulled. JIT code and metadata still leak (irreducible) — that is
+        // why the HotLoader caps generations per session.
+        private void SweepStaleGenerations()
+        {
+            Assembly current = GetType().Assembly;
+            var stale = new System.Collections.Generic.HashSet<Assembly>();
+            foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (assembly == current) continue;
+                try { if (!string.IsNullOrEmpty(assembly.Location)) continue; }
+                catch { continue; }
+                Type[] types;
+                try { types = assembly.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types; }
+                catch { continue; }
+                if (types == null) continue;
+                for (int i = 0; i < types.Length; i++)
+                {
+                    Type t = types[i];
+                    if (t != null && t.Namespace != null &&
+                        t.Namespace.StartsWith("Quest3TriggerUI"))
+                    { stale.Add(assembly); break; }
+                }
+            }
+            if (stale.Count == 0) return;
+
+            int patches = 0;
+            Harmony sweeper = null;
+            try { sweeper = new Harmony(PluginGuid + ".stale-sweep"); }
+            catch { }
+            if (sweeper != null)
+            {
+                foreach (MethodBase original in Harmony.GetAllPatchedMethods())
+                {
+                    Patches info;
+                    try { info = Harmony.GetPatchInfo(original); }
+                    catch { continue; }
+                    if (info == null) continue;
+                    patches += UnpatchStale(sweeper, original, info.Prefixes, stale);
+                    patches += UnpatchStale(sweeper, original, info.Postfixes, stale);
+                    patches += UnpatchStale(sweeper, original, info.Transpilers, stale);
+                    patches += UnpatchStale(sweeper, original, info.Finalizers, stale);
+                }
+            }
+
+            int fields = 0;
+            foreach (Assembly dead in stale)
+            {
+                Type[] types;
+                try { types = dead.GetTypes(); }
+                catch (ReflectionTypeLoadException e) { types = e.Types; }
+                catch { continue; }
+                if (types == null) continue;
+                for (int i = 0; i < types.Length; i++)
+                {
+                    Type t = types[i];
+                    if (t == null) continue;
+                    FieldInfo[] statics;
+                    try
+                    {
+                        statics = t.GetFields(BindingFlags.Static |
+                            BindingFlags.Public | BindingFlags.NonPublic);
+                    }
+                    catch { continue; }
+                    for (int j = 0; j < statics.Length; j++)
+                    {
+                        FieldInfo f = statics[j];
+                        if (f.IsLiteral || f.FieldType.IsValueType) continue;
+                        try
+                        {
+                            if (f.GetValue(null) == null) continue;
+                            f.SetValue(null, null);
+                            fields++;
+                        }
+                        catch { }
+                    }
+                }
+            }
+            Logger.LogInfo("stale payload sweep: removed " + patches +
+                " Harmony patch(es), nulled " + fields + " static field(s) on " +
+                stale.Count + " dead generation(s).");
+        }
+
+        private static int UnpatchStale(Harmony sweeper, MethodBase original,
+            System.Collections.IEnumerable list,
+            System.Collections.Generic.HashSet<Assembly> stale)
+        {
+            int n = 0;
+            if (list == null) return 0;
+            foreach (object entry in list)
+            {
+                Patch patch = entry as Patch;
+                if (patch == null) continue;
+                MethodInfo pm;
+                try { pm = patch.PatchMethod; } catch { continue; }
+                if (pm == null || pm.DeclaringType == null) continue;
+                if (!stale.Contains(pm.DeclaringType.Assembly)) continue;
+                try { sweeper.Unpatch(original, pm); n++; } catch { }
+            }
+            return n;
         }
 
         // A crash or reload mid-recording destroys this runtime but leaves
@@ -648,6 +846,7 @@ namespace Quest3TriggerUI
         private void Update()
         {
             LoadAttributionProbe.BeginFrame();
+            LiveSetCensus.BeginFrame();
             long __frameBudgetT0 = FrameBudgetProbe.MarkUpdateStart();
             try
             {
@@ -669,7 +868,6 @@ namespace Quest3TriggerUI
             SceneLoadAccelerator.Tick();
             SceneResyncCoalesce.Tick();
             ScenePreheat.Tick();
-            PresetPreheat.Tick();
             LoadAttributionProbe.Mark(2);
             if (_duplicateSweepFrame >= 0 && Time.frameCount >= _duplicateSweepFrame)
             {
@@ -714,7 +912,7 @@ namespace Quest3TriggerUI
 
             HairPerfProbe.Tick();
             LoadAttributionProbe.Mark(3);
-            AtomClonePool.Tick();
+
             BodySmootherCompatibility.Tick();
             // Config file self-watch: the hot-loaded payload can't rely on
             // BepInEx's FileSystemWatcher (observed not firing for live
@@ -755,9 +953,14 @@ namespace Quest3TriggerUI
             AudioCacheJanitor.Tick();
             LoadAttributionProbe.Mark(4);
             WardrobeJanitor.Tick();
+            GenBridge.Tick();
             LoadAttributionProbe.Mark(5);
             PresetSweepGate.Tick();
-            ResourceLedger.Tick();
+            SceneLoadAccelerator.RetryPendingBrackets();
+            SceneOrphanSweep.Tick();
+            TextureCacheBc7Convert.Tick();
+            CharacterLoadTrace.Tick();
+            LongFrameWatch.Tick();
             LoadAttributionProbe.Mark(6);
 
             if (!InputRuntimeActive || SuperController.singleton == null)
@@ -887,8 +1090,7 @@ namespace Quest3TriggerUI
                 bool snap = text.Contains("MemorySnapshot = true");
                 bool eye = text.Contains("EyeMaterialSnapshot = true");
                 bool evict = text.Contains("AudioCacheEvictNow = true");
-                bool preheat = text.Contains("PreheatPersonsNow = true");
-                if (!snap && !evict && !eye && !preheat)
+                if (!snap && !evict && !eye)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -898,8 +1100,6 @@ namespace Quest3TriggerUI
                 text = text.Replace(
                     "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
                 text = text.Replace("EyeMaterialSnapshot = true", "EyeMaterialSnapshot = false");
-                text = text.Replace("PreheatPersonsNow = true",
-                    "PreheatPersonsNow = false");
                 // GetBytes re-emits the BOM because the decoded string
                 // still carries the \uFEFF character.
                 System.IO.File.WriteAllBytes(
@@ -909,8 +1109,6 @@ namespace Quest3TriggerUI
                 if (snap) MemoryProbe.Dump();
                 if (eye) CharacterMaterialProbe.Dump();
                 if (evict) AudioCacheJanitor.SweepNow();
-                if (preheat) PresetPreheat.Start(
-                    UiAssistHudLink.PersonPresetPaths());
             }
             catch (Exception ex)
             {
@@ -1098,6 +1296,11 @@ namespace Quest3TriggerUI
             }
         }
 
+        private void OnApplicationQuit()
+        {
+            TextureCacheBc7Convert.OnExit();
+        }
+
         private void OnApplicationFocus(bool focused)
         {
             if (!focused && _keyboard != null)
@@ -1118,7 +1321,6 @@ namespace Quest3TriggerUI
             BodySmootherCompatibility.Shutdown();
             PresetDeltaApply.Shutdown();
             PresetHairRenderBatch.Shutdown();
-            ResourceLedger.Shutdown();
             PresetSweepGate.Shutdown();
             TextureUploadReuse.Shutdown();
             TextureInFlight.Shutdown();
@@ -1126,7 +1328,19 @@ namespace Quest3TriggerUI
             TextureMetadataReuse.Shutdown();
             TextureScratchLifetime.Shutdown();
             TextureCacheWriteBudget.Shutdown();
+            TextureCacheBc7Convert.Shutdown();
+            CharacterLoadTrace.Shutdown();
+            LongFrameWatch.Shutdown();
             LoadAttributionProbe.Shutdown();
+            TextureDecodeBudget.Shutdown();
+            TextureOrphanSweeper.Shutdown();
+            GpuResourceProbe.Shutdown();
+            BumpNormalRowConverter.Shutdown();
+            PresetCleanupCoalescer.Shutdown();
+            PresetInstanceReuse.Shutdown();
+            StaleTextureRequestGuard.Shutdown();
+            VrPresetBrowser.Shutdown();
+            VrTextInputBridge.Shutdown();
             // An undestroyed recorder outlives this runtime through the
             // AudioListener tap and writes to its .audio.wav forever.
             if (VrVideoRecorder.Current != null)

@@ -120,6 +120,9 @@ namespace Quest3TriggerUI
             RectTransform content = fav ? _favCells : _pdCells;
             RectTransform dock = fav ? _favDock : _pdDock;
             if (view == null || content == null || dock == null) return;
+            // Both docks share the left-edge slot in merged mode — the
+            // parked one's rect still hit-tests, so it must not scroll.
+            if (!dock.gameObject.activeInHierarchy) return;
             float viewH = fav ? FavGridH : PdGridH;
             float contentH = fav ? _favContentH : _pdContentH;
             float scrollY = fav ? _favScrollY : _pdScrollY;

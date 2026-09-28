@@ -46,6 +46,17 @@ namespace Quest3TriggerUI
         internal static bool SceneLoadActive { get; private set; }
         internal static bool DependenciesWarm { get; private set; }
 
+        // 窗口之外读它：主线程此刻最内层停在哪个区间（后台帧看门狗用）。
+        internal static string CurrentBracket { get { return _bracketNow; } }
+
+        // 报完一次卡顿就清空深度：同一次冻结里的采样已经记过了，留着可能让
+        // 后续“谁卡住了”指向一个早就返回的方法（抛异常的方法不会走 postfix）。
+        internal static void ResetBracketState()
+        {
+            _bracketDepth = 0;
+            _bracketNow = "";
+        }
+
         // Exposed so the preheat pass can name the scene it is standing on.
         internal static string CurrentScenePath { get { return _loadPath; } }
 
@@ -205,6 +216,20 @@ namespace Quest3TriggerUI
             "MVR.FileManagement.FileManager|FindVarDirectories",
             "MVR.FileManagement.FileManager|GetDirectoryEntry",
             "MVR.FileManagement.FileManager|FindAllFiles",
+            // 第五趟：两窗里各剩两处 2.1~2.6s 的（未挂区间的代码里）——把最可能的
+            // 归属者一并挂上：原生 UUA 本体（MarkObjects 在 AsyncOperation 里）、
+            // 贴图完成/上传主线程段、Texture2D 落地、以及"帧到底是谁的"这几个
+            // 候选（VaM 主 Update / 三个常驻第三方插件的 Update）。
+            "UnityEngine.Resources|UnloadUnusedAssets",
+            "ImageLoaderThreaded|PostProcessCompletedImages",
+            "ImageLoaderThreaded|Finish",
+            "ImageLoaderThreaded+QueuedImage|Process",
+            "ImageLoaderThreaded+QueuedImage|Finish",
+            "MeshVR.MemoryOptimizer|OptimizeMemoryUsage",
+            "SuperController|Update",
+            "JayJayWon.UIAssist|Update",
+            "JayJayWon.BrowserAssist|Update",
+            "AUI.AlternateUI|Update",
         };
         private static readonly object _bracketLock = new object();
         private static readonly Dictionary<string, BracketStat> _bracketStats =
@@ -228,6 +253,13 @@ namespace Quest3TriggerUI
         private static uint _mainOsThreadId;
         private static volatile string _bracketNow = "";
         private static int _bracketDepth;
+        // 名字必须按“此刻仍在执行的最内层区间”给出：出了内层要退回外层。只留
+        // 一个名字 + 一个深度时，内层退出后名字留在原地，外层区间里任何未挂
+        // 区间的工作都会被算到刚返回的那个内层头上（实测把插件 Update 后半段
+        // 的长帧全记成了开头那次 Resync::Tick）。栈定长预分配，不计时、不占锁。
+        private const int BracketStackCap = 64;
+        private static readonly string[] _bracketStack =
+            new string[BracketStackCap];
         private static readonly Dictionary<string, int> _stallBrackets =
             new Dictionary<string, int>();
         private static readonly Dictionary<string, int> _stallWaits =
@@ -321,7 +353,7 @@ namespace Quest3TriggerUI
                         postfix: new HarmonyMethod(typeof(SceneLoadAccelerator)
                             .GetMethod("AtomPostfix", All)));
                 }
-                int bracketCount = InstallBrackets();
+                int bracketCount = InstallBrackets() + InstallPluginBrackets();
                 _installed = true;
                 Log("已挂载场景加载计时与依赖缓存（Load 前置/终结）"
                     + (perfLog != null
@@ -333,7 +365,7 @@ namespace Quest3TriggerUI
                     + (atomMoveNext != null
                         ? " + 并行建体分段计时"
                         : "（未找到并行建体状态机，该项关闭）")
-                    + " + 重阶段区间计时 " + bracketCount + " 处");
+                    + " + 重阶段区间计时 " + bracketCount + " 处（含插件临界区）");
                 if (perfLog != null && perfPrefix != null)
                     RunPerfLogSelfTest(perfLog, launchPerfLog);
             }
@@ -415,6 +447,7 @@ namespace Quest3TriggerUI
             SceneLoadActive = false;
             _lastLoadMs = (long)((now - _loadStart) * 1000f);
             ScenePreheat.NoteLoadCompleted(_loadPath, _lastLoadMs);
+            SceneOrphanSweep.OnSceneLoaded();
             Log("场景加载完成 " + (_lastLoadMs / 1000f).ToString("F1") + "s"
                 + (DependenciesWarm ? "（依赖缓存命中）" : "")
                 + "，未重启游戏");
@@ -645,47 +678,286 @@ namespace Quest3TriggerUI
             return split <= 0 ? target : target.Substring(0, split);
         }
 
+        // Third-party plugins (UIAssist / BrowserAssist / AlternateUI) are not
+        // loaded yet when our Awake runs on a cold start, so their Update
+        // brackets used to be lost for the whole session — they only ever
+        // appeared after a hot reload. Misses are kept here and retried once a
+        // second for the first two minutes of a session instead.
+        private static readonly List<string> _pendingBrackets =
+            new List<string>();
+        private static float _bracketRetryAt;
+        private static float _bracketRetryUntil = -1f;
+
+        internal static void RetryPendingBrackets()
+        {
+            if (_pendingBrackets.Count == 0) return;
+            float now = Time.realtimeSinceStartup;
+            if (_bracketRetryUntil < 0f) _bracketRetryUntil = now + 120f;
+            if (now > _bracketRetryUntil)
+            {
+                Log("区间延迟挂载放弃："
+                    + _pendingBrackets.Count + " 处目标始终未出现");
+                _pendingBrackets.Clear();
+                return;
+            }
+            if (now < _bracketRetryAt) return;
+            _bracketRetryAt = now + 1f;
+            int added = 0;
+            string got = "";
+            for (int i = _pendingBrackets.Count - 1; i >= 0; i--)
+            {
+                int r = InstallBracket(_pendingBrackets[i], false);
+                if (r == 0) continue;
+                if (r > 0) { added += r; got += " " + _pendingBrackets[i]; }
+                _pendingBrackets.RemoveAt(i);
+            }
+            if (added > 0)
+                Log("区间延迟挂载 " + added
+                    + " 处（第三方插件已加载）：" + got);
+        }
+
         private static int InstallBrackets()
         {
             int installed = 0;
+            _pendingBrackets.Clear();
             foreach (string target in BracketTargets)
+            {
+                int r = InstallBracket(target, true);
+                if (r > 0) installed += r;
+                else if (r == 0) _pendingBrackets.Add(target);
+            }
+            return installed;
+        }
+
+        // 0 = type not loaded yet (keep for a later retry), -1 = type exists
+        // but the method does not (permanent), >0 = methods patched.
+        private static int InstallBracket(string target, bool initial)
+        {
+            try
+            {
+                int split = target.IndexOf('|');
+                if (split <= 0) return -1;
+                Type type = typeof(SuperController).Assembly.GetType(
+                    typeNameOf(target));
+                if (type == null)
+                {
+                    foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+                    {
+                        try { type = asm.GetType(typeNameOf(target)); } catch { type = null; }
+                        if (type != null) break;
+                    }
+                }
+                if (type == null)
+                {
+                    if (initial) Log("区间目标类型未找到 " + typeNameOf(target));
+                    return 0;
+                }
+                string methodName = target.Substring(split + 1);
+                int hits = 0;
+                MethodInfo pre = typeof(SceneLoadAccelerator)
+                    .GetMethod("BracketPrefix", All);
+                MethodInfo post = typeof(SceneLoadAccelerator)
+                    .GetMethod("BracketPostfix", All);
+                MethodInfo fin = typeof(SceneLoadAccelerator)
+                    .GetMethod("BracketFinalizer", All);
+                foreach (MethodInfo method in type.GetMethods(All))
+                {
+                    if (method.Name != methodName) continue;
+                    hits++;
+                    _bracketNames[method] = type.Name + "::" + methodName;
+                    if (IsSlowWatch(target)) _slowMethods.Add(method);
+                    _harmony.Patch(method,
+                        prefix: new HarmonyMethod(pre),
+                        postfix: new HarmonyMethod(post),
+                        finalizer: new HarmonyMethod(fin));
+                }
+                if (hits == 0)
+                {
+                    if (initial) Log("区间目标方法未找到 " + target);
+                    return -1;
+                }
+                return hits;
+            }
+            catch (Exception e)
+            {
+                if (initial)
+                    Log("区间计时挂载失败 " + target + "：" + e.Message);
+                return -1;
+            }
+        }
+
+        // 帧看门狗抓到的 2.6s / 6.9s / 3.5s 停顿全落在（未挂区间的代码里），而上面
+        // 那张区间表只认原生方法。这里把插件自己的贴图管线、清扫、预设恢复与 UI
+        // 临界区按同一套 prefix/postfix 挂上，名字带“插件::”前缀以示来源；只维护
+        // 名字与深度，不计时、不占锁，与原生区间共用同一套跟踪。
+        private static readonly string[] PluginBracketTargets = new string[]
+        {
+            "Quest3TriggerUIPlugin|Update",
+            "TextureDecodeBudget|BeforeDispatch",
+            "TextureDecodeBudget|AfterDispatch",
+            "TextureDecodeBudget|BeforeFinish",
+            "TextureDecodeBudget|RequestEstimate",
+            "TextureDecodeBudget|Admit",
+            "TextureDecodeBudget|MarkBatch",
+            "TextureCacheEstimate|TryEstimate",
+            "TextureCacheEstimate|TryDxtBytes",
+            "ColdTextureHeader|Estimate",
+            "TextureCompletionBudget|Allow",
+            "TextureCompletionBudget|Charge",
+            "TextureCacheWriteBudget|Queue",
+            "TextureCacheWriteBudget|ReleaseUploadedRaw",
+            "TextureMetadataReuse|ReadMeta",
+            "TextureMetadataReuse|ReadText",
+            "TextureMetadataReuse|Remember",
+            "TextureMetadataReuse|Prune",
+            "TextureUploadReuse|BeforeFinish",
+            "TextureInFlight|Before",
+            "TextureCacheByteReuse|ReadCachedBytes",
+            "StaleTextureRequestGuard|BeforeFinish",
+            "StaleTextureRequestGuard|CanDiscard",
+            "TextureOrphanSweeper|Tick",
+            "TextureOrphanSweeper|BeforeCallback",
+            "DecodedBufferPool|Publish",
+            "DecodedBufferPool|Adopt",
+            "DecodedBufferPool|ReturnArray",
+            "DecodedBufferPool|SweepIdle",
+            "TextureCacheBc7Convert|Tick",
+            "TextureCacheBc7Convert|Observe",
+            "WardrobeJanitor|Tick",
+            "WardrobeJanitor|StartScan",
+            "WardrobeJanitor|ScanSlice",
+            "WardrobeJanitor|Advance",
+            "WardrobeJanitor|Collect",
+            "WardrobeJanitor|DropStale",
+            "WardrobeJanitor|DrainPending",
+            "WardrobeJanitor|DrainPurge",
+            "WardrobeJanitor|KickUnusedAssets",
+            "WardrobeJanitor|BeforePresetTransaction",
+            "PresetSweepGate|Tick",
+            "PresetSweepGate|Begin",
+            "PresetSweepGate|Collect",
+            "PresetSweepGate|RunGc",
+            "PresetSweepGate|QueueGc",
+            "PresetSweepGate|PruneTickets",
+            "PresetSweepGate|VerifyTransaction",
+            "SceneOrphanSweep|Tick",
+            "AudioCacheJanitor|Tick",
+            "AudioCacheJanitor|SweepNow",
+            "AudioCacheJanitor|Sweep",
+            "MemoryProbe|Snapshot",
+            "MemoryProbe|Dump",
+            "LiveSetCensus|BeginFrame",
+            "LiveSetCensus|Step",
+            "SceneQuickActions|LoadFullAppearancePreset",
+            "SceneQuickActions|LoadAppearanceWithoutClothing",
+            "SceneQuickActions|LoadExtractedPreset",
+            "SceneQuickActions|LoadSkinPreset",
+            "SceneQuickActions|LoadHairPreset",
+            "SceneQuickActions|LoadEyePreset",
+            "PresetInstanceReuse|BeforeRestore",
+            "PresetInstanceReuse|BeforeReset",
+            "PresetInstanceReuse|RestoreFlags",
+            "PresetDeltaApply|Begin",
+            "PresetDeltaApply|BeginReset",
+            "PresetDeltaApply|AfterActivate",
+            "PresetHairRenderBatch|Begin",
+            "SceneResyncCoalesce|Tick",
+            "SceneResyncCoalesce|ResyncPrefix",
+            "SceneResyncCoalesce|Settle",
+            "UiAssistHudLink|GcWatchPrefix",
+            "UiAssistHudLink|AceProbePrefix",
+            "UiAssistHudLink|AceProbePostfix",
+            "UiAssistHudLink|DedupeAceScrollbar",
+            "UiAssistHudLink|PruneDeadAceItems",
+            "LoadAttributionProbe|BeginFrame",
+            "LoadAttributionProbe|EndFrame",
+            "LoadAttributionProbe|CensusSlice",
+        };
+
+        // 名字太长会把看门狗那一行撑爆，类名缩成短标签。
+        private static string PluginShortType(string name)
+        {
+            switch (name)
+            {
+                case "AudioCacheJanitor": return "AudioJan";
+                case "ColdTextureHeader": return "ColdHdr";
+                case "DecodedBufferPool": return "DecPool";
+                case "LiveSetCensus": return "Census";
+                case "LoadAttributionProbe": return "LoadAttr";
+                case "MemoryProbe": return "MemProbe";
+                case "PresetDeltaApply": return "PresetDelta";
+                case "PresetHairRenderBatch": return "HairBatch";
+                case "PresetInstanceReuse": return "PresetReuse";
+                case "PresetSweepGate": return "Sweep";
+                case "Quest3TriggerUIPlugin": return "Main";
+                case "SceneOrphanSweep": return "OrphanSweep";
+                case "SceneQuickActions": return "QuickAct";
+                case "SceneResyncCoalesce": return "Resync";
+                case "StaleTextureRequestGuard": return "TStale";
+                case "TextureCacheBc7Convert": return "Bc7Conv";
+                case "TextureCacheByteReuse": return "TCacheBytes";
+                case "TextureCacheEstimate": return "TCacheEst";
+                case "TextureCacheWriteBudget": return "TWrite";
+                case "TextureCompletionBudget": return "TCompl";
+                case "TextureDecodeBudget": return "TDB";
+                case "TextureInFlight": return "TInFlight";
+                case "TextureMetadataReuse": return "TMeta";
+                case "TextureOrphanSweeper": return "TOrphan";
+                case "TextureUploadReuse": return "TUpload";
+                case "UiAssistHudLink": return "HudLink";
+                case "WardrobeJanitor": return "Wardrobe";
+                default: return name;
+            }
+        }
+
+        private static int InstallPluginBrackets()
+        {
+            int installed = 0;
+            Assembly self = typeof(SceneLoadAccelerator).Assembly;
+            MethodInfo pre = typeof(SceneLoadAccelerator)
+                .GetMethod("BracketPrefix", All);
+            MethodInfo post = typeof(SceneLoadAccelerator)
+                .GetMethod("BracketPostfix", All);
+            MethodInfo fin = typeof(SceneLoadAccelerator)
+                .GetMethod("BracketFinalizer", All);
+            foreach (string target in PluginBracketTargets)
             {
                 try
                 {
                     int split = target.IndexOf('|');
                     if (split <= 0) continue;
-                    Type type = typeof(SuperController).Assembly.GetType(
-                        typeNameOf(target));
+                    // 载荷每次构建都会把命名空间改写成 Quest3TriggerUI.v<tag>，
+                    // 所以目标类型名只能从自身类型反推，不能写死字符串。
+                    string ns = typeof(SceneLoadAccelerator).FullName;
+                    int lastDot = ns.LastIndexOf('.');
+                    if (lastDot > 0) ns = ns.Substring(0, lastDot);
+                    Type type = self.GetType(
+                        ns + "." + target.Substring(0, split));
                     if (type == null)
                     {
-                        foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
-                        {
-                            try { type = asm.GetType(typeNameOf(target)); } catch { type = null; }
-                            if (type != null) break;
-                        }
+                        Log("插件区间目标类型未找到 " + target);
+                        continue;
                     }
-                    if (type == null) { Log("区间目标类型未找到 " + typeNameOf(target)); continue; }
                     string methodName = target.Substring(split + 1);
                     int hits = 0;
                     foreach (MethodInfo method in type.GetMethods(All))
                     {
                         if (method.Name != methodName) continue;
                         hits++;
-                        MethodInfo pre = typeof(SceneLoadAccelerator)
-                            .GetMethod("BracketPrefix", All);
-                        MethodInfo post = typeof(SceneLoadAccelerator)
-                            .GetMethod("BracketPostfix", All);
-                        _bracketNames[method] = type.Name + "::" + methodName;
+                        _bracketNames[method] = "插件::"
+                            + PluginShortType(type.Name) + "::" + methodName;
                         _harmony.Patch(method,
                             prefix: new HarmonyMethod(pre),
-                            postfix: new HarmonyMethod(post));
+                            postfix: new HarmonyMethod(post),
+                            finalizer: new HarmonyMethod(fin));
                         installed++;
                     }
-                    if (hits == 0) Log("区间目标方法未找到 " + target);
+                    if (hits == 0)
+                        Log("插件区间目标方法未找到 " + target);
                 }
                 catch (Exception e)
                 {
-                    Log("区间计时挂载失败 " + target + "：" + e.Message);
+                    Log("插件区间计时挂载失败 " + target + "：" + e.Message);
                 }
             }
             return installed;
@@ -697,41 +969,139 @@ namespace Quest3TriggerUI
             try { return GetCurrentThreadId() == _mainOsThreadId; } catch { return true; }
         }
 
+        // 帧看门狗的 inner= 只回答"主线程当时停在哪"，不回答"停了多久"：
+        // 换人窗口里连着 5 次 2.3~2.6s 的长帧都报同一个方法，但没有任何
+        // per-call 数字能证明它真的执行了那么久（也可能只是采样恰好落在里面）。
+        // 下面给反复出现在长帧归因里的少数方法单独记一次墙钟——不看加载窗口、
+        // 始终开着，单次超过阈值就单独打一行，把"真的慢"和"只是被采样到"分开。
+        private static readonly string[] SlowWatch = new string[]
+        {
+            "ImageLoaderThreaded+QueuedImage|Finish",
+            "ImageLoaderThreaded|PostProcessCompletedImages",
+            "ImageLoaderThreaded|Finish",
+            "DAZClothingItem|InitInstance",
+            "DAZClothingItem|RefreshClothingItems",
+            "UnityEngine.Resources|UnloadUnusedAssets",
+            "Atom|Restore",
+            "Atom|LateRestore",
+            "DAZCharacterSelector|InitClothingItems",
+            "DAZCharacterSelector|SyncCustomItems",
+            "MeshVR.MemoryOptimizer|OptimizeMemoryUsage",
+        };
+        private const float SlowCallMs = 250f;
+        private const int SlowCallCap = 300;
+        private static readonly HashSet<MethodBase> _slowMethods =
+            new HashSet<MethodBase>();
+        private static readonly Dictionary<MethodBase, float> _slowEnter =
+            new Dictionary<MethodBase, float>();
+        private static readonly object _slowLock = new object();
+        private static int _slowCallReports;
+
+        private static bool IsSlowWatch(string target)
+        {
+            for (int i = 0; i < SlowWatch.Length; i++)
+                if (SlowWatch[i] == target) return true;
+            return false;
+        }
+
+        private static void TrackSlowEnter(MethodBase method)
+        {
+            if (_slowMethods.Count == 0 || method == null) return;
+            if (!_slowMethods.Contains(method)) return;
+            lock (_slowLock) _slowEnter[method] = Time.realtimeSinceStartup;
+        }
+
+        // Called from both the postfix and the finalizer; whichever runs first
+        // consumes the entry, so a call is reported at most once.
+        private static void NoteSlowCall(MethodBase method)
+        {
+            if (method == null || _slowCallReports > SlowCallCap) return;
+            float started;
+            lock (_slowLock)
+            {
+                if (!_slowEnter.TryGetValue(method, out started)) return;
+                _slowEnter.Remove(method);
+            }
+            float ms = (Time.realtimeSinceStartup - started) * 1000f;
+            if (ms < SlowCallMs) return;
+            string name;
+            if (!_bracketNames.TryGetValue(method, out name)) name = method.Name;
+            _slowCallReports++;
+            string line = "[slow-call] " + name + " ms=" +
+                ms.ToString("F0", System.Globalization.CultureInfo.InvariantCulture);
+            Log(line);
+            CharacterLoadTrace.Note("slowcall", line);
+        }
+
+        // 最内层区间名在窗口之外也要维护：关窗之后几十秒又卡一次的那种，
+        // 只有当时记着名字，后台帧看门狗才能报出它卡在哪个函数里。
+        // 这里只维护一个名字栈和一个深度，不计时、不占锁。
+        private static void TrackBracketEnter(MethodBase method)
+        {
+            if (_bracketNames.Count == 0) return;
+            string name;
+            if (!_bracketNames.TryGetValue(method, out name)) return;
+            if (!IsMainThread()) return;
+            // 出栈漏掉几次就会把后面的归因全带偏；封顶整个重来。
+            if (_bracketDepth >= BracketStackCap) _bracketDepth = 0;
+            _bracketStack[_bracketDepth] = name;
+            _bracketDepth++;
+            _bracketNow = name;
+        }
+
+        private static void TrackBracketExit()
+        {
+            if (_bracketDepth <= 0) return;
+            if (!IsMainThread()) return;
+            _bracketDepth--;
+            _bracketStack[_bracketDepth] = null;
+            _bracketNow = _bracketDepth > 0
+                ? _bracketStack[_bracketDepth - 1] : "";
+        }
+
         private static void BracketPrefix(MethodBase __originalMethod)
         {
+            TrackBracketEnter(__originalMethod);
+            TrackSlowEnter(__originalMethod);
             if (!_perfLogOpen || !SceneLoadActive) return;
             try
             {
                 lock (_bracketLock)
                     _bracketEnter[__originalMethod] = Time.realtimeSinceStartup;
-                if (!_stallFrozen && IsMainThread())
-                {
-                    string now; 
-                    if (_bracketNames.TryGetValue(__originalMethod, out now))
-                    {
-                        _bracketDepth++;
-                        _bracketNow = now;
-                    }
-                }
             }
             catch { }
         }
 
+        // 本机实测（HarmonyX 2.0.3.1，独立探针）：prefix 返回 false 时 postfix
+        // 照跑，原方法抛异常时 postfix 被跳过而 finalizer 照跑。所以出栈只放在
+        // finalizer 里 —— 正常返回、被 prefix 拦下、抛异常三条路都恰好出栈一次。
+        // 抛异常那次连计时入口一起清掉，否则下一次正常调用会把这段异常时间
+        // 也算进区间汇总里。
+        private static void BracketFinalizer(
+            MethodBase __originalMethod, Exception __exception)
+        {
+            if (__exception != null && _perfLogOpen)
+            {
+                try
+                {
+                    lock (_bracketLock) _bracketEnter.Remove(__originalMethod);
+                }
+                catch { }
+            }
+            NoteSlowCall(__originalMethod);
+            TrackBracketExit();
+        }
+
         private static void BracketPostfix(MethodBase __originalMethod)
         {
+            NoteSlowCall(__originalMethod);
             if (!_perfLogOpen || !SceneLoadActive) return;
             try
             {
-                if (IsMainThread() && _bracketDepth > 0)
-                {
-                    _bracketDepth--;
-                    if (_bracketDepth == 0) _bracketNow = "";
-                }
                 string name;
                 float ms;
                 lock (_bracketLock)
                 {
-                    if (_bracketDepth == 0) _bracketNow = "";
                     float started;
                     if (!_bracketEnter.TryGetValue(__originalMethod, out started)) return;
                     _bracketEnter.Remove(__originalMethod);

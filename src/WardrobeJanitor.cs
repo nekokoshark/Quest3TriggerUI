@@ -71,7 +71,7 @@ namespace Quest3TriggerUI
                 // Rising edge: drop every reference we hold to the previous
                 // scene's objects — atoms, preset managers and their JSON
                 // graphs must become collectable, not pinned by our statics.
-                if (!_wasLoading) { ClearRuntime(); _wasLoading = true; }
+                if (!_wasLoading) { ClearRuntime(); DecodedBufferPool.Clear(); _wasLoading = true; }
                 _nextScan = Time.realtimeSinceStartup + ScanEvery;
                 return;
             }
@@ -85,6 +85,8 @@ namespace Quest3TriggerUI
             // requester never registered a use count can't be reclaimed by
             // refcount or UnloadUnusedAssets while the cache roots them.
             TextureOrphanSweeper.Tick();
+            GpuResourceProbe.Tick();
+            DecodedBufferPool.SweepIdle();
             if (Enabled == null || !Enabled.Value)
             {
                 Pending.Clear(); PendingSet.Clear();
@@ -687,6 +689,8 @@ namespace Quest3TriggerUI
         internal static void Shutdown()
         {
             TextureOrphanSweeper.Shutdown();
+            GpuResourceProbe.Shutdown();
+            DecodedBufferPool.Clear();
             StaleTextureRequestGuard.Shutdown();
             PresetCleanupCoalescer.Shutdown();
             PresetInstanceReuse.Shutdown();

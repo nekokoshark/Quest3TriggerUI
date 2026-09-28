@@ -18,6 +18,7 @@ namespace Quest3TriggerUI
             CancelDockRename();
             if (_pdSaveOverlay != null) _pdSaveOverlay.SetActive(false);
             _pdSaveTag = null;
+            if (_favTagEditing != null) CommitTagRename();
             PaintDockDeleteMode();
         }
 
@@ -29,6 +30,14 @@ namespace Quest3TriggerUI
                     : new Color(0.28f, 0.15f, 0.15f, 1f);
             if (_dockDeleteLabel != null)
                 _dockDeleteLabel.text = _dockDeleteMode ? "结束删除" : "删 除";
+            // The clothing strip rebuilds its rows per view switch — the
+            // fav-side button is a second painted handle on the same mode.
+            if (_favDeleteButton != null)
+                _favDeleteButton.color = _dockDeleteMode
+                    ? new Color(0.72f, 0.12f, 0.10f, 1f)
+                    : new Color(0.28f, 0.15f, 0.15f, 1f);
+            if (_favDeleteLabel != null)
+                _favDeleteLabel.text = _dockDeleteMode ? "结束删除" : "删 除";
         }
 
         private static bool DeleteFavoriteOnClick(string uid)

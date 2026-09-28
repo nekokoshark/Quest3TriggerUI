@@ -579,6 +579,40 @@ namespace Quest3TriggerUI
         }
     }
 
+    // SuperController.ClearAllUI() walks every registered UI and calls Hide()
+    // on each one, and Hide() dereferences window.activeSelf on its very first
+    // instruction. VaM tears a file browser popup down on its own while the
+    // FileBrowser component keeps the dead reference, so that dereference
+    // throws - and the exception escapes through set_activeUI, which means
+    // activeUI is never assigned and no panel opens afterwards, not just the
+    // browser. Skipping Hide() for a window that no longer exists is a no-op;
+    // letting the throw out is a lockout.
+    [HarmonyPatch(typeof(FileBrowser), "Hide")]
+    internal static class FileBrowserHideGuardPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(FileBrowser __instance)
+        {
+            try { return __instance != null && __instance.window != null; }
+            catch { return false; }
+        }
+    }
+
+    [HarmonyPatch(typeof(FileBrowser), "IsHidden")]
+    internal static class FileBrowserIsHiddenGuardPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(FileBrowser __instance, ref bool __result)
+        {
+            bool alive;
+            try { alive = __instance != null && __instance.window != null; }
+            catch { alive = false; }
+            if (alive) return true;
+            __result = true;
+            return false;
+        }
+    }
+
     [HarmonyPatch(typeof(FileBrowser), "ShowInternal")]
     internal static class PresetBrowserShowInternalPatch
     {

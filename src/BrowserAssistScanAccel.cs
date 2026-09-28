@@ -467,6 +467,22 @@ namespace Quest3TriggerUI
                 _harmony.Patch(_postRescan,
                     prefix: Patch(self, "PostRescanPrefix"),
                     finalizer: Patch(self, "PostRescanFinalizer"));
+                // ResourceBrowserUI pools inactive DynamicButton(Clone)s in
+                // managed dictionaries (buttonUIDsByRow & friends). If an
+                // outside sweep ever destroys one of those GameObjects the
+                // pool keeps a fake-null reference and the next repopulate
+                // — e.g. clearing "favourites only" — dies on .transform
+                // with an NRE storm that freezes the whole list. Purge dead
+                // refs on entry so the pool self-heals instead of wedging.
+                Type resBrowserUI = asm.GetType("JayJayWon.ResourceBrowserUI");
+                MethodInfo repopulate = resBrowserUI == null ? null :
+                    resBrowserUI.GetMethod("RepopulateButtons", InstAll);
+                if (repopulate != null)
+                {
+                    ResolveRbFields(resBrowserUI);
+                    _harmony.Patch(repopulate,
+                        prefix: Patch(self, "RepopulateRowsPrefix"));
+                }
 
                 // Stage probes inside native RescanPackages — the process
                 // hard-crashes (0x80000003, Boehm GC fatal class) somewhere
@@ -894,6 +910,174 @@ namespace Quest3TriggerUI
         private static HarmonyMethod Patch(Type self, string name)
         {
             return new HarmonyMethod(self.GetMethod(name, StaticAll));
+        }
+
+        // ---- BA button-pool resilience ----------------------------------
+        // Field names verified against the decompiled UIResourceBrowser.cs:
+        // every collection below can hold a destroyed-UnityObject reference
+        // after an external sweep kills a pooled DynamicButton(Clone).
+
+        private static FieldInfo _rbRowsByGo, _rbActiveRows,
+            _rbInactiveRows, _rbActiveBtns, _rbUnparented,
+            _rbUidToRvge, _rbRvgeToUid;
+
+        private static void ResolveRbFields(Type rbType)
+        {
+            _rbRowsByGo = rbType.GetField("buttonUIDsByRow", InstAll);
+            _rbActiveRows = rbType.GetField("activeResourceRowGOs", InstAll);
+            _rbInactiveRows = rbType.GetField("inactiveResourceRowGOs", InstAll);
+            _rbActiveBtns = rbType.GetField("activeButtonUIDs", InstAll);
+            _rbUnparented = rbType.GetField("unparentedButtonUIDs", InstAll);
+            _rbUidToRvge = rbType.GetField("UIDButtonToRVGEDict", InstAll);
+            _rbRvgeToUid = rbType.GetField("RVGEToUIDButtonDict", InstAll);
+        }
+
+        private static void RepopulateRowsPrefix(object __instance)
+        {
+            int purged = 0;
+            try
+            {
+                purged += PurgeRowDict(_rbRowsByGo, __instance);
+                purged += PurgeDeadItems(_rbActiveRows, __instance);
+                purged += PurgeDeadItems(_rbInactiveRows, __instance);
+                purged += PurgeDeadItems(_rbActiveBtns, __instance);
+                purged += PurgeDeadItems(_rbUnparented, __instance);
+                purged += PurgeDeadDictKeys(_rbUidToRvge, __instance);
+                purged += PurgeDeadDictValues(_rbRvgeToUid, __instance);
+                if (purged == 0) return;
+                // Dead slots would leave BA's rows unevenly filled — its
+                // refactor assumes every row list has identical length
+                // (First().Value.Count) and .Last()s on empty lists throw.
+                // Hand all surviving buttons back to the unparented pool:
+                // the refactor then redistributes them row-uniformly and
+                // creates new ones for any real shortfall.
+                FlattenRows(_rbRowsByGo, _rbUnparented, __instance);
+                Log("BA 按钮池剔除失效引用 " + purged + " 项并重建行布局");
+            }
+            catch { }
+        }
+
+        // Move every surviving row button into unparentedButtonUIDs and
+        // empty the row lists — mirrors BA's own perRow-decrease path
+        // (SetActive(false) + unparent). Only called after a purge.
+        private static void FlattenRows(FieldInfo dictF,
+            FieldInfo unparentedF, object inst)
+        {
+            IDictionary d = DictOf(dictF, inst);
+            object unp = unparentedF == null ? null : unparentedF.GetValue(inst);
+            if (d == null || unp == null) return;
+            MethodInfo add = unp.GetType().GetMethod("Add", InstAll);
+            if (add == null) return;
+            foreach (DictionaryEntry e in d)
+            {
+                IList items = e.Value as IList;
+                if (items == null) continue;
+                for (int i = 0; i < items.Count; i++)
+                {
+                    Component btn = items[i] as Component;
+                    if (btn == null) continue;
+                    try { btn.gameObject.SetActive(false); }
+                    catch { }
+                    try { add.Invoke(unp, new[] { items[i] }); }
+                    catch { }
+                }
+                items.Clear();
+            }
+        }
+
+        // Unity's overloaded == catches destroyed-but-referenced objects.
+        private static bool DeadUnity(object o)
+        {
+            return (o as UnityEngine.Object) == null;
+        }
+
+        private static int PurgeDeadItems(FieldInfo f, object inst)
+        {
+            if (f == null) return 0;
+            object coll = f.GetValue(inst);
+            IList list = coll as IList;
+            if (list != null)
+            {
+                int n = 0;
+                for (int i = list.Count - 1; i >= 0; i--)
+                    if (DeadUnity(list[i])) { list.RemoveAt(i); n++; }
+                return n;
+            }
+            IEnumerable en = coll as IEnumerable;
+            if (en == null) return 0;
+            List<object> dead = null;
+            foreach (object o in en)
+                if (DeadUnity(o)) { if (dead == null) dead = new List<object>(); dead.Add(o); }
+            if (dead == null) return 0;
+            MethodInfo remove = coll.GetType().GetMethod("Remove", InstAll);
+            if (remove == null) return 0;
+            int n2 = 0;
+            foreach (object o in dead)
+            {
+                try { remove.Invoke(coll, new[] { o }); n2++; }
+                catch { }
+            }
+            return n2;
+        }
+
+        private static int PurgeDeadDictKeys(FieldInfo f, object inst)
+        {
+            IDictionary d = DictOf(f, inst);
+            if (d == null) return 0;
+            List<object> dead = null;
+            foreach (DictionaryEntry e in d)
+                if (DeadUnity(e.Key))
+                { if (dead == null) dead = new List<object>(); dead.Add(e.Key); }
+            if (dead == null) return 0;
+            foreach (object k in dead) d.Remove(k);
+            return dead.Count;
+        }
+
+        private static int PurgeDeadDictValues(FieldInfo f, object inst)
+        {
+            IDictionary d = DictOf(f, inst);
+            if (d == null) return 0;
+            List<object> dead = null;
+            foreach (DictionaryEntry e in d)
+                if (DeadUnity(e.Value))
+                { if (dead == null) dead = new List<object>(); dead.Add(e.Key); }
+            if (dead == null) return 0;
+            foreach (object k in dead) d.Remove(k);
+            return dead.Count;
+        }
+
+        // Dictionary<GameObject, List<UIDynamicButton>>: a dead row key
+        // drops the whole entry; dead buttons inside a live row's list get
+        // pulled one by one.
+        private static int PurgeRowDict(FieldInfo f, object inst)
+        {
+            IDictionary d = DictOf(f, inst);
+            if (d == null) return 0;
+            int n = 0;
+            List<object> deadKeys = null;
+            foreach (DictionaryEntry e in d)
+            {
+                if (DeadUnity(e.Key))
+                {
+                    if (deadKeys == null) deadKeys = new List<object>();
+                    deadKeys.Add(e.Key);
+                    IList dead = e.Value as IList;
+                    n += dead == null ? 1 : dead.Count + 1;
+                    continue;
+                }
+                IList items = e.Value as IList;
+                if (items == null) continue;
+                for (int i = items.Count - 1; i >= 0; i--)
+                    if (DeadUnity(items[i])) { items.RemoveAt(i); n++; }
+            }
+            if (deadKeys != null)
+                foreach (object k in deadKeys) d.Remove(k);
+            return n;
+        }
+
+        private static IDictionary DictOf(FieldInfo f, object inst)
+        {
+            return f == null ? null : f.GetValue(inst) as IDictionary;
         }
 
         private static MethodInfo FindStatic(Type host, string name,

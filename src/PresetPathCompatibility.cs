@@ -36,7 +36,6 @@ namespace Quest3TriggerUI
                     manager.includeAppearance, manager.includePhysical);
                 if (!manager.LoadPresetPost())
                     throw new InvalidOperationException("Selected preset failed to restore: " + path);
-                ResourceHistoryRuntime.PresetLoaded(manager, path);
                 return true;
             }
             finally

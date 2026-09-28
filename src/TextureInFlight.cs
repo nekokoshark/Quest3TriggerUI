@@ -84,6 +84,9 @@ namespace Quest3TriggerUI
                     Monitor.Wait(entry, Math.Max(1, 250 - (int)clock.ElapsedMilliseconds));
                 if (!entry.done) { Interlocked.Increment(ref _timeouts); return true; }
                 if (!entry.valid || !_accepting || (Enabled != null && !Enabled.Value) || q.cancel || !Eligible(q) || !key.Equals(MakeKey(q))) return true;
+                // Join the owner's reservation; a refusal means the buffer may
+                // already be back in service, so decode natively instead.
+                if (!DecodedBufferPool.ClaimForShare(entry.raw)) return true;
                 q.width = entry.width; q.height = entry.height;
                 q.textureFormat = entry.format; q.preprocessed = entry.preprocessed;
                 q.raw = entry.raw; q.processed = true;
@@ -100,6 +103,13 @@ namespace Quest3TriggerUI
             {
                 var q = __instance;
                 __state.valid = _accepting && __exception == null && q.processed && !q.hadError && !q.cancel && !q.finished && q.raw != null;
+                if (__state.valid)
+                {
+                    // Reserve the buffer before it becomes visible to a sharer,
+                    // otherwise the owner's Finish could already have parked it
+                    // while a second request is still waiting to upload it.
+                    __state.valid = DecodedBufferPool.Reserve(q.raw);
+                }
                 if (__state.valid)
                 {
                     __state.raw = q.raw; __state.width = q.width; __state.height = q.height;

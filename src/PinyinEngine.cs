@@ -236,12 +236,56 @@ namespace Quest3TriggerUI
             {
                 if (_closed) return false;
                 if (_full != null) return true;
+                // Hot-reload handoff: the previous generation published its
+                // parsed tables to GenBridge — adopt instead of re-parsing
+                // ~48MB of dictionary text on every payload swap. The plain
+                // BCL generic types are shared across assemblies, so the
+                // dictionaries themselves carry over untouched. The small
+                // user dict still loads fresh on the worker below.
+                var adopted = GenBridge.Take("py.full") as Dictionary<string, string[]>;
+                if (adopted != null)
+                {
+                    _full = adopted;
+                    _initials = GenBridge.Take("py.initials") as Dictionary<string, string[]>;
+                    _fuzzy = GenBridge.Take("py.fuzzy") as Dictionary<string, string[]>;
+                    _syllables = GenBridge.Take("py.syllables") as HashSet<string>;
+                    _allKeys = GenBridge.Take("py.allKeys") as string[];
+                    Log("adopted dictionaries from previous generation: full=" +
+                        adopted.Count + " init=" + (_initials == null ? 0 : _initials.Count) +
+                        " fuzzy=" + (_fuzzy == null ? 0 : _fuzzy.Count));
+                    if (_loadStarted) return true;
+                    _loadStarted = true;
+                    int gen0 = _generation;
+                    // User tables only — the big tables are already in place.
+                    ThreadPool.QueueUserWorkItem(delegate { LoadUserWorker(gen0); });
+                    return true;
+                }
                 if (_loadStarted) return false;
                 _loadStarted = true;
                 int generation = _generation;
                 ThreadPool.QueueUserWorkItem(delegate { LoadWorker(generation); });
                 return false;
             }
+        }
+
+        private static void LoadUserWorker(int generation)
+        {
+            try
+            {
+                var ufull = new Dictionary<string, List<UEntry>>();
+                var uinit = new Dictionary<string, List<UEntry>>();
+                LoadUserDict(UserDictPath(), ufull, uinit);
+                lock (_stateGate)
+                {
+                    if (_closed || generation != _generation) return;
+                    if (!_userDirty)
+                    {
+                        _userFull = ufull;
+                        _userInit = uinit;
+                    }
+                }
+            }
+            catch { }
         }
 
         private static void LoadWorker(int generation)
@@ -280,6 +324,11 @@ namespace Quest3TriggerUI
                     _allKeys = keys;
                     _full = full;
                 }
+                GenBridge.Publish("py.full", full);
+                GenBridge.Publish("py.initials", initials);
+                GenBridge.Publish("py.fuzzy", fuzzy);
+                GenBridge.Publish("py.syllables", syllables);
+                GenBridge.Publish("py.allKeys", keys);
                 Log("loaded full=" + (full == null ? 0 : full.Count) +
                     " init=" + (initials == null ? 0 : initials.Count) +
                     " fuzzy=" + (fuzzy == null ? 0 : fuzzy.Count) +

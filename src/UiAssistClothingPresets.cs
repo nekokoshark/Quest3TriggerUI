@@ -37,19 +37,22 @@ namespace Quest3TriggerUI
             // forever — dock stays "picking" and new opens are blocked.
             // IsOpen reads activeSelf, which stays true when only the host
             // deactivated — HUD collapse still keeps the session alive.
-            if ((_pdPicking || _presetBrowsing) && !VrPresetBrowser.IsOpen)
+            // ParkedForScreenshot: the canvas is only hidden while the
+            // native aim-and-select pass runs — the session stays live.
+            if ((_pdPicking || _presetBrowsing) && !VrPresetBrowser.IsOpen &&
+                !VrPresetBrowser.ParkedForScreenshot)
             {
                 _pdPicking = false;
                 _presetBrowsing = false;
                 _presetState = null;
             }
-            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
             {
                 Snapshot state = FindEditor(sc);
-                if (state == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (state == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 GameObject list = Read(state.Editor.GetType(), state.Editor, "aceScrollListGO") as GameObject;
-                if (list == null) { if (!_pdPicking) ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (list == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 bool fresh = !(_presetList == list &&
                     ReferenceEquals(_presetEditor, state.Editor) &&
                     _editorVisibilityButton != null);
@@ -209,6 +212,9 @@ namespace Quest3TriggerUI
             _presetState = state;
             _pdPicking = true;
             _pdBrowseKind = 1;
+            // Picking takes over dock clicks — the save session from a
+            // still-open save dialog must not linger past this switch.
+            ExitPdSaveSession();
             try
             {
                 VrPresetBrowser.ShowDialogFull("收藏预设到「" +
@@ -253,6 +259,9 @@ namespace Quest3TriggerUI
             _presetState = state;
             _pdPicking = true;
             _pdBrowseKind = 2;
+            // Picking takes over dock clicks — a still-open save session
+            // must not linger past this switch either.
+            ExitPdSaveSession();
             try
             {
                 VrPresetBrowser.ShowDialogFull("读取「" +
@@ -298,21 +307,22 @@ namespace Quest3TriggerUI
             string scene = sc.LoadedSceneName;
             if (_pdQuick == null)
                 _pdQuick = new SceneQuickActions(Quest3TriggerUIPlugin.Instance);
-            Atom target = state.Target;
+            // Save what the dock is pointed at — the same resolution the
+            // 读取 path applies — so the dialog dropdown and dock-cell
+            // overwrites cannot disagree about which atom is being stored.
+            Atom target = PdEffectiveTarget() ?? state.Target;
             _presetBrowsing = true;
             _presetState = state;
             _pdPicking = true;
             _pdBrowseKind = 3;
             // While the save dialog is up, dock clicks repurpose: thumbnail
             // = overwrite-save onto that preset, name strip = rename.
-            _pdSaveBrowsing = true;
-            PaintDockSaveMode();
+            EnterPdSaveSession();
             Action<bool> done = delegate(bool closed)
             {
                 if (!closed) return;
                 _pdPicking = false;
-                _pdSaveBrowsing = false;
-                PaintDockSaveMode();
+                ExitPdSaveSession();
                 Quest3TriggerUIPlugin.Instance.StartCoroutine(
                     RestorePresetEditor(state, scene));
             };

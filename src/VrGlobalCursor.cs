@@ -195,6 +195,7 @@ namespace Quest3TriggerUI
             const float ringHalfWidth = 2.0f;
             const float glowSigma = 4.2f;
             Texture2D tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.name = "Q3Cursor";
             tex.wrapMode = TextureWrapMode.Clamp;
             float c = (size - 1) * 0.5f;
             for (int y = 0; y < size; y++)

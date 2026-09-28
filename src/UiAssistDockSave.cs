@@ -16,6 +16,35 @@ namespace Quest3TriggerUI
         // True for the lifetime of the dock-initiated save dialog.
         private static bool _pdSaveBrowsing;
 
+        // Save mode is a session: entering it is mutually exclusive with
+        // delete mode, and every other dock mode (新增/读取/删除/dock
+        // teardown) must exit it so cell clicks fall back to their normal
+        // meaning. The overlay and name-strip rename die with the session —
+        // they only make sense while the save browser is still up.
+        private static void EnterPdSaveSession()
+        {
+            if (_dockDeleteMode)
+            {
+                _dockDeleteMode = false;
+                PaintDockDeleteMode();
+            }
+            // Re-entry (the save browser retargeted onto a new tab) must
+            // not inherit an overlay bound to a cell that just got parked.
+            if (_pdSaveOverlay != null) _pdSaveOverlay.SetActive(false);
+            _pdSaveTag = null;
+            _pdSaveBrowsing = true;
+            PaintDockSaveMode();
+        }
+
+        private static void ExitPdSaveSession()
+        {
+            _pdSaveBrowsing = false;
+            if (_pdSaveOverlay != null) _pdSaveOverlay.SetActive(false);
+            _pdSaveTag = null;
+            CancelDockRename();
+            PaintDockSaveMode();
+        }
+
         private static void PaintDockSaveMode()
         {
             for (int i = 0; i < _pdVisibleCells.Count; i++)
@@ -144,36 +173,61 @@ namespace Quest3TriggerUI
             _pdSaveTag = null;
             if (tag == null) return;
             SuperController sc = SuperController.singleton;
-            Snapshot state = FindEditor(sc);
-            if ((state == null || state.Target == null) && _presetBrowsing)
-                state = _presetState;
-            if (state == null || state.Target == null)
+            // The atom being saved must be the one the user is looking at:
+            // the save browser's own dropdown pick first, then the dock's
+            // target row, then the editor snapshot. The old code serialized
+            // only the editor atom — a dropdown re-pick or a pooled-out
+            // snapshot target silently wrote a different character's state.
+            Atom atom = VrPresetBrowser.IsOpen
+                ? VrPresetBrowser.LoadTarget : null;
+            if (atom == null) atom = PdEffectiveTarget();
+            if (atom == null)
+            {
+                Snapshot state = FindEditor(sc);
+                if ((state == null || state.Target == null) && _presetBrowsing)
+                    state = _presetState;
+                atom = state == null ? null : state.Target;
+            }
+            // A stale snapshot can hold a pooled-out atom — serializing it
+            // produces exactly the "old clothing" overwrite the user saw.
+            if (atom == null || sc.GetAtomByUid(atom.uid) != atom)
             { Log("保存预设失败：未找到编辑中的角色。"); return; }
             try
             {
                 if (_pdQuick == null)
                     _pdQuick = new SceneQuickActions(
                         Quest3TriggerUIPlugin.Instance);
-                if (!_pdQuick.DockStorePreset(state.Target, _pdTab, tag.Path))
+                // 拍照 enters VaM's own aim-and-select screenshot pass;
+                // its completion callback evicts our cached thumbnail.
+                // 覆盖 writes the .vap only and keeps the existing jpg.
+                if (!_pdQuick.DockStorePreset(atom, _pdTab, tag.Path,
+                        photo, InvalidatePdThumb))
                     return;
-                if (photo)
-                    PresetThumbCapture.Queue(tag.Path, delegate
-                    {
-                        // The sidecar mtime moved — evict the cached decode
-                        // so the cell re-reads the fresh thumbnail.
-                        _pdThumbStamp.Remove(tag.Path);
-                        Texture2D old;
-                        if (_pdThumbs.TryGetValue(tag.Path, out old))
-                        {
-                            _pdThumbs.Remove(tag.Path);
-                            if (old != null) UnityEngine.Object.Destroy(old);
-                        }
-                        if (tag.Thumb != null) { tag.Thumb.texture = null; }
-                        ApplyPdThumb(tag);
-                    });
                 VrHaptics.Confirm();
             }
             catch (Exception e) { Error(e); }
+        }
+
+        // A preset's sidecar jpg moved (native screenshot, browser save,
+        // rename): drop the decoded thumbnail so cells re-read the fresh
+        // file. Safe to call for paths the dock never cached.
+        internal static void InvalidatePdThumb(string vapPath)
+        {
+            if (string.IsNullOrEmpty(vapPath)) return;
+            _pdThumbStamp.Remove(vapPath);
+            Texture2D old;
+            if (_pdThumbs.TryGetValue(vapPath, out old))
+            {
+                _pdThumbs.Remove(vapPath);
+                if (old != null) UnityEngine.Object.Destroy(old);
+            }
+            for (int i = 0; i < _pdVisibleCells.Count; i++)
+            {
+                PdSlotTag cell = _pdVisibleCells[i];
+                if (cell == null || cell.Path != vapPath) continue;
+                if (cell.Thumb != null) cell.Thumb.texture = null;
+                ApplyPdThumb(cell);
+            }
         }
 
         // ---------- name zone: inline rename ----------
@@ -304,105 +358,6 @@ namespace Quest3TriggerUI
             if (_pdRenameOverlay != null) _pdRenameOverlay.SetActive(false);
             _pdRenamePath = null;
             if (_pdRenameInput != null) VrTextInputBridge.Clear();
-        }
-    }
-
-    // Sidecar .jpg capture for preset saves — replaces VaM's aim-and-select
-    // screenshot mode (its first shot was being eaten as a skip). Grabs the
-    // frame the eye camera already rendered; the stereo targets stay on
-    // their normal pass.
-    internal static class PresetThumbCapture
-    {
-        private sealed class Job
-        {
-            internal string JpgPath;
-            internal float Deadline;
-            internal Action<string> Done;
-        }
-
-        private static readonly List<Job> _jobs = new List<Job>();
-        private static bool _hooked;
-
-        internal static void Queue(string vapPath, Action<string> done)
-        {
-            if (string.IsNullOrEmpty(vapPath)) return;
-            string jpg;
-            try { jpg = FileManager.GetFullPath(vapPath); }
-            catch { return; }
-            if (string.IsNullOrEmpty(jpg)) return;
-            if (jpg.EndsWith(".vap", StringComparison.OrdinalIgnoreCase))
-                jpg = jpg.Substring(0, jpg.Length - 4) + ".jpg";
-            else return;
-            _jobs.Add(new Job
-            {
-                JpgPath = jpg, Deadline = Time.unscaledTime + 3f, Done = done
-            });
-            if (!_hooked)
-            {
-                Camera.onPostRender += OnPostRender;
-                _hooked = true;
-            }
-        }
-
-        private static void OnPostRender(Camera camera)
-        {
-            SuperController sc = SuperController.singleton;
-            if (camera == null || sc == null || camera != sc.lookCamera) return;
-            float now = Time.unscaledTime;
-            for (int i = _jobs.Count - 1; i >= 0; i--)
-                if (now > _jobs[i].Deadline) _jobs.RemoveAt(i);
-            if (_jobs.Count == 0) { Camera.onPostRender -= OnPostRender; _hooked = false; return; }
-            List<Job> batch = new List<Job>(_jobs);
-            _jobs.Clear();
-            if (batch.Count == 0) { Camera.onPostRender -= OnPostRender; _hooked = false; return; }
-            RenderTexture previous = RenderTexture.active;
-            RenderTexture small = null;
-            Texture2D pixels = null, thumb = null;
-            byte[] jpg = null;
-            try
-            {
-                small = RenderTexture.GetTemporary(336, 189, 0);
-                if (previous != null) Graphics.Blit(previous, small);
-                else
-                {
-                    Rect rect = camera.pixelRect;
-                    int w = Mathf.RoundToInt(rect.width), h = Mathf.RoundToInt(rect.height);
-                    if (w < 1 || h < 1) return;
-                    pixels = new Texture2D(w, h, TextureFormat.RGB24, false);
-                    pixels.ReadPixels(rect, 0, 0);
-                    pixels.Apply();
-                    Graphics.Blit(pixels, small);
-                }
-                RenderTexture.active = small;
-                thumb = new Texture2D(336, 189, TextureFormat.RGB24, false);
-                thumb.ReadPixels(new Rect(0, 0, 336, 189), 0, 0);
-                thumb.Apply();
-                jpg = ImageConversion.EncodeToJPG(thumb, 85);
-                if (jpg == null || jpg.Length == 0) return;
-                foreach (Job job in batch)
-                {
-                    try
-                    {
-                        FileManager.WriteAllBytes(job.JpgPath, jpg);
-                        if (sc.fileBrowserUI != null)
-                            sc.fileBrowserUI.ClearCacheImage(job.JpgPath);
-                        if (job.Done != null) job.Done(job.JpgPath);
-                    }
-                    catch { }
-                }
-            }
-            catch (Exception e)
-            {
-                if (Quest3TriggerUIPlugin.Log != null)
-                    Quest3TriggerUIPlugin.Log.LogWarning("preset thumb capture failed: " + e.Message);
-            }
-            finally
-            {
-                RenderTexture.active = previous;
-                if (small != null) RenderTexture.ReleaseTemporary(small);
-                if (pixels != null) UnityEngine.Object.Destroy(pixels);
-                if (thumb != null) UnityEngine.Object.Destroy(thumb);
-            }
         }
     }
 }

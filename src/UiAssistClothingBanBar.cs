@@ -153,8 +153,16 @@ namespace Quest3TriggerUI
             _banPositionLogged = false;
         }
 
+        private static bool _banThumbsBridged;
         private static void UpdateBanBar(Snapshot state, GameObject list)
         {
+            if (!_banThumbsBridged)
+            {
+                _banThumbsBridged = true;
+                if (_banThumbs.Count == 0)
+                    GenBridge.AdoptThumbs("ban.thumbs", _banThumbs);
+                GenBridge.Publish("ban.thumbs", _banThumbs);
+            }
             if (_banList != list || _banDock == null)
             {
                 ClearBanBar();

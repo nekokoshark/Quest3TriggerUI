@@ -65,10 +65,45 @@ namespace Quest3TriggerUI
             }
         }
 
-        // Tab switch wipes the grid outright: the user wants a blank panel
-        // playing the fill animation, not a half-old/half-new mix while
-        // the pump replaces cells in place. Overlays parented to cells die
-        // with them; the decoded-texture cache (_pdThumbs) survives.
+        // Tab switch parks the outgoing grid instead of destroying it:
+        // inactive children are ignored by the GridLayoutGroup, so the
+        // switch-back path reactivates them with thumbnails still bound
+        // and no refill animation. A dirty or mid-build grid is not
+        // parkable — its cells die outright as before. The decoded-texture
+        // cache (_pdThumbs) survives either way.
+        private static void ParkPdTabCells(int tab)
+        {
+            _pdParkedCells[tab] = null;
+            _pdParkedHints[tab] = null;
+            _pdParkedFresh[tab] = false;
+            if (_pdDirty || _pdBuildSlots != null ||
+                (_pdVisibleCells.Count == 0 && _pdHintCell == null))
+            {
+                ClearPdCellsNow();
+                return;
+            }
+            if (_pdVisibleCells.Count > 0)
+                _pdParkedCells[tab] = new List<PdSlotTag>(_pdVisibleCells);
+            for (int i = 0; i < _pdVisibleCells.Count; i++)
+            {
+                PdSlotTag tag = _pdVisibleCells[i];
+                if (tag != null) tag.gameObject.SetActive(false);
+            }
+            if (_pdHintCell != null)
+            {
+                _pdParkedHints[tab] = _pdHintCell;
+                _pdHintCell.SetActive(false);
+                _pdHintCell = null;
+            }
+            _pdParkedFresh[tab] = true;
+            _pdVisibleCells.Clear();
+            _pdKeptCells.Clear();
+            _pdCellPosition = 0;
+            TeardownPdCellInteraction();
+        }
+
+        // Hard wipe of the visible grid — kept for teardown paths and for
+        // unparkable (dirty/mid-build) tab switches.
         private static void ClearPdCellsNow()
         {
             for (int i = 0; i < _pdVisibleCells.Count; i++)
@@ -89,6 +124,13 @@ namespace Quest3TriggerUI
                 Object.Destroy(_pdHintCell);
                 _pdHintCell = null;
             }
+            TeardownPdCellInteraction();
+        }
+
+        // Interaction state that must die with a grid swap regardless of
+        // whether the cells were parked or destroyed.
+        private static void TeardownPdCellInteraction()
+        {
             _pdThumbQueue.Clear();
             _pdThumbQueued.Clear();
             _pdBuildSlots = null;
@@ -157,6 +199,167 @@ namespace Quest3TriggerUI
                 if (tag != null && _pdKeptCells.Contains(tag)) _pdThumbQueue.Enqueue(tag);
                 else _pdThumbQueued.Remove(tag);
             }
+        }
+
+        // ---- favorites-bar parked views ---------------------------------
+        // Same contract as _pdParkedCells but keyed by the backing list
+        // object instead of a tab index: the favorites bar has a dynamic
+        // tag set, and a tag rename re-keys the name -> list mapping while
+        // the List<string[]> instance (and therefore its parked cells)
+        // survives. Any mutation of a list must InvalidateFavParked it.
+
+        private static readonly Dictionary<List<string[]>, List<AceFavSlotTag>>
+            _favParkedCells = new Dictionary<List<string[]>, List<AceFavSlotTag>>();
+        private static readonly Dictionary<List<string[]>, GameObject>
+            _favParkedHints = new Dictionary<List<string[]>, GameObject>();
+
+        private static void ParkFavViewCells(List<string[]> list)
+        {
+            if (list == null) return;
+            InvalidateFavParked(list);
+            if (_favCells == null) return;
+            // A dirty or mid-build grid is not parkable — its cells no
+            // longer mirror the list and die outright as before. A live
+            // reorder preview has the same mismatch (visual order ahead
+            // of list order), so it is unparkable too.
+            if (_favDirty || _favPreviewDirty || _favBuildSlots != null ||
+                (_favVisibleCells.Count == 0 && _favHintCell == null))
+            {
+                ClearFavCellsNow();
+                return;
+            }
+            if (_favVisibleCells.Count > 0)
+                _favParkedCells[list] = new List<AceFavSlotTag>(_favVisibleCells);
+            for (int i = 0; i < _favVisibleCells.Count; i++)
+            {
+                AceFavSlotTag tag = _favVisibleCells[i];
+                if (tag != null) tag.gameObject.SetActive(false);
+            }
+            if (_favHintCell != null)
+            {
+                _favParkedHints[list] = _favHintCell;
+                _favHintCell.SetActive(false);
+                _favHintCell = null;
+            }
+            _favVisibleCells.Clear();
+            _favKeptCells.Clear();
+            _favCellPosition = 0;
+            _favVisualQueue.Clear();
+            _favVisualQueued.Clear();
+        }
+
+        private static bool RestoreFavViewCells(List<string[]> list)
+        {
+            List<AceFavSlotTag> parked;
+            GameObject hint;
+            _favParkedCells.TryGetValue(list, out parked);
+            _favParkedHints.TryGetValue(list, out hint);
+            _favParkedCells.Remove(list);
+            _favParkedHints.Remove(list);
+            if (_favCells == null || (parked == null && hint == null))
+            {
+                // Stale leftovers die here rather than surfacing one
+                // switch later with wrong thumbnails.
+                if (parked != null)
+                    for (int i = 0; i < parked.Count; i++)
+                        if (parked[i] != null)
+                            Object.Destroy(parked[i].gameObject);
+                if (hint != null) Object.Destroy(hint);
+                return false;
+            }
+            if (parked != null)
+            {
+                for (int i = 0; i < parked.Count; i++)
+                {
+                    AceFavSlotTag tag = parked[i];
+                    if (tag == null) continue;
+                    tag.gameObject.SetActive(true);
+                    _favVisibleCells.Add(tag);
+                    _favKeptCells.Add(tag);
+                    // Re-queue visuals: _favThumbs hits bind instantly, so
+                    // this only refreshes Dim state after an atom switch —
+                    // never a texture re-decode.
+                    QueueFavoriteVisual(tag);
+                }
+            }
+            if (hint != null)
+            {
+                if (_favVisibleCells.Count == 0)
+                { _favHintCell = hint; hint.SetActive(true); }
+                else Object.Destroy(hint);
+            }
+            _favCellPosition = _favVisibleCells.Count;
+            int rows = Mathf.CeilToInt(_favVisibleCells.Count / (float)FavColumns);
+            _favContentH = rows > 0
+                ? rows * FavCellH + (rows - 1) * FavSpacing + FavPad
+                : FavPad;
+            _favCells.sizeDelta = new Vector2(FavColW, _favContentH);
+            ApplyDockScroll(true, _favScrollY);
+            ApplyFavoritesDockWidth();
+            return true;
+        }
+
+        // List contents changed (add/remove/move/reorder) while its cells
+        // were parked — the parked set is stale, destroy it.
+        private static void InvalidateFavParked(List<string[]> list)
+        {
+            if (list == null) return;
+            List<AceFavSlotTag> parked;
+            if (_favParkedCells.TryGetValue(list, out parked))
+            {
+                for (int i = 0; i < parked.Count; i++)
+                    if (parked[i] != null)
+                        Object.Destroy(parked[i].gameObject);
+                _favParkedCells.Remove(list);
+            }
+            GameObject hint;
+            if (_favParkedHints.TryGetValue(list, out hint))
+            {
+                if (hint != null) Object.Destroy(hint);
+                _favParkedHints.Remove(list);
+            }
+        }
+
+        // Wholesale teardown — the tag-item dictionary was rebuilt, so old
+        // list keys can never be looked up again; their cells would leak.
+        private static void ClearFavParkedAll()
+        {
+            foreach (List<AceFavSlotTag> parked in _favParkedCells.Values)
+                if (parked != null)
+                    for (int i = 0; i < parked.Count; i++)
+                        if (parked[i] != null)
+                            Object.Destroy(parked[i].gameObject);
+            foreach (GameObject hint in _favParkedHints.Values)
+                if (hint != null) Object.Destroy(hint);
+            _favParkedCells.Clear();
+            _favParkedHints.Clear();
+        }
+
+        // Hard wipe of the visible grid — teardown paths and unparkable
+        // (dirty/mid-build) view switches.
+        private static void ClearFavCellsNow()
+        {
+            for (int i = 0; i < _favVisibleCells.Count; i++)
+            {
+                AceFavSlotTag tag = _favVisibleCells[i];
+                if (tag != null)
+                {
+                    tag.gameObject.SetActive(false);
+                    Object.Destroy(tag.gameObject);
+                }
+            }
+            _favVisibleCells.Clear();
+            _favKeptCells.Clear();
+            _favCellPosition = 0;
+            if (_favHintCell != null)
+            {
+                _favHintCell.SetActive(false);
+                Object.Destroy(_favHintCell);
+                _favHintCell = null;
+            }
+            _favVisualQueue.Clear();
+            _favVisualQueued.Clear();
+            _favBuildSlots = null;
         }
 
         private static readonly Queue<AceFavSlotTag> _favVisualQueue = new Queue<AceFavSlotTag>();

@@ -63,6 +63,25 @@ namespace Quest3TriggerUI
             new List<string>[PdTabCount];
         private static int _pdTab;
         private static bool _pdDirty = true, _pdLoaded, _pdPositionLogged;
+        // Per-tab parked cells: a tab switch stashes the outgoing grid
+        // inactive under the same GridLayoutGroup (which skips inactive
+        // children) instead of destroying it — switching back reactivates
+        // them with thumbnails still bound, so the staged fill animation
+        // only ever plays on a tab's first/invalidated build.
+        // _pdParkedFresh flips false wherever that tab's slots mutate.
+        private static readonly List<PdSlotTag>[] _pdParkedCells =
+            new List<PdSlotTag>[PdTabCount];
+        private static readonly GameObject[] _pdParkedHints =
+            new GameObject[PdTabCount];
+        private static readonly bool[] _pdParkedFresh = new bool[PdTabCount];
+        // User-collapsed state: the dock shrinks to a lone 显示 strip.
+        private static bool _pdUserHidden, _pdCollapsedApplied;
+        private static GameObject _pdShowBar;
+        // Dock slot sharing: the left dock position hosts either the preset
+        // dock (false) or the clothing favorites bar (true). Both trees are
+        // built once and kept alive — switching is a SetActive flip handled
+        // by the two visibility ticks, never a rebuild.
+        private static bool _dockModeFav;
         private static float _pdListHeight;
         private static GameObject _pdList;
         private static Atom _pdAtom;
@@ -133,11 +152,38 @@ namespace Quest3TriggerUI
         // Called from UpdatePresetButtons while the ACE editor is alive.
         private static void UpdatePresetDock(Snapshot state, GameObject list)
         {
-            if (list == null) { ClearPresetDock(); return; }
+            if (list == null) { HidePresetDock(); return; }
+            // Cross-generation handoff: the previous payload's teardown path
+            // quarantined its decoded dock thumbs, while a reload that killed
+            // the dock GameObject directly left its live dict published in the
+            // bridge store — either way, adopt into the (readonly) static
+            // dicts before any refill pass.
+            if (_pdThumbs.Count == 0)
+            {
+                var prev = GenBridge.Claim("dock.thumbs") as Dictionary<string, Texture2D> ??
+                    GenBridge.Take("dock.thumbs") as Dictionary<string, Texture2D>;
+                if (prev != null)
+                    foreach (KeyValuePair<string, Texture2D> kv in prev)
+                        if (kv.Value != null) _pdThumbs[kv.Key] = kv.Value;
+                var prevStamp = GenBridge.Claim("dock.thumbStamp") as Dictionary<string, long> ??
+                    GenBridge.Take("dock.thumbStamp") as Dictionary<string, long>;
+                if (prevStamp != null)
+                    foreach (KeyValuePair<string, long> kv in prevStamp)
+                        _pdThumbStamp[kv.Key] = kv.Value;
+            }
+            GenBridge.Publish("dock.thumbs", _pdThumbs);
+            GenBridge.Publish("dock.thumbStamp", _pdThumbStamp);
             _pdList = list;
             _pdListHeight = ((RectTransform)list.transform).rect.height;
             _pdAtom = state != null ? state.Target : null;
-            if (_pdDock != null) return;
+            if (_pdDock != null)
+            {
+                // Reopen edge: the hidden dock kept its cells and decoded
+                // thumbs — a dirty refill re-places cells by path and reuses
+                // cached textures, so re-show is a SetActive flip.
+                if (!_pdDock.gameObject.activeSelf) _pdDirty = true;
+                return;
+            }
             try
             {
                 long shellT = Mark();
@@ -199,6 +245,7 @@ namespace Quest3TriggerUI
                 CreateDockScrollbar(_pdDock,
                     FavTagGap + PdStripW + FavColW, -FavPad, PdGridH,
                     out _pdScrollTrack, out _pdScrollThumb);
+                CreatePdShowBar();
 
                 // Final footprint up front: TickPresetDock anchors the dock
                 // off the list edge using rect.width — during the incremental
@@ -217,6 +264,41 @@ namespace Quest3TriggerUI
                     " addCanvas=" + ElapsedMs(shellT) + "ms");
             }
             catch (Exception e) { ClearPresetDock(); Error(e); }
+        }
+
+        // Soft close on editor hide/close: deactivate the dock but keep the
+        // GameObject tree, cell pool and decoded thumbnail cache alive — the
+        // next editor open is instant instead of a full rebuild+re-decode.
+        // Interaction state (modes, overlays, hover) is still torn down so a
+        // zombie overlay cannot resurface on the next open. ClearPresetDock
+        // remains the hard teardown for plugin Reset and error paths.
+        private static void HidePresetDock()
+        {
+            ClearPdReorder();
+            _pdThumbQueue.Clear();
+            _pdThumbQueued.Clear();
+            _dockDeleteMode = false;
+            _pdSaveBrowsing = false;
+            _pdBrowseKind = 0;
+            if (_pdSaveOverlay != null) _pdSaveOverlay.SetActive(false);
+            _pdSaveOverlay = null;
+            _pdSaveTag = null;
+            if (_pdRenameOverlay != null) _pdRenameOverlay.SetActive(false);
+            _pdRenameOverlay = null;
+            _pdRenameInput = null;
+            _pdRenamePath = null;
+            if (_pdTargetPopup != null) _pdTargetPopup.SetActive(false);
+            _pdTargetPopup = null;
+            if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
+            _pdHzTag = null;
+            if (_pdHzPanel != null) _pdHzPanel.gameObject.SetActive(false);
+            _pdBuildSlots = null;
+            _pdBuildIdx = 0;
+            _pdBuildThumbs = false;
+            _pdList = null;
+            _pdAtom = null;
+            _pdPositionLogged = false;
+            if (_pdDock != null) _pdDock.gameObject.SetActive(false);
         }
 
         private static void ClearPresetDock()
@@ -261,11 +343,18 @@ namespace Quest3TriggerUI
             }
             _pdCanvas = null;
             _pdTabStrip = null;
-            PresetPreheat.Label = null;
+            _pdUserHidden = false;
+            _pdCollapsedApplied = false;
+            _pdShowBar = null;
             for (int i = 0; i < PdTabCount; i++)
             {
                 _pdTabBgs[i] = null;
                 _pdTabRects[i] = null;
+                // Parked cells are children of the dock — Destroy above
+                // already took them; just drop the references.
+                _pdParkedCells[i] = null;
+                _pdParkedHints[i] = null;
+                _pdParkedFresh[i] = false;
             }
             if (_pdDock != null)
             {
@@ -276,8 +365,13 @@ namespace Quest3TriggerUI
             _pdHzTag = null;
             _pdHzPanel = null;
             _pdHzImage = null;
-            foreach (Texture2D t in _pdThumbs.Values)
-                if (t != null) UnityEngine.Object.Destroy(t);
+            // Quarantine for the next payload generation (or a quick dock
+            // rebuild) instead of destroying — GenBridge.Tick destroys
+            // whatever goes unclaimed, same net lifetime as before.
+            var handoff = new Dictionary<string, Texture2D>(_pdThumbs, StringComparer.OrdinalIgnoreCase);
+            var handoffStamp = new Dictionary<string, long>(_pdThumbStamp, StringComparer.OrdinalIgnoreCase);
+            GenBridge.Quarantine("dock.thumbs", handoff);
+            GenBridge.Quarantine("dock.thumbStamp", handoffStamp);
             _pdThumbs.Clear();
             _pdThumbStamp.Clear();
         }
@@ -297,9 +391,13 @@ namespace Quest3TriggerUI
             // hiding the control panel while browsing used to leave the
             // dock alive, riding the vanishing list's corners downward —
             // the "dock slides off like it's falling" bug.
-            bool visible = sc != null && sc.MainHUDVisible &&
+            bool visible = !_dockModeFav && sc != null && sc.MainHUDVisible &&
                 (_pdPicking || _pdList.activeInHierarchy);
-            if (_pdDirty || _pdPreviewDirty || _pdBuildSlots != null)
+            // While user-collapsed or swapped to favorites mode the fill
+            // pump freezes — _pdDirty stays latched so showing the dock
+            // finishes the build then.
+            if (!_pdUserHidden && !_dockModeFav &&
+                (_pdDirty || _pdPreviewDirty || _pdBuildSlots != null))
             {
                 // Consume the dirty edge instead of latching it as the
                 // restart arg — otherwise every frame restarts the pump and
@@ -313,10 +411,11 @@ namespace Quest3TriggerUI
                 if (PumpPdCells(PdBuildPerTick, restart))
                     _pdBuildThumbs = false;
             }
-            if (visible) TickPdThumbnails();
+            if (visible && !_pdUserHidden) TickPdThumbnails();
             if (_pdDock.gameObject.activeSelf != visible)
                 _pdDock.gameObject.SetActive(visible);
             if (!visible) return;
+            ApplyPdCollapsed();
             if (!_pdPositionLogged)
             {
                 _pdPositionLogged = true;
@@ -343,6 +442,8 @@ namespace Quest3TriggerUI
                     _pdDock.rotation =
                         Quaternion.LookRotation(away, list.up);
             }
+            // Collapsed: nothing below the strip needs ticking.
+            if (_pdUserHidden) return;
             TickDockScroll(false);
             TickPdHoverZoom();
             // Target label tracks the auto pick while unconfirmed; manual
@@ -546,29 +647,18 @@ namespace Quest3TriggerUI
             _dockDeleteLabel = deleteRow.GetComponentInChildren<Text>();
             PaintDockDeleteMode();
             y += FavTagRowH + FavTagGap;
-            // 预热: generate .vamcache disk files for every texture the
-            // 人物 tab's presets reference, so a cold preset stops paying
-            // the decode+compress cost on first load. Already-cached
-            // presets are skipped.
-            GameObject preheatRow = CreatePdIoRow("预 热", y,
-                new Color(0.16f, 0.30f, 0.30f, 1f), TogglePresetPreheat);
-            PresetPreheat.Label = preheatRow.GetComponentInChildren<Text>();
+            // Collapses the dock to a lone 显示 strip — the parked cells and
+            // decoded thumbs survive, so un-hiding is instant.
+            CreatePdIoRow("隐 藏", y, new Color(0.20f, 0.20f, 0.24f, 1f),
+                delegate { SetPdHidden(true); });
+            y += FavTagRowH + FavTagGap;
+            // Mode switch: this dock slot is shared with the clothing
+            // favorites bar — both trees stay loaded, only visibility flips.
+            CreatePdIoRow("服 装", y, new Color(0.14f, 0.30f, 0.24f, 1f),
+                delegate { SetDockMode(true); });
             y += FavTagRowH;
             _pdTabStrip.sizeDelta = new Vector2(PdStripW, y);
             PdPaintTabs();
-        }
-
-        private static void TogglePresetPreheat()
-        {
-            EnsurePdSlots();
-            PresetPreheat.Toggle(_pdSlots[0]);
-        }
-
-        // cfg-triggered (one-shot flag) preheat uses the same entry point.
-        internal static List<string> PersonPresetPaths()
-        {
-            EnsurePdSlots();
-            return _pdSlots[0];
         }
 
         private static void AddPdStripCaption(string value, float y)
@@ -687,6 +777,186 @@ namespace Quest3TriggerUI
             return row;
         }
 
+        // Lone 显示 strip shown while the dock is user-collapsed — lives on
+        // the dock's own canvas so it shares the same world-space anchor.
+        private static void CreatePdShowBar()
+        {
+            GameObject go = new GameObject("PdShow", typeof(RectTransform));
+            _pdShowBar = go;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(_pdDock, false);
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(PdStripW, FavTagRowH);
+            Image bg = go.AddComponent<Image>();
+            bg.color = new Color(0.16f, 0.22f, 0.30f, 1f);
+            bg.raycastTarget = true;
+            Button button = go.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate
+            {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                VrHaptics.Press();
+                SetPdHidden(false);
+            });
+            Text text = new GameObject("Label", typeof(RectTransform))
+                .AddComponent<Text>();
+            RectTransform tr = (RectTransform)text.transform;
+            tr.SetParent(rect, false);
+            tr.anchorMin = Vector2.zero;
+            tr.anchorMax = Vector2.one;
+            tr.offsetMin = Vector2.zero;
+            tr.offsetMax = Vector2.zero;
+            text.text = "显 示";
+            text.alignment = TextAnchor.MiddleCenter;
+            text.fontSize = 14;
+            text.color = Color.white;
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.raycastTarget = false;
+            go.SetActive(false);
+        }
+
+        private static void SetPdHidden(bool hidden)
+        {
+            if (_pdUserHidden == hidden) return;
+            _pdUserHidden = hidden;
+            if (!hidden) return;
+            // Fold away live interactions so nothing lingers off-screen.
+            ClearPdReorder();
+            if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
+            if (_pdSaveOverlay != null)
+            { _pdSaveOverlay.SetActive(false); _pdSaveTag = null; }
+            if (_pdRenameOverlay != null)
+            {
+                _pdRenameOverlay.SetActive(false);
+                _pdRenamePath = null;
+                VrTextInputBridge.Clear();
+            }
+            if (_pdHzPanel != null) _pdHzPanel.gameObject.SetActive(false);
+        }
+
+        // Mode switch between the preset dock and the clothing favorites bar
+        // at the shared left-edge dock slot. No teardown: the hidden side's
+        // cells/thumbs/state all stay put for the instant flip back.
+        private static void SetDockMode(bool fav)
+        {
+            if (_dockModeFav == fav) return;
+            _dockModeFav = fav;
+            ClearPdReorder();
+            if (_pdHzPanel != null) _pdHzPanel.gameObject.SetActive(false);
+            if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
+            if (!fav)
+            {
+                // Leaving the clothing side — fold its live interactions
+                // the same way the preset overlays fold above.
+                ClearFavoriteReorder();
+                if (_favTagEditing != null) CommitTagRename();
+                return;
+            }
+            if (_pdSaveOverlay != null)
+            { _pdSaveOverlay.SetActive(false); _pdSaveTag = null; }
+            if (_pdRenameOverlay != null)
+            {
+                _pdRenameOverlay.SetActive(false);
+                _pdRenamePath = null;
+                VrTextInputBridge.Clear();
+            }
+        }
+
+        // Applies the collapsed/expanded layout once per state flip: hidden
+        // shrinks the dock to the show strip (the parked/active cells stay
+        // put under the masked view); expanded restores the full footprint.
+        private static void ApplyPdCollapsed()
+        {
+            bool expanded = !_pdUserHidden;
+            if (_pdCollapsedApplied == expanded) return;
+            _pdCollapsedApplied = expanded;
+            if (_pdTabStrip != null)
+                _pdTabStrip.gameObject.SetActive(expanded);
+            if (_pdView != null)
+                _pdView.gameObject.SetActive(expanded);
+            if (_pdScrollTrack != null)
+                _pdScrollTrack.gameObject.SetActive(expanded);
+            if (_pdShowBar != null)
+                _pdShowBar.SetActive(!expanded);
+            if (_pdDock == null) return;
+            if (expanded)
+            {
+                float stripNeed = _pdTabStrip == null ? 0f
+                    : _pdTabStrip.sizeDelta.y + FavPad * 2f;
+                _pdDock.sizeDelta = new Vector2(
+                    FavTagGap + PdStripW + FavColW,
+                    Mathf.Max(64f, Mathf.Max(PdGridH, stripNeed)));
+            }
+            else
+            {
+                _pdDock.sizeDelta = new Vector2(
+                    PdStripW + FavPad * 2f, FavTagRowH + FavPad * 2f);
+            }
+        }
+
+        // Swaps a parked tab's cells back in — the cheap path when nothing
+        // invalidated them since they were parked. Returns false when the
+        // tab needs a real (re)build via the pump.
+        private static bool RestorePdTabCells()
+        {
+            int tab = _pdTab;
+            List<PdSlotTag> parked = _pdParkedCells[tab];
+            GameObject hint = _pdParkedHints[tab];
+            bool fresh = _pdParkedFresh[tab];
+            _pdParkedCells[tab] = null;
+            _pdParkedHints[tab] = null;
+            _pdParkedFresh[tab] = false;
+            if (!fresh || _pdCells == null)
+            {
+                // Stale leftovers die here rather than surfacing one switch
+                // later with wrong thumbnails.
+                if (parked != null)
+                    for (int i = 0; i < parked.Count; i++)
+                        if (parked[i] != null)
+                            UnityEngine.Object.Destroy(parked[i].gameObject);
+                if (hint != null) UnityEngine.Object.Destroy(hint);
+                return false;
+            }
+            if (parked != null)
+            {
+                for (int i = 0; i < parked.Count; i++)
+                {
+                    PdSlotTag tag = parked[i];
+                    if (tag == null) continue;
+                    tag.gameObject.SetActive(true);
+                    _pdVisibleCells.Add(tag);
+                    // Kept-set membership is what lets queued thumbnail
+                    // decodes run — parking cleared it, so cells restored
+                    // without it could never lazy-load a thumbnail again
+                    // (bottom rows that never entered the viewport stayed
+                    // blank forever).
+                    _pdKeptCells.Add(tag);
+                }
+            }
+            if (hint != null)
+            {
+                if (_pdVisibleCells.Count == 0)
+                { _pdHintCell = hint; hint.SetActive(true); }
+                else UnityEngine.Object.Destroy(hint);
+            }
+            _pdCellPosition = _pdVisibleCells.Count;
+            int count = _pdVisibleCells.Count;
+            int rows = Mathf.CeilToInt(count / (float)FavColumns);
+            _pdContentH = rows > 0
+                ? rows * PdCellH + (rows - 1) * FavSpacing + FavPad
+                : FavPad;
+            _pdCells.sizeDelta = new Vector2(FavColW, _pdContentH);
+            ApplyDockScroll(false, _pdScrollY);
+            // Name-strip clickability mirrors save-browse state.
+            PaintDockSaveMode();
+            return true;
+        }
+
         private static void PdPaintTabs()
         {
             for (int i = 0; i < PdTabCount; i++)
@@ -708,6 +978,10 @@ namespace Quest3TriggerUI
 
         private static int PresetDockTabUnderPointer(bool right)
         {
+            // Collapsed strip or favorites mode parks the rows but their
+            // rects still hit-test — gate on active state.
+            if (_pdTabStrip == null ||
+                !_pdTabStrip.gameObject.activeInHierarchy) return -1;
             Vector2 local;
             for (int i = 0; i < PdTabCount; i++)
             {
@@ -728,6 +1002,10 @@ namespace Quest3TriggerUI
 
         private static bool PointerOverPresetDock(bool right)
         {
+            // The parked dock's plane still hit-tests at the shared slot —
+            // an inactive dock must never absorb a drop.
+            if (_pdDock == null || !_pdDock.gameObject.activeInHierarchy)
+                return false;
             GameObject t = VrPointerPresentation.CurrentLookTarget(right);
             if (t != null && t.GetComponentInParent<PdDockTag>() != null)
                 return true;
@@ -771,6 +1049,7 @@ namespace Quest3TriggerUI
             }
             if (added == 0) return 0;
             SavePdSlots();
+            _pdParkedFresh[tab] = false;
             // Newly filed entries land at the end — scroll to them.
             if (tab == _pdTab)
                 _pdScrollY = float.MaxValue;
@@ -784,13 +1063,16 @@ namespace Quest3TriggerUI
         private static void PdSelectTab(int idx)
         {
             if (idx == _pdTab) return;
+            // Park the outgoing tab's cells instead of destroying them —
+            // switching back reactivates the parked grid with its decoded
+            // thumbnails and no fill animation; only a stale or never-built
+            // tab falls through to the pump.
+            ParkPdTabCells(_pdTab);
             _pdTab = idx;
             _pdScrollY = 0f;
-            // Wipe the old tab's cells immediately — the new tab fills a
-            // blank panel instead of squeezing new thumbnails over old ones.
-            ClearPdCellsNow();
             PdPaintTabs();
-            _pdDirty = true;
+            if (!RestorePdTabCells())
+                _pdDirty = true;
             // A dock-initiated browser session follows the tab: same
             // function (新增/读取/保存), retargeted to the tab's directory.
             if (_pdPicking && VrPresetBrowser.IsOpen)
@@ -1160,6 +1442,7 @@ namespace Quest3TriggerUI
                         byte[] bytes = File.ReadAllBytes(full);
                         Texture2D t = new Texture2D(2, 2,
                             TextureFormat.RGBA32, false);
+                        t.name = "Q3PdThumb";
                         if (t.LoadImage(bytes)) tex = t;
                         else UnityEngine.Object.Destroy(t);
                     }
@@ -1215,6 +1498,8 @@ namespace Quest3TriggerUI
                 if (_pdPersonOverlay != null)
                     _pdPersonOverlay.SetActive(false);
                 SavePdSlots();
+                for (int i = 0; i < PdTabCount; i++)
+                    _pdParkedFresh[i] = false;
                 _pdDirty = true;
                 // Rebind live cells before old textures are destroyed at
                 // frame end; do not leave visible cells pointing at them.
@@ -1327,6 +1612,7 @@ namespace Quest3TriggerUI
             List<string> slots = _pdSlots[tab];
             if (slots == null || !slots.Remove(path)) return false;
             SavePdSlots();
+            _pdParkedFresh[tab] = false;
             _pdDirty = true;
             return true;
         }
@@ -1396,6 +1682,7 @@ namespace Quest3TriggerUI
             if (slots.Contains(path)) return false;
             slots.Add(path);
             SavePdSlots();
+            _pdParkedFresh[tab] = false;
             if (tab == _pdTab)
             {
                 // Scroll to the bottom so the user sees the new slot land.

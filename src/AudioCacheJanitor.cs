@@ -71,6 +71,9 @@ namespace Quest3TriggerUI
                 return;
             }
             if (Enabled == null || !Enabled.Value) return;
+            // Opportunistic eviction: a preset restore is not the moment to
+            // walk every AudioSource and AudioSourceControl.
+            if (LoadWindow.PresetBusy) { LoadWindow.NoteDeferred("AudioJan"); return; }
             if (Time.unscaledTime < _nextSweep) return;
             _nextSweep = Time.unscaledTime + SweepEvery;
             Sweep(false);

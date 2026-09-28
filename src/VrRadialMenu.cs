@@ -123,6 +123,7 @@ namespace Quest3TriggerUI
                             (byte)(a * 255f));
                     }
                     var tex = new Texture2D(n, n, TextureFormat.RGBA32, false);
+                    tex.name = "Q3RadialDisc";
                     tex.SetPixels32(px);
                     tex.Apply();
                     _discSprite = Sprite.Create(tex, new Rect(0, 0, n, n),
@@ -171,6 +172,7 @@ namespace Quest3TriggerUI
                     (byte)(a * 255f));
             }
             var t = new Texture2D(w, h, TextureFormat.RGBA32, false);
+            t.name = "Q3RadialWedge";
             t.SetPixels32(px);
             t.Apply();
             cached = Sprite.Create(t, new Rect(0, 0, w, h), pivot, ppu);

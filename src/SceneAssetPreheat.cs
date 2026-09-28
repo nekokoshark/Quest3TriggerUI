@@ -19,8 +19,9 @@ namespace Quest3TriggerUI
     //
     // The BrowserAssist 预热 button that used to drive this for a selected
     // scene was removed: measurements showed bundle realization alone buys
-    // ~nothing on load time, and Person pre-cloning is now handled by the
-    // fixed headless pool (AtomClonePool).
+    // ~nothing on load time. The headless startup pass now only warms the
+    // morph-bank catalogue caches (ScenePreheat); person pre-cloning was
+    // retired with the clone pool.
     //
     // Safety: only public VaM entry points, same order the game uses them,
     // main-thread coroutine. No atom, storable, physics or timeline is

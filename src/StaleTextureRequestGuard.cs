@@ -36,6 +36,7 @@ namespace Quest3TriggerUI
                     typeof(StaleTextureRequestGuard).GetMethod("BeforeFinish", All | BindingFlags.Static)));
                 Log("installed: expired native requests skip GPU upload; existing caches retained");
                 TextureDecodeBudget.Install();
+                TextureCacheByteReuse.Install();
             }
             catch (Exception e)
             {
@@ -108,6 +109,7 @@ namespace Quest3TriggerUI
         internal static void Shutdown()
         {
             TextureDecodeBudget.Shutdown();
+            TextureCacheByteReuse.Shutdown();
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null;
             _tried = false;

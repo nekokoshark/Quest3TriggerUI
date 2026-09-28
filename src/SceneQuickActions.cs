@@ -912,69 +912,217 @@ internal void OpenPersonPreset()
                         if (interceptPath != null &&
                             interceptPath(eff, path))
                             return;
-                        StorePresetToPath(effPresets, path, storableId, label);
+                        // Native semantics: every browser save/overwrite
+                        // goes on to the aim-and-select thumbnail pass.
+                        StorePresetToPath(effPresets, path, storableId,
+                            label, true, UiAssistHudLink.InvalidatePdThumb);
                     }
                     finally { if (onDone != null) onDone(didClose); }
                 }, compact: small, loadTarget: target);
         }
 
-        // StorePreset resolves the output file purely from pm.presetName
-        // (storeFolder + presetSubPath + storeName + "_" + presetSubName +
-        // ".vap"), so this writes presetName directly and never touches
-        // presetBrowsePath — the sync that could trigger a preset *load*
-        // structurally cannot run.
+        // Overwrite used to round-trip through pm.presetName +
+        // CallAction("StorePreset") and then relocate whatever file VaM
+        // produced. Two real failure modes forced the rewrite: the
+        // manager's storable lists are only rebuilt by RefreshStorables
+        // (native callers get it from opening the preset panel — a dock
+        // save never did), and the indirect path gave no way to prove the
+        // serialized JSON matched the atom's live state. Serialize the
+        // manager's lists directly — identical output to native
+        // StorePreset — verify the geometry section holds the atom's live
+        // clothing, then write the exact target path atomically.
+        private static readonly MethodInfo StoreStorablesMethod =
+            typeof(MeshVR.PresetManager).GetMethod("StoreStorables",
+                BindingFlags.NonPublic | BindingFlags.Instance, null,
+                new Type[] { typeof(JSONClass), typeof(bool) }, null);
+
         private void StorePresetToPath(
             MeshVR.PresetManagerControl presets, string path,
-            string storableId, string label)
+            string storableId, string label, bool photo,
+            Action<string> shotDone)
         {
-            JSONStorableString nameParam =
-                presets.GetStringJSONParam("presetName");
             MeshVR.PresetManager pm = PresetManagerOf(presets);
-            if (nameParam == null || pm == null)
+            if (pm == null || StoreStorablesMethod == null)
             {
-                LogError(label + " preset save: presetName is unavailable.");
+                LogError(label + " preset save: preset manager is unavailable.");
                 return;
             }
-            // VaM preset files are "<storeName>_<name>.vap" (storeName="Preset").
-            // A name typed without the prefix is rejected by
-            // GetPresetNameFromFilePath, so normalise the chosen path.
-            int slash = path.LastIndexOf('/');
-            string dir = slash >= 0 ? path.Substring(0, slash) : path;
-            string file = slash >= 0 ? path.Substring(slash + 1) : path;
-            if (file.EndsWith(".vap", StringComparison.OrdinalIgnoreCase))
-                file = file.Substring(0, file.Length - 4);
-            if (!file.StartsWith("Preset_", StringComparison.OrdinalIgnoreCase))
-                file = "Preset_" + file;
-            path = SuperController.singleton.NormalizePath(
-                dir + "/" + file + ".vap");
+            string target = SuperController.singleton.NormalizePath(path);
+            string tempPath = null;
             try
             {
-                string name = pm.GetPresetNameFromFilePath(path);
-                if (string.IsNullOrEmpty(name))
+                if (pm.itemType == MeshVR.PresetManager.ItemType.None)
+                    throw new InvalidOperationException(
+                        "item type is None on " + storableId);
+                if (FileManager.IsPackagePath(target))
+                    throw new InvalidOperationException(
+                        "presets inside VAR packages cannot be rewritten");
+                // A fresh name still follows VaM convention —
+                // "<storeName>_<name>.vap" — so native preset browsers can
+                // resolve the file; an existing favourite is overwritten
+                // in place (dock identity, sidecar jpg and the thumbnail
+                // cache are all keyed by its exact path).
+                if (!File.Exists(FileManager.GetFullPath(target)))
                 {
-                    // Picked path is outside this manager's store folder:
-                    // store in the store root under the chosen filename.
-                    name = file.Substring("Preset_".Length);
+                    int s = target.LastIndexOf('/');
+                    string dir = s >= 0 ? target.Substring(0, s + 1) : "";
+                    string file = s >= 0 ? target.Substring(s + 1) : target;
+                    if (file.EndsWith(".vap",
+                            StringComparison.OrdinalIgnoreCase))
+                        file = file.Substring(0, file.Length - 4);
+                    string sn = string.IsNullOrEmpty(pm.storeName)
+                        ? "Preset" : pm.storeName;
+                    if (!file.StartsWith(sn + "_",
+                            StringComparison.OrdinalIgnoreCase))
+                        target = dir + sn + "_" + file + ".vap";
                 }
-                if (string.IsNullOrEmpty(pm.storeName))
-                    pm.storeName = "Preset";
-                nameParam.val = name;
-                // StorePreset (not *WithScreenshot): the aim-and-select
-                // screenshot pass ate its first capture as a skip. We write
-                // the sidecar jpg ourselves from the already-rendered eye
-                // frame — instant, no mode flip, no lost first shot.
-                presets.CallAction("StorePreset");
-                PresetThumbCapture.Queue(path, null);
-                int storeSlash = path.LastIndexOfAny(new char[] { '/', '\\' });
+                pm.RefreshStorables();
+                JSONClass jc = new JSONClass();
+                jc["setUnlistedParamsToDefault"].AsBool = true;
+                // Mirror of PresetManager.StorePreset's flag block.
+                if (pm.conditionalFlagsToStore != null &&
+                    (pm.storeConditionalFlagsAlways ||
+                     (pm.storeConditionalFlagsWhenStoreOptional &&
+                        pm.storeOptionalStorables) ||
+                     (pm.storeConditionalFlagsWhenStoreOptional2 &&
+                        pm.storeOptionalStorables2) ||
+                     (pm.storeConditionalFlagsWhenStoreOptional3 &&
+                        pm.storeOptionalStorables3)))
+                {
+                    for (int i = 0; i < pm.conditionalFlagsToStore.Length; i++)
+                        jc[pm.conditionalFlagsToStore[i]].AsBool = true;
+                }
+                StoreStorablesMethod.Invoke(pm, new object[] { jc, true });
+                VerifyStoredClothing(presets.containingAtom, jc, label);
+                string full = FileManager.GetFullPath(target);
+                string dir2 = Path.GetDirectoryName(full);
+                if (!string.IsNullOrEmpty(dir2)) Directory.CreateDirectory(dir2);
+                tempPath = full + ".q3tmp";
+                File.WriteAllText(tempPath, jc.ToString(),
+                    new System.Text.UTF8Encoding(false));
+                if (File.Exists(full)) File.Replace(tempPath, full, null);
+                else File.Move(tempPath, full);
+                tempPath = null;
+                if (photo) QueueNativePresetShot(target, shotDone);
+                int storeSlash = target.LastIndexOf('/');
                 if (storeSlash > 0)
-                    PresetSaveDirs.Set(storableId, path.Substring(0, storeSlash));
-                LogInfo(label + " preset saved: " + path +
-                    " (presetName=" + name + ")");
+                    PresetSaveDirs.Set(storableId,
+                        target.Substring(0, storeSlash));
+                JSONArray stored = jc["storables"].AsArray;
+                LogInfo(label + " preset saved: " + target + " (atom=" +
+                    (presets.containingAtom == null
+                        ? "?" : presets.containingAtom.uid) +
+                    ", storables=" + (stored == null ? 0 : stored.Count) +
+                    ")");
             }
             catch (Exception exception)
             {
                 LogError(label + " preset save failed: " + exception);
             }
+            finally
+            {
+                if (tempPath != null)
+                {
+                    try { File.Delete(tempPath); }
+                    catch { }
+                }
+            }
+        }
+
+        // The reported bug was a silent stale write, so refuse to land a
+        // file whose serialized clothing list does not equal the atom's
+        // live selector state — that mismatch is exactly the symptom.
+        // Missing geometry (pure section presets) or a missing clothing
+        // array (hair-only files) skip the check; it only proves a person
+        // or clothing payload is live.
+        private static void VerifyStoredClothing(
+            Atom atom, JSONClass jc, string label)
+        {
+            JSONArray storables = jc["storables"].AsArray;
+            if (storables == null || storables.Count == 0)
+                throw new InvalidOperationException(
+                    label + " serialization produced no storables");
+            JSONClass geometry = null;
+            for (int i = 0; i < storables.Count; i++)
+            {
+                JSONClass s = storables[i].AsObject;
+                if (s != null && s["id"].Value == "geometry")
+                { geometry = s; break; }
+            }
+            if (geometry == null) return;
+            JSONArray clothing = geometry["clothing"].AsArray;
+            DAZCharacterSelector selector = atom == null ? null :
+                atom.GetStorableByID("geometry") as DAZCharacterSelector;
+            if (clothing == null || selector == null ||
+                selector.clothingItems == null) return;
+            var storedIds = new List<string>();
+            for (int i = 0; i < clothing.Count; i++)
+            {
+                JSONClass c = clothing[i].AsObject;
+                if (c != null && c["enabled"].AsBool)
+                    storedIds.Add(c["id"].Value ?? "");
+            }
+            var liveIds = new List<string>();
+            DAZClothingItem[] items = selector.clothingItems;
+            for (int i = 0; i < items.Length; i++)
+                if (items[i] != null && items[i].active)
+                    liveIds.Add(items[i].uid ?? "");
+            storedIds.Sort(StringComparer.Ordinal);
+            liveIds.Sort(StringComparer.Ordinal);
+            bool same = storedIds.Count == liveIds.Count;
+            for (int i = 0; same && i < storedIds.Count; i++)
+                if (storedIds[i] != liveIds[i]) same = false;
+            if (!same)
+                throw new InvalidOperationException(label +
+                    " serialization is stale: file would hold " +
+                    storedIds.Count + " clothing items but " + atom.uid +
+                    " wears " + liveIds.Count + " — refusing to overwrite");
+        }
+
+        // Native VaM thumbnail pass: enters SuperController's aim-and-select
+        // screenshot mode (HUD hides, screenshotCamera renders, the user
+        // aims and presses select). Deferred a frame so the press that
+        // chose 拍照/确认 cannot be consumed as that mode's own shot edge.
+        private void QueueNativePresetShot(string vapPath,
+            Action<string> shotDone)
+        {
+            string jpg;
+            try { jpg = FileManager.GetFullPath(vapPath); }
+            catch { return; }
+            if (string.IsNullOrEmpty(jpg) ||
+                !jpg.EndsWith(".vap", StringComparison.OrdinalIgnoreCase))
+                return;
+            jpg = jpg.Substring(0, jpg.Length - 4) + ".jpg";
+            jpg = jpg.Replace('/', '\\');
+            _host.StartCoroutine(
+                NativePresetShotRoutine(jpg, vapPath, shotDone));
+        }
+
+        private IEnumerator NativePresetShotRoutine(
+            string jpgPath, string vapPath, Action<string> shotDone)
+        {
+            yield return null;
+            SuperController sc = SuperController.singleton;
+            if (sc == null || sc.screenshotCamera == null) yield break;
+            // The shot camera renders world-space canvases too — park our
+            // browser so the thumbnail is the scene, not the dialog that
+            // launched it. The dock hides itself with the main HUD.
+            VrPresetBrowser.SetHiddenForScreenshot(true);
+            SuperController.ScreenShotCallback cb = shotDone == null ? null
+                : new SuperController.ScreenShotCallback(
+                    delegate(string img) { shotDone(vapPath); });
+            try { sc.DoSaveScreenshot(jpgPath, cb); }
+            catch (Exception e)
+            {
+                VrPresetBrowser.SetHiddenForScreenshot(false);
+                LogError("preset screenshot mode failed: " + e.Message);
+                yield break;
+            }
+            // Restore the browser once the mode exits — the completed shot
+            // and a Remote-Grab cancel both end with the main HUD back.
+            yield return null;
+            while (sc != null && !sc.MainHUDVisible) yield return null;
+            VrPresetBrowser.SetHiddenForScreenshot(false);
         }
 
         // ---- preset-dock 保存 entries: the dock's editor atom is the
@@ -986,7 +1134,8 @@ internal void OpenPersonPreset()
         // .vap the clicked cell references. Same rules as the save dialog —
         // existing person .vap merges via the per-tab intercepts, pure-type
         // files go through the native store. VAR-embedded presets refuse.
-        internal bool DockStorePreset(Atom target, int tab, string path)
+        internal bool DockStorePreset(Atom target, int tab, string path,
+            bool photo, Action<string> shotDone)
         {
             if (target == null || string.IsNullOrEmpty(path)) return false;
             if (FileManager.IsPackagePath(path))
@@ -1013,13 +1162,17 @@ internal void OpenPersonPreset()
                     break;
                 case 4:
                     StoreMakeupPresetFile(target, path);
+                    if (photo) QueueNativePresetShot(path, shotDone);
                     return true;
                 default:
                     storableId = "AppearancePresets"; label = "人物";
                     break;
             }
             if (intercept != null && intercept(target, path))
+            {
+                if (photo) QueueNativePresetShot(path, shotDone);
                 return true;
+            }
             MeshVR.PresetManagerControl presets =
                 target.GetStorableByID(storableId) as MeshVR.PresetManagerControl;
             if (presets == null)
@@ -1028,7 +1181,8 @@ internal void OpenPersonPreset()
                     " is unavailable on " + target.uid + ".");
                 return false;
             }
-            StorePresetToPath(presets, path, storableId, label);
+            StorePresetToPath(presets, path, storableId, label,
+                photo, shotDone);
             return true;
         }
 
@@ -3155,6 +3309,7 @@ internal void OpenPersonPreset()
             }
 
             _appearanceLoadBusy = true;
+            CharacterLoadTrace.Begin("replace", path, target == null ? null : target.uid);
             JSONStorableBool loadOnSelect = null;
             JSONStorableUrl presetPath = null;
             string previousPath = null;
@@ -3236,6 +3391,7 @@ internal void OpenPersonPreset()
             Atom target, JSONStorable appearancePresets, string path)
         {
             _appearanceLoadBusy = true;
+            CharacterLoadTrace.Begin("appearance", path, target == null ? null : target.uid);
             MeshVR.PresetManagerControl clothingControl = null;
             bool clothingWasLocked = false;
             try

@@ -18,6 +18,11 @@ namespace Quest3TriggerUI.HotLoader
         private const string RuntimeLeafName = "Quest3TriggerUIPlugin";
         private const string RuntimeNamespacePrefix = "Quest3TriggerUI";
         private const float PollSeconds = 0.50f;
+        // Mono can never unload a byte-loaded assembly: every hot-load leaves
+        // ~5MB of metadata + JIT code behind permanently. Count generations
+        // and surface the accumulated estimate so the user knows when a VaM
+        // restart is worthwhile — hot-loading itself stays unrestricted.
+        private const int WarnGenerations = 10;
 
         private string _payloadPath;
         private MonoBehaviour _runtime;
@@ -31,6 +36,7 @@ namespace Quest3TriggerUI.HotLoader
         private float _nextSweep;
         private int _censusLogsLeft;
         private int _sweepsLeft;
+        private int _generations;
 
         private void Awake()
         {
@@ -189,6 +195,17 @@ namespace Quest3TriggerUI.HotLoader
                 {
                     UnityEngine.Object.DestroyImmediate(_runtime);
                     _runtime = null;
+                    // The old generation's objects are dead now — collect
+                    // before the new generation allocates so the two don't
+                    // coexist in the heap peak (Boehm retains peak pages).
+                    long gcStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+                    Logger.LogInfo("[Hot Loader] pre-load GC " +
+                        ((System.Diagnostics.Stopwatch.GetTimestamp() - gcStart) *
+                            1000 / System.Diagnostics.Stopwatch.Frequency) +
+                        "ms heapMiB=" + (GC.GetTotalMemory(false) / 1048576));
                 }
 
                 try
@@ -228,13 +245,18 @@ namespace Quest3TriggerUI.HotLoader
                 _stableObservations = 0;
                 _censusLogsLeft = 6;
                 _sweepsLeft = 12;
+                if (!initialLoad) _generations++;
                 SweepStaleRuntimes();
                 FileInfo file = new FileInfo(_payloadPath);
                 _observedLength = file.Length;
                 _observedWriteTicks = file.LastWriteTimeUtc.Ticks;
                 Logger.LogInfo((initialLoad ? "Loaded" : "Hot-reloaded") +
                     " Quest3TriggerUI payload SHA256=" + hash +
-                    " active=" + _runtimeType.FullName + ".");
+                    " active=" + _runtimeType.FullName +
+                    (_generations > 0 ? " gen=" + _generations +
+                        (_generations >= WarnGenerations
+                            ? " (~" + _generations * 5 + "MB irreducible — restart VaM to reclaim)"
+                            : "") : "") + ".");
             }
             catch (Exception exception)
             {

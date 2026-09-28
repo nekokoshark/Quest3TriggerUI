@@ -66,6 +66,7 @@ namespace Quest3TriggerUI
 
         private static void Begin(DAZCharacterSelector __instance, JSONClass __0, bool __2, out Scope __state)
         {
+            LoadWindow.NoteActivity();
             Scope previous;
             Scopes.TryGetValue(__instance, out previous);
             bool eligible = (Enabled == null || Enabled.Value) && __2 && __0 != null &&
@@ -95,6 +96,7 @@ namespace Quest3TriggerUI
             __state = null;
             Scope scope;
             if (!Scopes.TryGetValue(__instance, out scope)) return;
+            LoadWindow.NoteActivity();
             __state = new ResetScope { owner = scope, previous = scope.resetting };
             scope.resetting = null;
             if (!__0 || scope.character == null || !scope.character.ready ||
@@ -194,6 +196,7 @@ namespace Quest3TriggerUI
             if (!__1 || !__2 || __0 == null || !__0.active || !__0.ready ||
                 !__0.needsPostLoadJSONRestore || !Scopes.TryGetValue(__instance, out scope) ||
                 !scope.retained.Contains(__0)) return;
+            LoadWindow.NoteActivity();
             // SetActive(true) on an already active GameObject does not run
             // OnEnable. Retain its required restore + physics-reset completion.
             __0.PostLoadJSONRestore();

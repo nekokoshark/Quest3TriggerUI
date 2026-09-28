@@ -75,6 +75,7 @@ namespace Quest3TriggerUI
         private static bool _favLoaded;
         private static bool _favPositionLogged;
         private static bool _favProbeLogged;
+        private static bool _favThumbsBridged;
         // Independent log channel: bypasses Quest3TriggerUIPlugin.Log so a
         // broken static field in a stale hot-loaded assembly cannot mute
         // diagnostics.
@@ -107,6 +108,13 @@ namespace Quest3TriggerUI
         private static int _favTagTop;
         private static string _favTagEditing;
         private static InputField _favTagInput;
+        // User-hidden state mirrors the preset dock: the dock object stays
+        // alive but collapses to a small 显 示 strip; cells and thumbnail
+        // caches are untouched so re-showing is instant.
+        private static bool _favUserHidden, _favCollapsedApplied;
+        private static GameObject _favShowBar;
+        private static Image _favDeleteButton;
+        private static Text _favDeleteLabel;
 
         private static string FavPath
         {
@@ -212,6 +220,12 @@ namespace Quest3TriggerUI
             _favBuildVisual = false;
             _favScrollY = 0f;
             _favContentH = 0f;
+            ClearFavParkedAll();
+            _favUserHidden = false;
+            _favCollapsedApplied = false;
+            _favShowBar = null;
+            _favDeleteButton = null;
+            _favDeleteLabel = null;
             _favView = null;
             _favScrollTrack = null;
             _favScrollThumb = null;
@@ -280,6 +294,9 @@ namespace Quest3TriggerUI
             _favTagItems.Clear();
             _favTagActiveName = "";
             _favTagView = true;
+            // Rebuilt lists are new objects — parked entries keyed by the
+            // old ones could never be restored, purge them.
+            ClearFavParkedAll();
             List<string[]> current = null;
             if (lines != null)
             {
@@ -444,6 +461,7 @@ namespace Quest3TriggerUI
             int index = FindFavoriteIndex(items, uid);
             if (index < 0) return false;
             items.RemoveAt(index);
+            InvalidateFavParked(items);
             return true;
         }
 
@@ -493,9 +511,15 @@ namespace Quest3TriggerUI
         private static void SetFavoriteTagView(bool root)
         {
             if (_favTagView == root) return;
+            // Park the outgoing view's cells against its backing list
+            // object, then restore the incoming view's parked cells — no
+            // rebuild, no thumbnail re-decode on tag switches.
+            List<string[]> outgoing = VisibleFavorites;
             _favTagView = root;
             _favScrollY = 0f;
-            _favDirty = true;
+            ParkFavViewCells(outgoing);
+            if (!RestoreFavViewCells(VisibleFavorites))
+                _favDirty = true;
             SaveFavoriteTags();
             RefreshTagRows();
         }
@@ -527,9 +551,7 @@ namespace Quest3TriggerUI
             _favTagNames.Add(name);
             _favTagTop = Mathf.Max(0, _favTagNames.Count - FavTagCapacity);
             _favTagEditing = name;
-            _favTagView = true;
-            _favScrollY = 0f;
-            _favDirty = true;
+            SetFavoriteTagView(true);   // parks the outgoing view's cells
             SaveFavoriteTags();
             RefreshTagRows();
             Log("已新建收藏标签 " + name + "：输入名称后点 ✓ 确认。");
@@ -586,7 +608,19 @@ namespace Quest3TriggerUI
             _favTagItems.Remove(name);
             _favTagNames.RemoveAt(index);
             if (_favTagEditing == name) { _favTagEditing = null; _favTagInput = null; }
-            if (_favTagIndex == index) { _favTagIndex = -1; _favTagView = true; }
+            // The deleted list is dead — its parked cells can never be
+            // looked up again. The default list just gained moved-back
+            // entries, so its parked set is stale too.
+            InvalidateFavParked(items);
+            InvalidateFavParked(_favorites);
+            if (_favTagIndex == index)
+            {
+                _favTagIndex = -1;
+                // Currently showing the deleted list — its cells have no
+                // backing list, park would orphan them under a dead key.
+                ClearFavCellsNow();
+                SetFavoriteTagView(true);
+            }
             else if (_favTagIndex > index) _favTagIndex--;
             _favScrollY = 0f;
             _favDirty = true;
@@ -631,7 +665,156 @@ namespace Quest3TriggerUI
             CreateTagCreateRow(y);
             y += FavTagRowH + FavTagGap;
             if (FavTagPager) { CreateTagPagerRow(y); y += FavTagRowH + FavTagGap; }
+            CreateFavModeRow(y, FavTagStripW);
+            y += FavTagRowH + FavTagGap;
+            CreateFavDeleteRow(y, FavTagStripW);
+            y += FavTagRowH + FavTagGap;
+            CreateFavStripRow(y, FavTagStripW, "FavHide", "隐 藏",
+                new Color(0.16f, 0.22f, 0.30f, 1f),
+                delegate { SetFavHidden(true); });
+            y += FavTagRowH + FavTagGap;
             _favTagStrip.sizeDelta = new Vector2(FavTagStripW, y);
+        }
+
+        // Mode switch back to the preset dock — the merged left-edge slot
+        // shows one mode at a time; both trees stay loaded.
+        private static void CreateFavModeRow(float y, float width)
+        {
+            CreateFavStripRow(y, width, "FavMode", "预 设",
+                new Color(0.20f, 0.24f, 0.34f, 1f),
+                delegate { SetDockMode(false); });
+        }
+
+        // Delete-mode toggle — same shared _dockDeleteMode the preset
+        // strip uses; cell clicks route to DeleteFavoriteOnClick.
+        private static void CreateFavDeleteRow(float y, float width)
+        {
+            Image bg; Text label;
+            CreateFavStripRow(y, width, "FavDelete",
+                _dockDeleteMode ? "结束删除" : "删 除",
+                new Color(0.28f, 0.15f, 0.15f, 1f),
+                delegate { ToggleDockDeleteMode(); },
+                out bg, out label);
+            _favDeleteButton = bg;
+            _favDeleteLabel = label;
+            PaintDockDeleteMode();
+        }
+
+        // Collapsed-state click target, mirrors CreatePdShowBar.
+        private static void CreateFavShowBar()
+        {
+            GameObject go = new GameObject("FavShow", typeof(RectTransform));
+            _favShowBar = go;
+            RectTransform rect = (RectTransform)go.transform;
+            rect.SetParent(_favDock, false);
+            rect.anchorMin = new Vector2(0.5f, 0.5f);
+            rect.anchorMax = new Vector2(0.5f, 0.5f);
+            rect.pivot = new Vector2(0.5f, 0.5f);
+            rect.anchoredPosition = Vector2.zero;
+            rect.sizeDelta = new Vector2(FavTagStripW, FavTagRowH);
+            Image bg = go.AddComponent<Image>();
+            bg.color = new Color(0.16f, 0.22f, 0.30f, 1f);
+            bg.raycastTarget = true;
+            Button button = go.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate
+            {
+                if (Quest3TriggerUIPlugin.ClothingDragActive ||
+                    Time.unscaledTime < _favoriteClickAfter) return;
+                VrHaptics.Press();
+                SetFavHidden(false);
+            });
+            Text text = new GameObject("Label", typeof(RectTransform))
+                .AddComponent<Text>();
+            RectTransform tr = (RectTransform)text.transform;
+            tr.SetParent(rect, false);
+            tr.anchorMin = Vector2.zero;
+            tr.anchorMax = Vector2.one;
+            tr.offsetMin = Vector2.zero;
+            tr.offsetMax = Vector2.zero;
+            text.text = "显 示";
+            text.alignment = TextAnchor.MiddleCenter;
+            text.fontSize = 14;
+            text.color = Color.white;
+            text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            text.raycastTarget = false;
+            go.SetActive(false);
+        }
+
+        private static void SetFavHidden(bool hidden)
+        {
+            if (_favUserHidden == hidden) return;
+            _favUserHidden = hidden;
+            if (!hidden) return;
+            // Fold away live interactions so nothing lingers off-screen.
+            ClearFavoriteReorder();
+            if (_favTagEditing != null) CommitTagRename();
+        }
+
+        // Applies the collapsed/expanded layout once per state flip: hidden
+        // shrinks the dock to the show strip (parked/active cells stay put
+        // under the masked view); expanded restores the full footprint.
+        private static void ApplyFavCollapsed()
+        {
+            bool expanded = !_favUserHidden;
+            if (_favCollapsedApplied == expanded) return;
+            _favCollapsedApplied = expanded;
+            if (_favTagStrip != null)
+                _favTagStrip.gameObject.SetActive(expanded);
+            if (_favView != null)
+                _favView.gameObject.SetActive(expanded);
+            if (_favScrollTrack != null)
+                _favScrollTrack.gameObject.SetActive(expanded);
+            if (_favShowBar != null)
+                _favShowBar.SetActive(!expanded);
+            if (_favDock == null) return;
+            if (expanded)
+                _favDock.sizeDelta = new Vector2(
+                    FavColW + FavTagGap + CurrentTagStripWidth,
+                    Mathf.Max(FavGridH, RequiredTagStripHeight()));
+            else
+                _favDock.sizeDelta = new Vector2(
+                    FavTagStripW + FavPad * 2f, FavTagRowH + FavPad * 2f);
+        }
+
+        private static void CreateFavStripRow(float y, float width,
+            string name, string label, Color color,
+            UnityEngine.Events.UnityAction action)
+        {
+            Image bg; Text labelText;
+            CreateFavStripRow(y, width, name, label, color, action,
+                out bg, out labelText);
+        }
+
+        private static void CreateFavStripRow(float y, float width,
+            string name, string label, Color color,
+            UnityEngine.Events.UnityAction action,
+            out Image bgOut, out Text labelOut)
+        {
+            GameObject row = new GameObject(name, typeof(RectTransform));
+            RectTransform rect = (RectTransform)row.transform;
+            rect.SetParent(_favTagStrip, false);
+            rect.anchorMin = new Vector2(0f, 1f);
+            rect.anchorMax = new Vector2(0f, 1f);
+            rect.pivot = new Vector2(0f, 1f);
+            rect.anchoredPosition = new Vector2(0f, -y);
+            rect.sizeDelta = new Vector2(width, FavTagRowH);
+            Image bg = row.AddComponent<Image>();
+            bg.color = color;
+            bg.raycastTarget = true;
+            Button button = row.AddComponent<Button>();
+            button.targetGraphic = bg;
+            button.transition = Selectable.Transition.None;
+            button.onClick.AddListener(delegate
+            {
+                if (Quest3TriggerUIPlugin.ClothingDragActive) return;
+                VrHaptics.Press();
+                action();
+            });
+            labelOut = AddTagLabel(rect, label, 14,
+                TextAnchor.MiddleCenter, Color.white);
+            bgOut = bg;
         }
 
         private static void BuildTagBackRows()
@@ -653,8 +836,16 @@ namespace Quest3TriggerUI
             button.onClick.AddListener(delegate { VrHaptics.Press(); ExitFavoriteTagView(); });
             AddTagLabel(rect, "◀ 返回", 14, TextAnchor.MiddleCenter, Color.white);
             AddTagCaption(ActiveTagName ?? "默认", FavTagRowH + FavTagGap);
-            _favTagStrip.sizeDelta = new Vector2(FavTagBackW,
-                FavTagRowH + FavTagGap + TagCaptionH);
+            float y = FavTagRowH + FavTagGap + TagCaptionH;
+            CreateFavModeRow(y, FavTagBackW);
+            y += FavTagRowH + FavTagGap;
+            CreateFavDeleteRow(y, FavTagBackW);
+            y += FavTagRowH + FavTagGap;
+            CreateFavStripRow(y, FavTagBackW, "FavHide", "隐 藏",
+                new Color(0.16f, 0.22f, 0.30f, 1f),
+                delegate { SetFavHidden(true); });
+            y += FavTagRowH + FavTagGap;
+            _favTagStrip.sizeDelta = new Vector2(FavTagBackW, y);
         }
 
         private static void CreateTagRow(string label, int index, float y)
@@ -863,6 +1054,9 @@ namespace Quest3TriggerUI
         private static bool TryGetTagRowGroup(out int group)
         {
             group = -1;
+            // Parked mode keeps the tag rows alive but off-screen.
+            if (_favTagStrip == null ||
+                !_favTagStrip.gameObject.activeInHierarchy) return false;
             // Cursor first: the laser point tracks mid-drag even when the
             // look target is stale after a press.
             if (_favTagStrip != null)
@@ -903,6 +1097,7 @@ namespace Quest3TriggerUI
             string[] entry = from[at];
             from.RemoveAt(at);
             to.Add(entry);
+            InvalidateFavParked(to);
             SaveFavoriteStores();
             _favDirty = true;
             Log("已移动到标签 " + _favTagNames[group] + "：" + entry[1]);
@@ -919,6 +1114,13 @@ namespace Quest3TriggerUI
                     " active=" + list.activeInHierarchy +
                     " favs=" + _favorites.Count +
                     " asmHash=" + typeof(UiAssistHudLink).Assembly.GetHashCode());
+            }
+            if (!_favThumbsBridged)
+            {
+                _favThumbsBridged = true;
+                if (_favThumbs.Count == 0)
+                    GenBridge.AdoptThumbs("fav.thumbs", _favThumbs);
+                GenBridge.Publish("fav.thumbs", _favThumbs);
             }
             LoadFavorites();
             LoadFavoriteTags();
@@ -991,6 +1193,7 @@ namespace Quest3TriggerUI
                 CreateDockScrollbar(_favDock, FavColW, -FavPad, FavGridH,
                     out _favScrollTrack, out _favScrollThumb);
                 CreateFavTagStrip();
+                CreateFavShowBar();
                 ApplyFavoritesDockWidth();
 
                 SuperController.singleton.AddCanvas(_favCanvas);
@@ -1005,24 +1208,25 @@ namespace Quest3TriggerUI
         {
             if (_favDock == null || _favList == null) return;
             SuperController sc = SuperController.singleton;
-            bool visible = _favList.activeInHierarchy && sc != null &&
-                sc.MainHUDVisible && !_presetBrowsing;
+            bool visible = _dockModeFav && _favList.activeInHierarchy &&
+                sc != null && sc.MainHUDVisible && !_presetBrowsing;
             if (_favDock.gameObject.activeSelf != visible)
                 _favDock.gameObject.SetActive(visible);
             if (!visible) return;
             if (!_favPositionLogged)
             {
                 _favPositionLogged = true;
-                Log("收藏栏可见，位置已锁定于列表右缘。");
+                Log("收藏栏可见，位置已锁定于列表左缘。");
             }
 
             RectTransform list = (RectTransform)_favList.transform;
             list.GetWorldCorners(_dockCorners);
             _favDock.rotation = list.rotation;
             _favDock.localScale = list.lossyScale;
-            // Right edge of the ACE list, offset outward by half our own width.
-            Vector3 rightCenter = (_dockCorners[2] + _dockCorners[3]) * 0.5f;
-            _favDock.position = rightCenter + list.right *
+            // Merged mode: the bar shares the preset dock's left-edge slot —
+            // same anchor so mode switches land on the identical footprint.
+            Vector3 leftCenter = (_dockCorners[0] + _dockCorners[1]) * 0.5f;
+            _favDock.position = leftCenter - list.right *
                 (24f * list.lossyScale.x + _favDock.rect.width * _favDock.lossyScale.x * 0.5f);
             Camera viewer = sc.lookCamera;
             if (viewer != null)
@@ -1036,6 +1240,10 @@ namespace Quest3TriggerUI
                     Vector3.Cross(away, list.up).sqrMagnitude > 0.0001f)
                     _favDock.rotation = Quaternion.LookRotation(away, list.up);
             }
+            ApplyFavCollapsed();
+            // Collapsed: nothing below the show strip needs ticking —
+            // _favDirty stays latched so showing finishes the build then.
+            if (_favUserHidden) return;
             if (_favDirty || _favPreviewDirty || _favBuildSlots != null)
             {
                 // Consume the dirty edge instead of latching it as the
@@ -1687,6 +1895,11 @@ namespace Quest3TriggerUI
 
         private static bool PointerOverFavoritesBar()
         {
+            // Parked mode: the hidden dock's plane still hit-tests at the
+            // shared left-edge slot — must not absorb drops.
+            if (_favDock == null || !_favDock.gameObject.activeInHierarchy ||
+                _favUserHidden)
+                return false;
             GameObject target =
                 VrPointerPresentation.CurrentLookTarget(DragRight());
             if (target != null && target.GetComponentInParent<AceFavBarTag>() != null)
@@ -1736,7 +1949,9 @@ namespace Quest3TriggerUI
                 Vector2 favoriteDropPoint;
                 // Preview rebuilds replace slot objects. Hit the persistent
                 // dock plane so a stale LookTarget cannot turn a reorder into deletion.
-                if (source.FromBar && PointerOnRect(_favDock, out favoriteDropPoint))
+                if (source.FromBar && _favDock != null &&
+                    _favDock.gameObject.activeInHierarchy && !_favUserHidden &&
+                    PointerOnRect(_favDock, out favoriteDropPoint))
                     overFav = true;
                 bool acted = false;
                 int dropGroup;
@@ -1831,6 +2046,7 @@ namespace Quest3TriggerUI
                 source.Uid,
                 source.DisplayName ?? "",
                 source.CreatorName ?? "" });
+            InvalidateFavParked(items);
             if (source.Texture != null) _favThumbs[source.Uid] = source.Texture;
             else if (source.Item != null)
             {
@@ -1855,6 +2071,7 @@ namespace Quest3TriggerUI
             if (index < 0) return false;
             if (log) Log("已移除收藏：" + items[index][1]);
             items.RemoveAt(index);
+            InvalidateFavParked(items);
             // The cached thumbnail and the saved wear-state are dropped only
             // once no group references the item any more.
             if (!IsFavoriteAnywhere(uid))

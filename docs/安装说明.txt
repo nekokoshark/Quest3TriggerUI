@@ -188,22 +188,71 @@ Patreon / 官网）获取：
   ViewPitch    右摇杆俯仰速度/上限/死区/反向
   PhysicsBudget 物理降载档位与细调开关（见使用说明）
 
-六、数据文件（迁移存档用）
+六、数据文件（插件生成物清单 / 迁移存档用）
 --------------------------------------------------------------------
-以下文件由插件自动生成，都在 BepInEx/config/ 下，
-换机时连同 cfg 一起复制即可保留数据：
-  Quest3TriggerUI.clothing-favorites.txt        服装收藏列表
-  Quest3TriggerUI.clothing-favstate.<角色>.json 各收藏的物理快照
-  Quest3TriggerUI.clothing-locks.<角色>.txt     服装锁定列表
-  Quest3TriggerUI.clothing-bans.<角色>.txt      服装禁用列表
-  Quest3TriggerUI.browser-tabs.txt              浏览器标签页（跨会话）
-  Quest3TriggerUI.browser-fav-dirs.txt          浏览器收藏目录
-  Quest3TriggerUI.preset-save-dirs.txt          各类别最近保存目录
-  Quest3TriggerUI.pinyin-user.txt               输入法记忆词库
-  q3haptics-diag.txt                            诊断日志（可不带）
+以下全部由插件在运行中自动生成，均在 BepInEx/config/ 下。
+换机时连同 cfg 一起复制即可保留全部数据；想全新开始
+或排查异常配置时，整批删除也安全（下次启动重新生成）。
+
+【配置】（BepInEx 自动生成并回写）
+  local.vam.quest3-trigger-ui.cfg             主配置文件（档位/路径/开关）
+  local.vam.quest3-trigger-ui.hot-loader.cfg  热加载器自身配置
+
+【收藏与自定义数据】（删了会丢收藏/记忆，迁移时带上）
+  Quest3TriggerUI.preset-dock.txt             预设坞五标签收藏列表
+  Quest3TriggerUI.clothing-favorites.txt      服装收藏列表
+  Quest3TriggerUI.clothing-favtags.txt        服装收藏标签结构
+  Quest3TriggerUI.clothing-favstate.<服装包>.json 各服装收藏的物理快照
+  Quest3TriggerUI.clothing-lock.<角色>.txt    按角色的服装锁定列表
+  Quest3TriggerUI.clothing-ban.<角色>.txt     按角色的服装禁用列表
+  Quest3TriggerUI.clothing-regions.txt        服装区域模式定义
+  Quest3TriggerUI.clothing-presets\           区域模式预设目录
+  Quest3TriggerUI.browser-tabs.txt            预设浏览器标签页状态
+  Quest3TriggerUI.browser-fav-dirs.txt        浏览器收藏目录
+  Quest3TriggerUI.preset-save-dirs.txt        各类别最近保存目录
+  Quest3TriggerUI.pinyin-user.txt             输入法词频记忆词库
+  Quest3TriggerUI.pinned-tiles.txt            固定磁贴布局
+  Quest3TriggerUI.shortcuts\                  快捷预设存放目录
+  Quest3TriggerUI.shots\                      VR拍照机位数据与缩略图
+                                             （按场景分子目录）
+
+【缓存】（删了重建即可，不含用户数据）
+  Quest3TriggerUI.ba-scan.json                BrowserAssist 增量扫描缓存
+  Quest3TriggerUI.ba-dirs.txt                 BA 扫描目录清单
+  Quest3TriggerUI.scene-deps.json             场景依赖缓存
+  Quest3TriggerUI.scene-history.json          场景加载历史（预热用）
+  Quest3TriggerUI.preheat-session.txt         预热会话标记
+
+【日志与诊断】（纯排障输出，随时可删）
+  Quest3TriggerUI.loadperf.log                加载性能日志
+  Quest3TriggerUI.loadperf.selftest.log       加载自检日志
+  Quest3TriggerUI.charactertrace_*.tsv        人物加载追踪（可积累多个）
+  Quest3TriggerUI.resource-history\           资源账本快照目录
+  q3haptics-diag.txt                          手柄震动诊断
 
 七、卸载
 --------------------------------------------------------------------
-删除 BepInEx/plugins/Quest3TriggerUI/ 整个文件夹即可，
-不会残留任何对 VaM 文件的修改。config 下的数据文件
-按需保留或删除。
+插件不修改任何 VaM 原文件，卸载=删除生成物：
+
+1. 关闭 VaM。
+2. 删除 BepInEx/plugins/Quest3TriggerUI/ 整个文件夹
+   （两个 dll + 拼音词库 + 你自装的 texconv.exe）。
+3. 要连数据一起清：删除 BepInEx/config/ 下
+   - 所有 Quest3TriggerUI.* 开头的文件和目录
+     （清单见第六节）；
+   - local.vam.quest3-trigger-ui.cfg 和
+     local.vam.quest3-trigger-ui.hot-loader.cfg；
+   - q3haptics-diag.txt（如有）。
+   保留这些文件也完全无害，只是下次重装会沿用旧配置
+   和收藏列表——旧收藏指向的预设若已删除会自动跳过。
+4. 插件在 config/ 之外还会留下这些【用户数据】，
+   它们不是残留垃圾，是否保留请按需决定：
+   - Custom/Atom/Person/ 各预设目录下由插件保存/覆盖
+     生成的 .vap 预设、同名 .jpg 缩略图、.vap.hide
+     隐藏标记——VaM 原生浏览器可直接读取，建议保留；
+   - VR录制\ 目录（默认在 VaM 根目录下，路径见配置
+     [Recording] OutputDirectory）里的 .mkv 录像；
+   - 纹理缓存目录（VaM prefs.json 配置的共享缓存目录，
+     插件预热/转码的 .vamcache 与 .vamcachemeta 与
+     VaM 自身缓存混在一起——要清就清空整个目录，
+     VaM 会按需重建，不影响存档）。

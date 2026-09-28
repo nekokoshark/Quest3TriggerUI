@@ -276,6 +276,7 @@ namespace Quest3TriggerUI
                     {
                         _candTexture = new Texture2D(w, h,
                             TextureFormat.RGBA32, false);
+                        _candTexture.name = "Q3ImeCand";
                     }
                     tex = _candTexture;
                     tex.LoadRawTextureData(px);

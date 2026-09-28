@@ -14,6 +14,10 @@ namespace Quest3TriggerUI
         internal delegate void MetadataObserver(ImageLoaderThreaded.QueuedImage q, string path, string text,
             long metaStamp, long dataStamp, long bytes);
         internal static MetadataObserver MetadataObserved;
+        // Multiple modules observe the same load; keep the slot additive so one
+        // module's shutdown cannot silently unhook another module's observer.
+        internal static void AddObserver(MetadataObserver observer) { MetadataObserved += observer; }
+        internal static void RemoveObserver(MetadataObserver observer) { MetadataObserved -= observer; }
         private static readonly MethodInfo CachePath = typeof(ImageLoaderThreaded.QueuedImage)
             .GetMethod("GetDiskCachePath", BindingFlags.Instance | BindingFlags.NonPublic);
         // Accept exactly the native metadata shape. Unknown formats/layouts retain
@@ -80,7 +84,7 @@ namespace Quest3TriggerUI
                 if (!TryDimensions(text, out width, out height)) return false;
                 var remember = MetadataObserved;
                 if (remember != null) remember(q, path, text, metaStamp, dataStamp, rawBytes);
-                // Only complete, power-of-two DXT caches bypass GDI and compression.
+                // Only complete, byte-exact block-compressed caches (DXT1/DXT5/BC4/BC5/BC6H/BC7) bypass GDI and compression.
                 // Unknown/base-only/malformed layouts retain the original estimate.
                 if (!q.createNormalFromBump && TryDxtBytes(width, height,
                     Meta.Match(text).Groups[3].Value, rawBytes, out bytes)) return true;
@@ -102,9 +106,12 @@ namespace Quest3TriggerUI
         {
             bytes = 0;
             if (width < 4 || height < 4 || width > 16384 || height > 16384 ||
-                (width & (width - 1)) != 0 || (height & (height - 1)) != 0 ||
-                (format != "DXT1" && format != "DXT5")) return false;
-            int block = format == "DXT1" ? 8 : 16;
+                (format != "DXT1" && format != "DXT5" &&
+                 format != "BC4" && format != "BC5" &&
+                 format != "BC6H" && format != "BC7")) return false;
+            int block = (format == "DXT1" || format == "BC4") ? 8 : 16;
+            // The mip-chain byte match below is the authoritative layout check;
+            // dimensions need not be powers of two (e.g. 3000x3000 caches are exact too).
             long full = 0;
             for (int w = width, h = height; ; w = Math.Max(1, w / 2), h = Math.Max(1, h / 2))
             {

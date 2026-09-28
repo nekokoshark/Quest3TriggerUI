@@ -107,14 +107,14 @@ namespace Quest3TriggerUI
                     finalizer: new HarmonyMethod(typeof(TextureMetadataReuse).GetMethod("Done", All)));
                 _harmony.Patch(typeof(ImageLoaderThreaded.QueuedImage).GetMethod("ReadMetaJson", All),
                     prefix: new HarmonyMethod(typeof(TextureMetadataReuse).GetMethod("ReadMeta", All)));
-                TextureCacheEstimate.MetadataObserved = Remember;
+                TextureCacheEstimate.AddObserver(Remember);
                 Quest3TriggerUIPlugin.Log.LogInfo("[texture-metadata] installed; same request, checked cache stamps; weak max128/10s; native fallback");
             }
             catch (Exception e) { Shutdown(); Quest3TriggerUIPlugin.Log.LogInfo("[texture-metadata] not installed: " + e.Message); }
         }
         internal static void Shutdown()
         {
-            TextureCacheEstimate.MetadataObserved = null;
+            TextureCacheEstimate.RemoveObserver(Remember);
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null; lock (Sync) Entries.Clear();
         }

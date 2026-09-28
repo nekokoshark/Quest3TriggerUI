@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
@@ -117,6 +117,24 @@ namespace Quest3TriggerUI
             internal long Bytes;
         }
 
+        // Process working set / commit, shared with LiveSetCensus. No Unity API
+        // here, so callers on either thread may use it.
+        internal static void ProcessBytes(out long workingSet, out long commit)
+        {
+            workingSet = 0L;
+            commit = 0L;
+            try
+            {
+                MemCounters mc;
+                if (GetProcessMemoryInfo(Process.GetCurrentProcess().Handle,
+                        out mc, (uint)Marshal.SizeOf(typeof(MemCounters))))
+                {
+                    workingSet = (long)mc.WorkingSetSize.ToUInt64();
+                    commit = (long)mc.PagefileUsage.ToUInt64();
+                }
+            }
+            catch { }
+        }
         internal static void Dump()
         {
             var sw = Stopwatch.StartNew();
@@ -133,10 +151,8 @@ namespace Quest3TriggerUI
                     pagefile = (long)mc.PagefileUsage.ToUInt64();
                 }
                 long managed = GC.GetTotalMemory(false);
-                long monoHeap = UnityEngine.Profiling.Profiler
-                    .GetMonoHeapSizeLong();
-                long monoUsed = UnityEngine.Profiling.Profiler
-                    .GetMonoUsedSizeLong();
+                long monoHeapB = MonoGcProbe.HeapBytes();
+                long monoHeap = monoHeapB < 0L ? 0L : monoHeapB;
                 long unityReserved = UnityEngine.Profiling.Profiler
                     .GetTotalReservedMemoryLong();
                 long unityAllocated = UnityEngine.Profiling.Profiler
@@ -150,11 +166,8 @@ namespace Quest3TriggerUI
                     workingSet / 1073741824.0,
                     pagefile / 1073741824.0));
                 Log(string.Format(
-                    "Managed: GC={0:F2}GB | mono heap={1:F2}GB used={2:F2}GB free≈{3:F2}GB",
-                    managed / 1073741824.0,
-                    monoHeap / 1073741824.0,
-                    monoUsed / 1073741824.0,
-                    (monoHeap - monoUsed) / 1073741824.0));
+                    "Managed: GC={0:F2}GB |",
+                    managed / 1073741824.0) + MonoGcProbe.Suffix());
                 Log(string.Format(
                     "Unity native: reserved={0:F2}GB allocated={1:F2}GB unusedReserved={2:F2}GB | non-Unity+outside≈{3:F2}GB",
                     unityReserved / 1073741824.0,
@@ -169,6 +182,7 @@ namespace Quest3TriggerUI
                 DumpCategory<Material>("Material", 0);
                 DumpCategory<Shader>("Shader", 0);
                 DumpAtoms();
+                DumpMorphSuspects();
                 DumpClipHolders();
                 Log(string.Format(
                     "==== snapshot done in {0}ms ====", sw.ElapsedMilliseconds));
@@ -354,7 +368,11 @@ namespace Quest3TriggerUI
             switch (f)
             {
                 case TextureFormat.DXT1: return 4;
+                case TextureFormat.BC4: return 4;
                 case TextureFormat.DXT5: return 8;
+                case TextureFormat.BC5:
+                case TextureFormat.BC6H:
+                case TextureFormat.BC7: return 8;
                 case TextureFormat.Alpha8: return 8;
                 case TextureFormat.RGB24: return 24;
                 case TextureFormat.RGBA32:
@@ -689,6 +707,105 @@ namespace Quest3TriggerUI
             }
         }
 
+        // Managed-heap suspects: morph vertex-delta arrays are the classic
+        // VaM heap hog (DAZMorphVertex = int+Vector3 = 16B each, thousands of
+        // morphs per person). Count deltas resident in every Person's morph
+        // banks plus the static catalog caches — one-shot only, walks are
+        // O(morphs).
+        private static void DumpMorphSuspects()
+        {
+            const BindingFlags FI = BindingFlags.Instance |
+                BindingFlags.Public | BindingFlags.NonPublic;
+            const BindingFlags FS = BindingFlags.Static |
+                BindingFlags.Public | BindingFlags.NonPublic;
+            try
+            {
+                FieldInfo deltasF = typeof(DAZMorph).GetField("deltas", FI);
+                FieldInfo fastF = typeof(DAZMorph).GetField("deltasFast", FI);
+                FieldInfo morphsF = typeof(DAZMorphBank).GetField("_morphs", FI);
+                FieldInfo unactF = typeof(DAZMorphBank).GetField("_unactivatedMorphs", FI);
+                MethodInfo rtCount = typeof(DAZMorphBank).GetMethod(
+                    "GetRuntimeMorphDeltasLoadedCount", FI);
+                if (SuperController.singleton != null)
+                {
+                    foreach (Atom a in SuperController.singleton.GetAtoms())
+                    {
+                        if (a == null || a.type != "Person") continue;
+                        var sel = a.GetStorableByID("geometry")
+                            as DAZCharacterSelector;
+                        if (sel == null) continue;
+                        long dVerts = 0, dBytes = 0;
+                        int morphs = 0, banks = 0, rt = 0;
+                        foreach (string bn in new[] {
+                            "femaleMorphBank1", "femaleMorphBank2",
+                            "femaleMorphBank3", "maleMorphBank1",
+                            "maleMorphBank2", "maleMorphBank3" })
+                        {
+                            FieldInfo bf =
+                                typeof(DAZCharacterSelector).GetField(bn, FI);
+                            object bank = bf == null
+                                ? null : bf.GetValue(sel);
+                            if (bank == null) continue;
+                            banks++;
+                            if (rtCount != null)
+                                try { rt += (int)rtCount.Invoke(bank, null); }
+                                catch { }
+                            var list = morphsF == null ? null :
+                                morphsF.GetValue(bank)
+                                    as System.Collections.IList;
+                            if (list == null) continue;
+                            morphs += list.Count;
+                            for (int i = 0; i < list.Count; i++)
+                            {
+                                object m = list[i];
+                                if (m == null) continue;
+                                var d = deltasF == null ? null :
+                                    deltasF.GetValue(m) as Array;
+                                var f = fastF == null ? null :
+                                    fastF.GetValue(m) as Array;
+                                long n = (d == null ? 0 : d.LongLength) +
+                                    (f == null ? 0 : f.LongLength);
+                                if (n > 0) { dVerts += n; dBytes += n * 16; }
+                            }
+                        }
+                        Log(string.Format(
+                            "Morphs[{0}]: banks={1} morphs={2} deltaVerts={3} deltaMiB={4} runtimeDeltaMorphs={5}",
+                            a.uid, banks, morphs, dVerts,
+                            dBytes / 1048576, rt));
+                    }
+                }
+            }
+            catch (Exception ex) { Log("morph census failed: " + ex.Message); }
+            try
+            {
+                var sb = new System.Text.StringBuilder();
+                Type fm = typeof(MVR.FileManagement.FileManager);
+                foreach (string fn in new[] {
+                    "packagesByUid", "allVarFileEntries",
+                    "allVarDirectoryEntries", "uidToVarFileEntry",
+                    "pathToVarFileEntry", "packagesByPath" })
+                {
+                    FieldInfo f = fm.GetField(fn, FS);
+                    var col = f == null ? null :
+                        f.GetValue(null) as System.Collections.ICollection;
+                    if (col != null)
+                        sb.Append(fn).Append('=').Append(col.Count).Append(' ');
+                }
+                Type mb = typeof(DAZMorphBank);
+                foreach (string fn in new[] {
+                    "_dirEntryCache", "_vmiJsonCache", "_morphInitCache" })
+                {
+                    FieldInfo f = mb.GetField(fn, FS);
+                    var col = f == null ? null :
+                        f.GetValue(null) as System.Collections.ICollection;
+                    if (col != null)
+                        sb.Append(fn).Append('=').Append(col.Count).Append(' ');
+                }
+                Log("StaticCaches: " + sb);
+            }
+            catch (Exception ex) { Log("static caches failed: " + ex.Message); }
+        }
+
         // Lightweight tagged snapshot — one compact line for tracking
         // growth across repeated operations (person preset loads). The
         // heavyweight Dump() stays opt-in via cfg; this one is cheap
@@ -775,7 +892,7 @@ namespace Quest3TriggerUI
                     gfx < 0 ? "n/a"
                         : (gfx / 1048576.0).ToString("F0") + "MB",
                     texN, texB / 1073741824.0, live, dead,
-                    deadB / 1073741824.0, untracked));
+                    deadB / 1073741824.0, untracked) + MonoGcProbe.Suffix());
                 if (top != null && top.Count > 0)
                 {
                     top.Sort(delegate(ObjRow a, ObjRow b)

@@ -142,8 +142,16 @@ namespace Quest3TriggerUI
             _lockPositionLogged = false;
         }
 
+        private static bool _lockThumbsBridged;
         private static void UpdateLockBar(Snapshot state, GameObject list)
         {
+            if (!_lockThumbsBridged)
+            {
+                _lockThumbsBridged = true;
+                if (_lockThumbs.Count == 0)
+                    GenBridge.AdoptThumbs("lock.thumbs", _lockThumbs);
+                GenBridge.Publish("lock.thumbs", _lockThumbs);
+            }
             if (_lockList != list || _lockDock == null)
             {
                 ClearLockBar();

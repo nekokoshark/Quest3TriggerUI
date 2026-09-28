@@ -80,21 +80,30 @@ namespace Quest3TriggerUI
         private static void Suspend(SuperController controller)
         {
             if (_pending != null || controller.isLoading || _presetBrowsing) return;
+            long t0 = Mark();
             try
             {
                 Snapshot state = FindEditor(controller);
                 if (state == null) return;
+                long t1 = Mark();
                 _changing = true;
                 // Native manual ACE exit selects 'standard' (1, not 0).
                 // Disable grid updates and run the same editor/list cleanup as manual exit.
                 // Do not call CloseGrids: its optional auto-unpin changes unrelated UI placement.
                 Write(state.Control, null, "gameControlDisplayMode", state.Standard);
+                long t2 = Mark();
                 Write(state.Control, null, "gridsActivated", false);
+                long t3 = Mark();
                 Call(state.Display.GetType(), state.Display, "DestroyUIButtons");
+                long t4 = Mark();
                 if ((int)Read(state.Control, null, "gameControlDisplayMode") != state.Standard || (bool)Read(state.Control, null, "gridsActivated"))
                     throw new InvalidOperationException("UIAssist did not exit clothing editor mode");
                 _pending = state;
                 Log("服装编辑器已随控制面板关闭而退出；再次打开时按需恢复。");
+                if (DeltaMs(t0, t4) > 100)
+                    Log("[ACE] suspend total=" + DeltaMs(t0, t4) + "ms find=" +
+                        DeltaMs(t0, t1) + " mode=" + DeltaMs(t1, t2) +
+                        " grids=" + DeltaMs(t2, t3) + " destroy=" + DeltaMs(t3, t4));
             }
             catch (Exception e) { Error(e); }
             finally { _changing = false; }
@@ -123,13 +132,25 @@ namespace Quest3TriggerUI
                 // Do not call OpenUiAssistClothingEditor, which selects the nearest person anew.
                 object chooser = Read(state.Editor.GetType(), state.Editor, "personAtomNamesJSSC");
                 if (chooser != null) Write(chooser.GetType(), chooser, "valNoCallback", state.Target.uid);
+                long t0 = Mark();
                 Write(state.Control, null, "gameControlDisplayMode", state.Ace);
+                long t1 = Mark();
                 Write(state.Control, null, "gridsActivated", true);
+                long t2 = Mark();
                 Call(state.Display.GetType(), state.Display, "DestroyUIButtons");
+                long t3 = Mark();
                 Call(state.Display.GetType(), state.Display, "CreateUIButtons");
+                long t4 = Mark();
                 Call(state.Editor.GetType(), state.Editor, "RefreshACE");
+                long t5 = Mark();
                 Call(state.Control, null, "OnEnable");
+                long t6 = Mark();
                 Log("控制面板已打开，服装编辑器已恢复。");
+                if (DeltaMs(t0, t6) > 100)
+                    Log("[ACE] restore total=" + DeltaMs(t0, t6) + "ms mode=" +
+                        DeltaMs(t0, t1) + " grids=" + DeltaMs(t1, t2) +
+                        " destroy=" + DeltaMs(t2, t3) + " create=" + DeltaMs(t3, t4) +
+                        " refresh=" + DeltaMs(t4, t5) + " onEnable=" + DeltaMs(t5, t6));
             }
             catch (Exception e)
             {
@@ -162,7 +183,16 @@ namespace Quest3TriggerUI
             if (visible) AfterShow(controller); else Suspend(controller);
         }
         internal static void CancelPending() { _pending = null; }
-        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; _presetState = null; CancelPending(); _observed = false; }
+        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; _presetState = null; CancelPending(); _observed = false;
+            // Uninstall the ACE instrumentation so a dead payload generation
+            // leaves neither active patches nor pinned code behind.
+            if (_aceProbeHarmony != null)
+            {
+                try { _aceProbeHarmony.UnpatchAll(_aceProbeHarmony.Id); } catch { }
+                _aceProbeHarmony = null;
+            }
+            _aceProbeTried = false;
+        }
         private static void Log(string message)
         {
             if (Quest3TriggerUIPlugin.Log != null) Quest3TriggerUIPlugin.Log.LogInfo(message);

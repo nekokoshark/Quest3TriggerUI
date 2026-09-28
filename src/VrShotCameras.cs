@@ -458,6 +458,7 @@ namespace Quest3TriggerUI
                         if (File.Exists(png))
                         {
                             var t = new Texture2D(2, 2);
+                            t.name = "Q3ShotThumb";
                             if (t.LoadImage(File.ReadAllBytes(png))) s.ThumbTex = t;
                             else UnityEngine.Object.Destroy(t);
                         }
@@ -516,12 +517,14 @@ namespace Quest3TriggerUI
                     int w = Mathf.RoundToInt(rect.width), h = Mathf.RoundToInt(rect.height);
                     if (w < 1 || h < 1) return;
                     pixels = new Texture2D(w, h, TextureFormat.RGB24, false);
+                    pixels.name = "Q3ShotPixels";
                     pixels.ReadPixels(rect, 0, 0);
                     pixels.Apply();
                     Graphics.Blit(pixels, small);
                 }
                 RenderTexture.active = small;
                 thumb = new Texture2D(336, 189, TextureFormat.RGB24, false);
+                thumb.name = "Q3ShotThumb";
                 thumb.ReadPixels(new Rect(0, 0, 336, 189), 0, 0);
                 thumb.Apply();
                 Directory.CreateDirectory(Path.GetDirectoryName(path));

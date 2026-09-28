@@ -45,6 +45,23 @@ namespace Quest3TriggerUI
                      && _instance._canvas.gameObject.activeSelf; }
         }
 
+        // True while the panel is parked for a native save-screenshot pass:
+        // the canvas is off but the dialog session is logically still open —
+        // watchdogs must not treat parked as closed.
+        internal static bool ParkedForScreenshot { get; private set; }
+
+        // Parks/unparks the panel while a native save-screenshot select
+        // mode is up: the shot camera renders world-space canvases, so a
+        // live browser would bake itself into the preset thumbnail.
+        internal static void SetHiddenForScreenshot(bool hidden)
+        {
+            ParkedForScreenshot = hidden;
+            VrPresetBrowser inst = _instance;
+            if (inst == null || inst._canvas == null) return;
+            if (inst._canvas.gameObject.activeSelf == !hidden) return;
+            inst._canvas.gameObject.SetActive(!hidden);
+        }
+
         // Header dropdown pick: which Person atom the next browser-
         // launched preset applies to. Survives reopening; clears when
         // the atom leaves the scene. Callers read it at apply time and
@@ -353,12 +370,14 @@ namespace Quest3TriggerUI
         private readonly HashSet<string> _selPaths =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, Texture2D> _thumbCache =
+            GenBridge.Claim("browser.thumbCache") as Dictionary<string, Texture2D> ??
             new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
         // Sidecar .jpg write-tick per .vap — the freshness stamp for
         // _thumbCache. Overwriting a preset bumps the jpg's mtime, and the
         // thumb pump evicts + re-decodes entries whose stamp moved, so an
         // overwritten preset never keeps its old thumbnail.
         private readonly Dictionary<string, long> _thumbStamp =
+            GenBridge.Claim("browser.thumbStamp") as Dictionary<string, long> ??
             new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _jpgSet =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -3462,6 +3481,7 @@ namespace Quest3TriggerUI
                                     FileManager.GetFullPath(jpg));
                                 Texture2D t = new Texture2D(2, 2,
                                     TextureFormat.RGBA32, false);
+                                t.name = "Q3BrowserThumb";
                                 if (t.LoadImage(bytes))
                                     _thumbCache[job.Path] = t;
                                 else
@@ -4506,11 +4526,12 @@ namespace Quest3TriggerUI
 
         private void Dispose()
         {
-            foreach (var kv in _thumbCache)
-                if (kv.Value != null)
-                    UnityEngine.Object.Destroy(kv.Value);
-            _thumbCache.Clear();
-            _thumbStamp.Clear();
+            // Quarantine instead of destroying: a hot-reload or a quick
+            // close/reopen claims the same decoded thumbnails back within
+            // the TTL; unclaimed caches are destroyed by GenBridge.Tick —
+            // identical lifetime to the old behavior, zero spike either way.
+            GenBridge.Quarantine("browser.thumbCache", _thumbCache);
+            GenBridge.Quarantine("browser.thumbStamp", _thumbStamp);
             if (_canvas != null)
             {
                 if (SuperController.singleton != null)

@@ -208,6 +208,7 @@ namespace Quest3TriggerUI
             string[] entry = items[from];
             items.RemoveAt(from);
             items.Insert(Mathf.Clamp(dst, 0, items.Count), entry);
+            InvalidateFavParked(items);
             SaveFavoriteStores();
             _favPreviewDirty = true;
             Log("fav reorder " + from + "->" + dst + " uid=" + source.Uid);
