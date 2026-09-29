@@ -74,6 +74,11 @@ namespace Quest3TriggerUI
             // Opportunistic eviction: a preset restore is not the moment to
             // walk every AudioSource and AudioSourceControl.
             if (LoadWindow.PresetBusy) { LoadWindow.NoteDeferred("AudioJan"); return; }
+            // A swap's texture tail is the same window: a full AudioSource
+            // census measured 7.5s of freeze (long-frame inner shown as
+            // AudioJan::Sweep) landing while the new character's images were
+            // still queued. Wait for the decode queue to drain first.
+            if (WardrobeJanitor.ImagesBusy()) { LoadWindow.NoteDeferred("AudioJanTail"); return; }
             if (Time.unscaledTime < _nextSweep) return;
             _nextSweep = Time.unscaledTime + SweepEvery;
             Sweep(false);

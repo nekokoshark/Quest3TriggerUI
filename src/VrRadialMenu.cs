@@ -186,7 +186,7 @@ namespace Quest3TriggerUI
         {
             _actions = actions;
             if (_pinnedTiles != null) _pinnedTiles.Refresh();
-            _scale = scale * 0.8f;
+            _scale = scale;
             _distance = Mathf.Min(distance, 0.78f);
             _opacity = Mathf.Clamp(opacity, 0.2f, 1f);
         }
@@ -774,33 +774,10 @@ namespace Quest3TriggerUI
                 SuperController.singleton.centerCameraTarget == null)
                 return;
 
-            // Snapshot the same camera axis used by the visible right-hand guide.
-            // Never re-parent to the hand/head or update this pose while open.
-            Transform head = SuperController.singleton.centerCameraTarget.transform;
-            Camera pointerCamera = SuperController.singleton.rightControllerCamera;
-            Transform pointer = pointerCamera != null ? pointerCamera.transform : head;
-            Vector3 direction = pointer.forward.normalized;
-            float outerRadius = WedgeOuterR;
-            for (int i = 0; i < _actions.Count; i++)
-            {
-                if (!_actions[i].HasChildren) continue;
-                outerRadius = Mathf.Max(outerRadius, SubOuterR);
-                for (int j = 0; j < _actions[i].Children.Count; j++)
-                    if (_actions[i].Children[j].HasChildren) outerRadius = Sub2OuterR;
-            }
-            // Keep the complete menu inside an approximately 90-degree cone.
-            // Include head/hand lateral offset, rather than only the main ring.
-            Vector3 fromHead = pointer.position - head.position;
-            float along = Vector3.Dot(fromHead, direction);
-            float lateral = (fromHead - direction * along).magnitude;
-            float viewingDistance = Mathf.Max(_distance + 0.02f,
-                (outerRadius * _scale + lateral) / Mathf.Tan(45f * Mathf.Deg2Rad));
-            Vector3 pos = pointer.position + direction * Mathf.Max(0.18f, viewingDistance - along);
-            Vector3 up = Vector3.ProjectOnPlane(head.up, direction);
-            if (up.sqrMagnitude < 0.001f) up = pointer.up;
-            _canvas.transform.SetParent(null, true);
-            _canvas.transform.position = pos;
-            _canvas.transform.rotation = Quaternion.LookRotation(direction, up);
+            Transform anchor = SuperController.singleton.centerCameraTarget.transform;
+            _canvas.transform.SetParent(anchor, false);
+            _canvas.transform.localPosition = new Vector3(0f, 0f, _distance);
+            _canvas.transform.localRotation = Quaternion.identity;
             _canvas.transform.localScale = Vector3.one * _scale;
         }
 

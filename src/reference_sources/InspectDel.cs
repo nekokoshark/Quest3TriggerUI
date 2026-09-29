@@ -1,0 +1,1 @@
+using System; using System.Reflection; class I { static int Main(){var a=Assembly.LoadFrom(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll"); var t=a.GetType("MVR.FileManagement.FileManager"); foreach(var m in t.GetMethods(BindingFlags.Public|BindingFlags.Static)){ if(m.Name.Contains("Delete")||m.Name.Contains("Move")) Console.WriteLine(m);} return 0; }}

@@ -1,0 +1,23 @@
+2026-09-09: User explicitly approved machine-wide OFXR registration.
+Changed field: HKLM\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit
+Value name: F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\ofxr_activation_20260909\OFXR_V068.manifest.json
+Value data: REG_DWORD 0 (enabled).
+Registration result: The operation completed successfully. Exit 0.
+Readback result: REG_DWORD 0x0. Exit 0.
+VaM (OpenVR).bat is unchanged: START "VaM" VaM.exe -vrmode OpenVR
+Current VaM PID 66288 predates registration; no claim of OFXR loading or frame generation is made.
+Normal CloseMainWindow did not terminate the current session.
+Forced termination was rejected by auto-review due to possible unsaved scene loss; command did not execute.
+Await user closing VaM normally, then start the original BAT and verify loaded module and successful synthetic frame submissions.
+Input migration is deferred until frame generation succeeds, as requested.
+Correction: OFXR's second process is a --cleanup-manual-arm watchdog, not a conflicting tray instance. Prior sandbox HKCU queries did not represent the Administrator account.
+Rollback in elevated PowerShell: reg.exe delete 'HKLM\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit' /v 'F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\ofxr_activation_20260909\OFXR_V068.manifest.json' /f
+Rollback has not been executed against the live registration.
+
+Latest actual run 2026-09-09 03:54:47: original BAT launched PID 72340. OpenComposite enumerated XR_APILAYER_XRFrameBridge_diagnostic. OFXR log ofxr-bridge-flight-20260909-035448-pid72340.log confirms negotiation result=0 and instance_create result=0 (V068). xrGetSystem then returned XR_ERROR_FORM_FACTOR_UNAVAILABLE; headset unavailable to runtime. No synthetic frame submission yet; migration remains deferred. User must reconnect Quest through VD before next run.
+
+Latest actual run 2026-09-09 04:00:11: user confirmed Quest 3 connected through Virtual Desktop; original VaM (OpenVR).bat launched PID 60764 unchanged.
+BASELINE: no-headset run PID 72340; OpenComposite result XR_ERROR_FORM_FACTOR_UNAVAILABLE; exit state: no session/frame generation.
+MODIFIED: machine-level OFXR V068 implicit layer enabled; PID 60764 log shows session_create result=0, session_begin result=0, synthesis_pair result=0, d3d11_publish result=0, generation_prepare; result: real synthetic frame generation/submission observed.
+ROLLBACK: elevated `reg.exe delete 'HKLM\SOFTWARE\Khronos\OpenXR\1\ApiLayers\Implicit' /v 'F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\ofxr_activation_20260909\OFXR_V068.manifest.json' /f`; not executed, live registration remains enabled.
+RESTORED BEHAVIOR: not applicable; modified state intentionally remains enabled for OpenVR→VDXR→OFXR operation.

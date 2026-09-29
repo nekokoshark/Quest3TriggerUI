@@ -701,6 +701,7 @@ namespace Quest3TriggerUI
     {
         private HierarchicalPlayback _hierarchical;
         private NumberedPlayback _numbered;
+        private NumberedPlayback.TimelineStepPlayback _timestep;
         private PlaybackRoute _route;
         private JSONStorable _controller;
         private JSONNode _scene;
@@ -712,7 +713,7 @@ namespace Quest3TriggerUI
 
         internal bool Ready
         {
-            get { return ((_controller != null && _route != null) || _numbered != null || _hierarchical != null) && SuperController.singleton != null &&
+            get { return ((_controller != null && _route != null) || _numbered != null || _hierarchical != null || _timestep != null) && SuperController.singleton != null &&
                 object.ReferenceEquals(_scene, SuperController.singleton.loadJson); }
         }
 
@@ -721,7 +722,7 @@ namespace Quest3TriggerUI
             _hierarchical = null;
             _route = null;
             _controller = null;
-            _numbered = null;
+            _numbered = null; _timestep = null;
             SuperController sc = SuperController.singleton;
             if (sc == null || sc.isLoading)
             {
@@ -747,8 +748,79 @@ namespace Quest3TriggerUI
                         List<NumberedPlayback> groups = NumberedPlayback.Find(_scene as JSONClass);
                         if (groups.Count == 1 && groups[0].Validate(sc))
                         {
-                            _numbered = groups[0];
-                            status("播放初始化：识别到 " + _numbered.Stages.Count + " 个编号阶段；沿用原按钮完整触发链。");
+                            // One Timeline can be reachable both through numbered
+                            // buttons ("Play Segment BR/Stand1"…) and through named
+                            // ones ("Play Segment Sofa doggy"). The numbered family is
+                            // then only the subset whose names end in a digit, so every
+                            // other segment is unreachable and a running one that is not
+                            // in the list restarts at its first entry (measured: a living
+                            // room segment jumped straight into the bathroom group).
+                            // Same players = the two lists describe one authored
+                            // sequence; the longer one is that sequence.
+                            NumberedPlayback richer = NumberedPlayback.RicherNamed(
+                                _scene as JSONClass, groups[0], sc);
+                            _numbered = richer == null ? groups[0] : richer;
+                            status("播放初始化：识别到 " + _numbered.Stages.Count + " 个阶段" +
+                                (richer == null ? "（编号）；" : "（编号+命名合并）；") +
+                                "沿用原按钮完整触发链。");
+                            return;
+                        }
+                        List<NumberedPlayback> direct = NumberedPlayback.FindTimelineDirect(sc);
+                        if (direct.Count == 1 && direct[0].Validate(sc))
+                        {
+                            // Direct control only sees the literal "Segment N"
+                            // actions.  A named/story button list covering more
+                            // stages on a subset of the same players is the
+                            // authored sequence (vamsoy.spycam: 22 authored
+                            // stages vs the 2 literal Segment-N clips).
+                            NumberedPlayback richer =
+                                NumberedPlayback.RicherNamedSubset(_scene as JSONClass, direct[0], sc);
+                            _numbered = richer == null ? direct[0] : richer;
+                            status("播放初始化：识别到 " + _numbered.Stages.Count +
+                                (richer == null
+                                    ? " 个 Timeline 阶段（直控 " + _numbered.PlayerCount + " 个角色）；沿用原动作链。"
+                                    : " 个命名阶段（直控仅见子集）；沿用原按钮完整触发链。"));
+                            return;
+                        }
+                        // Named-segment scenes: stage buttons invoking
+                        // "Play Segment <name>" are the ordered stage list.
+                        // Auxiliary groups (e.g. a 2-entry language/story
+                        // mode switcher on another Timeline) must not veto
+                        // the real sequence — adopt the unique largest
+                        // group; a tie stays ambiguous as before.
+                        List<NumberedPlayback> named = NumberedPlayback.FindNamed(_scene as JSONClass);
+                        NumberedPlayback namedBest = null;
+                        if (named.Count == 1) namedBest = named[0];
+                        else
+                        {
+                            foreach (NumberedPlayback c in named)
+                            {
+                                if (namedBest != null &&
+                                    c.Stages.Count <= namedBest.Stages.Count) continue;
+                                namedBest = c;
+                            }
+                            if (namedBest != null)
+                                foreach (NumberedPlayback c in named)
+                                    if (c != namedBest &&
+                                        c.Stages.Count == namedBest.Stages.Count)
+                                    { namedBest = null; break; }
+                        }
+                        if (namedBest != null && namedBest.Validate(sc))
+                        {
+                            _numbered = namedBest;
+                            status("播放初始化：识别到 " + _numbered.Stages.Count +
+                                " 个命名阶段" + (named.Count > 1
+                                    ? "（另有 " + (named.Count - 1) + " 个备选按钮组未接管）"
+                                    : "") + "；沿用原按钮完整触发链。");
+                            return;
+                        }
+                        // No stage buttons either: fall back to Timeline's own
+                        // Next/Previous Animation stepper.
+                        _timestep = NumberedPlayback.TimelineStepPlayback.Find(sc);
+                        if (_timestep != null)
+                        {
+                            status("播放初始化：识别到 " + _timestep.PlayerCount +
+                                " 个 Timeline 播放器；命名段场景，按 Timeline 原生前后步进。");
                             return;
                         }
                     }
@@ -789,7 +861,7 @@ namespace Quest3TriggerUI
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null;
+                _numbered = null; _timestep = null;
                 status("播放初始化失败：" + e.Message);
             }
         }
@@ -803,7 +875,7 @@ namespace Quest3TriggerUI
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null;
+                _numbered = null; _timestep = null;
                 status("播放：请先初始化当前场景。");
                 return;
             }
@@ -820,7 +892,15 @@ namespace Quest3TriggerUI
                 if (Time.unscaledTime < _nextAllowed) return;
                 _nextAllowed = Time.unscaledTime + 0.5f;
                 try { _numbered.Step(sc, next, status); }
-                catch (Exception e) { _numbered = null; status("播放切换失败，请重新初始化：" + e.Message); }
+                catch (Exception e) { _numbered = null; _timestep = null; status("播放切换失败，请重新初始化：" + e.Message); }
+                return;
+            }
+            if (_timestep != null)
+            {
+                if (Time.unscaledTime < _nextAllowed) return;
+                _nextAllowed = Time.unscaledTime + 0.5f;
+                try { _timestep.Step(sc, next, status); }
+                catch (Exception e) { _timestep = null; status("播放切换失败，请重新初始化：" + e.Message); }
                 return;
             }
             Atom atom = sc.GetAtomByUid(_route.AtomId);
@@ -858,7 +938,7 @@ namespace Quest3TriggerUI
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null;
+                _numbered = null; _timestep = null;
                 status("播放：请先初始化当前场景。");
                 return;
             }
@@ -923,9 +1003,12 @@ namespace Quest3TriggerUI
             internal int Number;
             internal int TriggerScore;
             internal string ButtonId, Animation, SegmentName, Signature, ButtonStorable, ButtonAction;
+            internal string DirectAction;
             internal JSONStorable Button;
         }
         internal readonly List<Stage> Stages = new List<Stage>();
+        internal bool DirectMode;
+        private List<int> _directNumbers;
         private readonly List<string> _targets = new List<string>();
         private readonly List<JSONStorable> _players = new List<JSONStorable>();
         private readonly HashSet<int> _conflictingNumbers = new HashSet<int>();
@@ -1035,6 +1118,282 @@ namespace Quest3TriggerUI
             return result;
         }
 
+        // Scenes without stage buttons: Timeline plugins exposing
+        // "Play Segment Segment N" are themselves the controller. Players with
+        // identical segment sets form one synchronized group.
+        private static readonly Regex DirectSegment = new Regex(@"^Play Segment Segment (\d+)$");
+
+        // Named-segment scenes: UIButtons whose trigger invokes "Play Segment
+        // <name>" are themselves the ordered stage list — the scene's atom
+        // order is the author's progression.  Clicking the real button keeps
+        // the full chain (audio, clothing, overlays); stepping Timeline's own
+        // Next/Previous Animation list does not, because that list also
+        // contains non-segment overlay clips.
+        internal static List<NumberedPlayback> FindNamed(JSONClass scene)
+        {
+            var groups = new Dictionary<string, NumberedPlayback>();
+            JSONArray atoms = scene == null ? null : scene["atoms"] as JSONArray;
+            if (atoms == null) return new List<NumberedPlayback>();
+            foreach (JSONNode atom in ButtonEntries(atoms))
+            {
+                if ((string)atom["type"] != "UIButton") continue;
+                JSONArray storables = atom["storables"] as JSONArray;
+                if (storables == null) continue;
+                foreach (JSONNode storable in storables.Childs)
+                {
+                    if ((string)storable["id"] != "Trigger") continue;
+                    JSONNode trigger = storable["trigger"];
+                    JSONArray actions = trigger["startActions"] as JSONArray;
+                    if (actions == null) continue;
+                    var targets = new List<string>();
+                    string segment = null, directSegment = null;
+                    bool mismatch = false;
+                    foreach (JSONNode action in actions.Childs)
+                    {
+                        string receiver = action["receiver"];
+                        if (receiver == null || !receiver.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal)) continue;
+                        string name = action["receiverTargetName"];
+                        // Non-segment Timeline calls (Stop And Reset, Paused…)
+                        // ride along in the same button chain — they don't
+                        // make the stage ambiguous; only a second different
+                        // segment name does.
+                        if (name == null || !name.StartsWith("Play Segment ", StringComparison.Ordinal)) continue;
+                        string seg = name.Substring(13);
+                        // A literal "Segment N" is a real segment name — a chain
+                        // whose only segment call is "Play Segment Segment 2"
+                        // is still a stage button (VAMStoryAction menus do this).
+                        // When the chain also carries a named segment, the named
+                        // one wins and the Segment-N call rides along.
+                        if (DirectSegment.Match(name).Success)
+                        {
+                            if (directSegment != null && directSegment != seg) { mismatch = true; break; }
+                            directSegment = seg;
+                        }
+                        else
+                        {
+                            if (segment != null && segment != seg) { mismatch = true; break; }
+                            segment = seg;
+                        }
+                        string targetAtom = action["receiverAtom"];
+                        if (string.IsNullOrEmpty(targetAtom)) targetAtom = atom["id"];
+                        string target = targetAtom + "\n" + receiver;
+                        if (!targets.Contains(target)) targets.Add(target);
+                    }
+                    string finalSegment = segment ?? directSegment;
+                    if (mismatch || finalSegment == null || targets.Count == 0) continue;
+                    targets.Sort(StringComparer.Ordinal);
+                    string key = string.Join("\n", targets.ToArray());
+                    NumberedPlayback group;
+                    if (!groups.TryGetValue(key, out group))
+                    {
+                        group = new NumberedPlayback(); group._targets.AddRange(targets); groups.Add(key, group);
+                    }
+                    string signature = ActionSignature(trigger);
+                    int triggerScore = ActionCoverage(trigger);
+                    Stage existing = group.Stages.Find(delegate(Stage s) { return s.SegmentName == finalSegment; });
+                    if (existing != null)
+                    {
+                        if (existing.Signature == signature) continue;
+                        // Duplicate stage entries (compact page vs full button):
+                        // keep the chain with larger native action coverage.
+                        if (triggerScore > existing.TriggerScore)
+                        {
+                            existing.ButtonId = atom["id"]; existing.Signature = signature;
+                            existing.TriggerScore = triggerScore;
+                            existing.ButtonStorable = string.IsNullOrEmpty(atom["sourceStorable"])
+                                ? "Trigger" : (string)atom["sourceStorable"];
+                            existing.ButtonAction = atom["sourceAction"];
+                        }
+                        continue;
+                    }
+                    // Number doubles as the ordinal: stages stay in the
+                    // author's atom order, and sorting by it is a no-op.
+                    group.Stages.Add(new Stage { Number = group.Stages.Count, ButtonId = atom["id"],
+                        Animation = "Segment " + finalSegment, SegmentName = finalSegment,
+                        Signature = signature, TriggerScore = triggerScore,
+                        ButtonStorable = string.IsNullOrEmpty(atom["sourceStorable"]) ? "Trigger" : (string)atom["sourceStorable"],
+                        ButtonAction = atom["sourceAction"] });
+                }
+            }
+            var result = new List<NumberedPlayback>();
+            foreach (NumberedPlayback group in groups.Values)
+                if (group.Stages.Count >= 2) result.Add(group);
+            return result;
+        }
+
+        // A scene can serialize one Timeline as a numbered family and as named
+        // segments at the same time.  The numbered family is then only a subset,
+        // and stepping it skips every segment whose name has no trailing digit.
+        // Prefer the named list only when it drives exactly the same players,
+        // still contains every stage the numbered family offered, and covers
+        // strictly more of the authored sequence; anything else keeps the
+        // numbered result untouched.
+        internal static NumberedPlayback RicherNamed(JSONClass scene, NumberedPlayback numbered, SuperController sc)
+        {
+            if (scene == null || numbered == null) return null;
+            List<NumberedPlayback> named = FindNamed(scene);
+            NumberedPlayback best = null;
+            foreach (NumberedPlayback candidate in named)
+            {
+                if (!numbered.SameTargets(candidate)) continue;
+                if (candidate.Stages.Count <= numbered.Stages.Count) continue;
+                if (best != null && candidate.Stages.Count <= best.Stages.Count) continue;
+                if (!numbered.CoveredBy(candidate)) continue;
+                if (!candidate.Validate(sc)) continue;
+                best = candidate;
+            }
+            return best;
+        }
+
+        internal bool SameTargets(NumberedPlayback other)
+        {
+            if (other == null || _targets.Count != other._targets.Count) return false;
+            foreach (string target in _targets)
+                if (!other._targets.Contains(target)) return false;
+            return true;
+        }
+
+        // A switch to the longer list is only safe when it still offers every
+        // stage the numbered family had: a named list that drops one would
+        // silently remove a step the user can currently reach.
+        internal bool CoveredBy(NumberedPlayback other)
+        {
+            foreach (Stage stage in Stages)
+                if (other.Stages.Find(delegate(Stage s) { return s.Animation == stage.Animation; }) == null)
+                    return false;
+            return true;
+        }
+
+        // Direct-mode variant: the named/story list may legitimately drive a
+        // SUBSET of the synchronized players (peer atoms follow via the
+        // plugin's own SyncWithPeers), and its stages cannot contain the
+        // direct "Segment N" actions by construction — so adoption keys on
+        // target containment plus strictly more stages instead of coverage.
+        internal static NumberedPlayback RicherNamedSubset(JSONClass scene, NumberedPlayback direct, SuperController sc)
+        {
+            if (scene == null || direct == null) return null;
+            NumberedPlayback best = null;
+            foreach (NumberedPlayback candidate in FindNamed(scene))
+            {
+                if (candidate.Stages.Count <= direct.Stages.Count) continue;
+                if (best != null && candidate.Stages.Count <= best.Stages.Count) continue;
+                bool subset = candidate._targets.Count > 0;
+                foreach (string target in candidate._targets)
+                    if (!direct._targets.Contains(target)) { subset = false; break; }
+                if (!subset || !candidate.Validate(sc)) continue;
+                best = candidate;
+            }
+            return best;
+        }
+
+        private static bool SameNumbers(List<int> a, List<int> b)
+        {
+            if (a == null || a.Count != b.Count) return false;
+            foreach (int n in a) if (!b.Contains(n)) return false;
+            return true;
+        }
+
+        internal static List<NumberedPlayback> FindTimelineDirect(SuperController sc)
+        {
+            var result = new List<NumberedPlayback>();
+            if (sc == null) return result;
+            foreach (Atom atom in sc.GetAtoms())
+            {
+                foreach (string id in atom.GetStorableIDs())
+                {
+                    if (!id.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal)) continue;
+                    JSONStorable storable = atom.GetStorableByID(id);
+                    List<string> names = storable == null ? null : storable.GetActionNames();
+                    if (names == null) continue;
+                    var numbers = new List<int>();
+                    foreach (string actionName in names)
+                    {
+                        Match match = DirectSegment.Match(actionName ?? "");
+                        int n;
+                        if (match.Success && int.TryParse(match.Groups[1].Value, out n) &&
+                            !numbers.Contains(n)) numbers.Add(n);
+                    }
+                    if (numbers.Count < 2) continue;
+                    string target = atom.uid + "\n" + id;
+                    NumberedPlayback group = null;
+                    foreach (NumberedPlayback existing in result)
+                        if (SameNumbers(existing._directNumbers, numbers)) { group = existing; break; }
+                    if (group == null)
+                    {
+                        group = new NumberedPlayback();
+                        group.DirectMode = true;
+                        group._directNumbers = numbers;
+                        result.Add(group);
+                    }
+                    if (!group._targets.Contains(target)) group._targets.Add(target);
+                }
+            }
+            foreach (NumberedPlayback group in result)
+            {
+                group._targets.Sort(StringComparer.Ordinal);
+                group._directNumbers.Sort();
+                foreach (int n in group._directNumbers)
+                    group.Stages.Add(new Stage { Number = n, Animation = "Segment " + n,
+                        SegmentName = "Segment " + n, DirectAction = "Play Segment Segment " + n });
+            }
+            return result;
+        }
+
+        internal int PlayerCount { get { return _targets.Count; } }
+
+        // Scenes with named Timeline segments (no numbered stages): every
+        // Person's VamTimeline exposes "Next Animation"/"Previous Animation",
+        // which is itself the ordered stepper — no stage index needed and
+        // Timeline owns transitions. Restricted to Person atoms so background
+        // Timelines (props, toys) are not dragged along.
+        internal sealed class TimelineStepPlayback
+        {
+            internal readonly List<JSONStorable> Players = new List<JSONStorable>();
+            internal readonly List<string> Targets = new List<string>();
+
+            internal int PlayerCount { get { return Players.Count; } }
+
+            internal static TimelineStepPlayback Find(SuperController sc)
+            {
+                if (sc == null) return null;
+                var group = new TimelineStepPlayback();
+                foreach (Atom atom in sc.GetAtoms())
+                {
+                    if ((string)atom.type != "Person") continue;
+                    foreach (string id in atom.GetStorableIDs())
+                    {
+                        if (!id.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal)) continue;
+                        JSONStorable storable = atom.GetStorableByID(id);
+                        if (storable == null) continue;
+                        if (storable.GetAction("Next Animation") == null ||
+                            storable.GetAction("Previous Animation") == null) continue;
+                        group.Players.Add(storable);
+                        group.Targets.Add(atom.uid + "\n" + id);
+                    }
+                }
+                return group.Players.Count > 0 ? group : null;
+            }
+
+            internal void Step(SuperController sc, bool next, Action<string> status)
+            {
+                for (int i = 0; i < Players.Count; i++)
+                {
+                    string[] ids = Targets[i].Split('\n');
+                    Atom atom = sc.GetAtomByUid(ids[0]);
+                    if (atom == null || atom.GetStorableByID(ids[1]) != Players[i])
+                        throw new InvalidOperationException("阶段播放器已变化");
+                }
+                string name = next ? "Next Animation" : "Previous Animation";
+                foreach (JSONStorable player in Players)
+                {
+                    JSONStorableAction action = player.GetAction(name);
+                    if (action != null) action.actionCallback();
+                }
+                status((next ? "播放：已推进 Timeline 下一动画（" : "播放：已回退 Timeline 上一动画（") +
+                    Players.Count + " 个角色）。");
+            }
+        }
+
         // Normalize explicit widget-to-trigger mappings, not arbitrary numeric actions.
         // The original registered action remains the execution endpoint.
         private static IEnumerable<JSONNode> ButtonEntries(JSONArray atoms)
@@ -1093,11 +1452,13 @@ namespace Quest3TriggerUI
                 Atom atom = sc.GetAtomByUid(ids[0]);
                 JSONStorable player = atom == null ? null : atom.GetStorableByID(ids[1]);
                 if (player == null) return false;
-                foreach (Stage stage in Stages) if (player.GetAction("Play " + stage.Animation) == null) return false;
+                foreach (Stage stage in Stages)
+                    if (player.GetAction(stage.DirectAction ?? ("Play " + stage.Animation)) == null) return false;
                 _players.Add(player);
             }
             foreach (Stage stage in Stages)
             {
+                if (stage.DirectAction != null) continue;
                 Atom atom = sc.GetAtomByUid(stage.ButtonId);
                 stage.Button = atom == null ? null : atom.GetStorableByID(stage.ButtonStorable);
                 if (stage.Button == null) return false;
@@ -1172,43 +1533,109 @@ namespace Quest3TriggerUI
             FieldInfo field = target.GetType().GetField(name, flags);
             return field == null ? null : field.GetValue(target);
         }
+        private static int _rejectLogsLeft = 6;
+
+        private void LogStepReject(SuperController sc, string detail)
+        {
+            if (_rejectLogsLeft <= 0) return;
+            _rejectLogsLeft--;
+            if (Quest3TriggerUIPlugin.Log == null) return;
+            Quest3TriggerUIPlugin.Log.LogInfo("播放[reject] " + detail);
+            bool segmentMode = Stages.Count > 0 && !string.IsNullOrEmpty(Stages[0].SegmentName);
+            for (int p = 0; p < _players.Count; p++)
+            {
+                string uid = _targets[p].Split('\n')[0];
+                System.Text.StringBuilder sb = new System.Text.StringBuilder("播放[map] " + uid + " ->");
+                if (segmentMode)
+                {
+                    string segment = _players[p].GetStringChooserParamValue("Segment");
+                    int index = Stages.FindIndex(delegate(Stage s) { return s.SegmentName == segment; });
+                    sb.Append(" segment='").Append(segment).Append("':").Append(index);
+                }
+                {
+                    IEnumerable clips = Read(Read(_players[p], "animation"), "clips") as IEnumerable;
+                    if (clips == null) { sb.Append(" <no clips>"); }
+                    else
+                        foreach (object clip in clips)
+                        {
+                            if (!object.Equals(Read(clip, "playbackEnabled"), true)) continue;
+                            string name = Read(clip, "animationName") as string;
+                            int index = Stages.FindIndex(delegate(Stage s) { return s.Animation == name; });
+                            sb.Append(' ').Append(name).Append(':').Append(index);
+                        }
+                }
+                Quest3TriggerUIPlugin.Log.LogInfo(sb.ToString());
+            }
+        }
         internal void Step(SuperController sc, bool next, Action<string> status)
         {
             int current = -1;
             bool segmentMode = Stages.Count > 0 && !string.IsNullOrEmpty(Stages[0].SegmentName);
+            HashSet<int> common = null;
             for (int p = 0; p < _players.Count; p++)
             {
                 string[] ids = _targets[p].Split('\n');
                 Atom atom = sc.GetAtomByUid(ids[0]);
                 if (atom == null || atom.GetStorableByID(ids[1]) != _players[p]) throw new InvalidOperationException("阶段播放器已变化");
+                HashSet<int> seen = new HashSet<int>();
                 if (segmentMode)
                 {
                     string segment = _players[p].GetStringChooserParamValue("Segment");
                     int index = Stages.FindIndex(delegate(Stage s) { return s.SegmentName == segment; });
-                    if (index < 0) continue;
-                    if (current >= 0 && current != index) { status("播放：阶段正在混合或各角色阶段不同，请待转场结束。"); return; }
-                    current = index;
+                    if (index >= 0) seen.Add(index);
+                }
+                IEnumerable clips = Read(Read(_players[p], "animation"), "clips") as IEnumerable;
+                if (clips == null)
+                {
+                    if (!segmentMode) throw new InvalidOperationException("未读取到 Timeline 当前播放状态");
                 }
                 else
                 {
-                    IEnumerable clips = Read(Read(_players[p], "animation"), "clips") as IEnumerable;
-                    if (clips == null) throw new InvalidOperationException("未读取到 Timeline 当前播放状态");
                     foreach (object clip in clips)
                     {
                         if (!object.Equals(Read(clip, "playbackEnabled"), true)) continue;
                         string name = Read(clip, "animationName") as string;
                         int index = Stages.FindIndex(delegate(Stage s) { return s.Animation == name; });
-                        if (index < 0) continue;
-                        if (current >= 0 && current != index) { status("播放：阶段正在混合或各角色阶段不同，请待转场结束。"); return; }
-                        current = index;
+                        if (index >= 0) seen.Add(index);
                     }
                 }
+                if (seen.Count == 0) continue;
+                if (common == null) common = seen;
+                else common.IntersectWith(seen);
+            }
+            if (common != null)
+            {
+                if (common.Count == 0)
+                {
+                    status("播放：阶段正在混合或各角色阶段不同，请待转场结束。");
+                    LogStepReject(sc, "no common stage across players");
+                    return;
+                }
+                // Stray leftover clips (e.g. a stale 'Anim 1' still enabled on one
+                // character) must not veto navigation: the shared stage wins.
+                // Multiple shared stages mean a real cross-fade; keep the cursor
+                // stage so next/prev does not skip past it.
+                if (common.Contains(_cursor)) current = _cursor;
+                else
+                    foreach (int index in common)
+                        if (index > current) current = index;
             }
             if (current < 0) current = _cursor;
             if (current < 0 && !next) { status("播放：尚无当前阶段，请用下一个启动首阶段。"); return; }
             int selected = current < 0 ? 0 : current + (next ? 1 : -1);
             if (selected < 0 || selected >= Stages.Count) { status("播放：已到阶段边界。"); return; }
             Stage target = Stages[selected];
+            if (target.DirectAction != null)
+            {
+                foreach (JSONStorable player in _players)
+                {
+                    JSONStorableAction direct = player.GetAction(target.DirectAction);
+                    if (direct != null && direct.actionCallback != null) direct.actionCallback();
+                }
+                _cursor = selected;
+                status("播放：已调用 " + target.DirectAction + "，阶段 " + target.Number + "。");
+                return;
+            }
             Atom buttonAtom = sc.GetAtomByUid(target.ButtonId);
             if (buttonAtom == null || buttonAtom.GetStorableByID(target.ButtonStorable) != target.Button) throw new InvalidOperationException("原场景按钮已变化");
             if ((target.ButtonAction ?? "").StartsWith("story:", StringComparison.Ordinal))
@@ -1225,7 +1652,7 @@ namespace Quest3TriggerUI
                 action.actionCallback();
             }
             _cursor = selected;
-            status("播放：已调用原按钮，阶段 " + target.Number + "。");
+            status("播放：已调用原按钮，阶段 " + (target.SegmentName ?? target.Number.ToString()) + "。");
         }
     }
 }

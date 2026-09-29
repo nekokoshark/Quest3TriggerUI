@@ -921,6 +921,18 @@ namespace Quest3TriggerUI
             _rbInactiveRows, _rbActiveBtns, _rbUnparented,
             _rbUidToRvge, _rbRvgeToUid;
 
+        // Scene-drag handoff: the live ResourceBrowserUI instance plus the
+        // RVGE fields we need to classify a pressed button as a scene.
+        // Field names verified against the decompiled build: RVGE stores
+        // scalars as auto-property backing fields, RBPPEC holds the native
+        // ~500ms long-press flag we silence when our drag takes over.
+        private static object _rbInstance;
+        private static FieldInfo _rvgeTypeF, _rvgeCatF, _rvgePathF,
+            _rvgeNameF, _rvgeSpriteF;
+        private static PropertyInfo _rvgeDisplayP;
+        private static Type _rbppecType;
+        private static FieldInfo _rbppecLongPress;
+
         private static void ResolveRbFields(Type rbType)
         {
             _rbRowsByGo = rbType.GetField("buttonUIDsByRow", InstAll);
@@ -930,10 +942,101 @@ namespace Quest3TriggerUI
             _rbUnparented = rbType.GetField("unparentedButtonUIDs", InstAll);
             _rbUidToRvge = rbType.GetField("UIDButtonToRVGEDict", InstAll);
             _rbRvgeToUid = rbType.GetField("RVGEToUIDButtonDict", InstAll);
+            Assembly bAsm = rbType.Assembly;
+            Type rvge = bAsm.GetType("JayJayWon.ResourceVersionGroupEntry");
+            if (rvge != null)
+            {
+                _rvgeTypeF = rvge.GetField("<resourceType>k__BackingField", InstAll);
+                _rvgeCatF = rvge.GetField("<resourceCategory>k__BackingField", InstAll);
+                _rvgePathF = rvge.GetField("<resourceFullPathReference>k__BackingField", InstAll);
+                _rvgeNameF = rvge.GetField("<resourceFileNameNoExt>k__BackingField", InstAll);
+                _rvgeSpriteF = rvge.GetField("<resourceSprite>k__BackingField", InstAll);
+                _rvgeDisplayP = rvge.GetProperty("resourceDisplayName", InstAll);
+            }
+            _rbppecType = bAsm.GetType(
+                "JayJayWon.ResourceButtonPointerEnterExitClick");
+            if (_rbppecType != null)
+                _rbppecLongPress = _rbppecType.GetField(
+                    "longPressDetectActive", InstAll);
+        }
+
+        private static int RvgeInt(FieldInfo f, object rvge)
+        {
+            if (f == null || rvge == null) return 0;
+            try { return (int)f.GetValue(rvge); } catch { return 0; }
+        }
+
+        // Classify a pressed UIDynamicButton: returns its scene path when
+        // the button is a BrowserAssist scene cell, false otherwise. Cheap
+        // — one dict lookup + a few reflected fields, only at press time.
+        internal static bool TrySceneEntry(UnityEngine.Component btn,
+            out string path, out string display,
+            out UnityEngine.Texture2D tex,
+            out UnityEngine.Component press)
+        {
+            path = null; display = null; tex = null; press = null;
+            object inst = _rbInstance;
+            if (inst == null || _rbUidToRvge == null || btn == null)
+                return false;
+            object rvge;
+            try
+            {
+                IDictionary d =
+                    _rbUidToRvge.GetValue(inst) as IDictionary;
+                if (d == null || !d.Contains(btn)) return false;
+                rvge = d[btn];
+            }
+            catch { return false; }
+            if (rvge == null) return false;
+            // ResourceType.scene = 1, ResourceCategory.scene = 2.
+            if (RvgeInt(_rvgeTypeF, rvge) != 1 &&
+                RvgeInt(_rvgeCatF, rvge) != 2) return false;
+            string p = _rvgePathF == null
+                ? null : _rvgePathF.GetValue(rvge) as string;
+            if (string.IsNullOrEmpty(p)) return false;
+            SuperController sc = SuperController.singleton;
+            path = sc != null ? sc.NormalizePath(p) : p;
+            if (_rvgeDisplayP != null)
+            {
+                try { display = _rvgeDisplayP.GetValue(rvge, null) as string; }
+                catch { display = null; }
+            }
+            if (string.IsNullOrEmpty(display) && _rvgeNameF != null)
+                display = _rvgeNameF.GetValue(rvge) as string;
+            if (_rvgeSpriteF != null)
+            {
+                try
+                {
+                    Sprite sp = _rvgeSpriteF.GetValue(rvge) as Sprite;
+                    if (sp != null) tex = sp.texture;
+                }
+                catch { }
+            }
+            press = FindBaPress(btn.gameObject);
+            return true;
+        }
+
+        private static UnityEngine.Component FindBaPress(GameObject go)
+        {
+            if (go == null || _rbppecType == null) return null;
+            UnityEngine.Component c = go.GetComponent(_rbppecType);
+            if (c != null) return c;
+            c = go.GetComponentInParent(_rbppecType);
+            if (c != null) return c;
+            return go.GetComponentInChildren(_rbppecType);
+        }
+
+        // Our drag won the press — disarm BA's own long-press toggle pop
+        // so releasing the drag doesn't also open favorite/hide controls.
+        internal static void SuppressBaLongPress(UnityEngine.Component comp)
+        {
+            if (comp == null || _rbppecLongPress == null) return;
+            try { _rbppecLongPress.SetValue(comp, false); } catch { }
         }
 
         private static void RepopulateRowsPrefix(object __instance)
         {
+            _rbInstance = __instance;
             int purged = 0;
             try
             {

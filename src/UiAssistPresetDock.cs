@@ -81,7 +81,9 @@ namespace Quest3TriggerUI
         // dock (false) or the clothing favorites bar (true). Both trees are
         // built once and kept alive — switching is a SetActive flip handled
         // by the two visibility ticks, never a rebuild.
-        private static bool _dockModeFav;
+        // Shared left-edge slot shows one mode at a time:
+        // 0 = clothing favorites, 1 = preset dock, 2 = scene dock.
+        private static int _dockMode = 1;
         private static float _pdListHeight;
         private static GameObject _pdList;
         private static Atom _pdAtom;
@@ -391,12 +393,12 @@ namespace Quest3TriggerUI
             // hiding the control panel while browsing used to leave the
             // dock alive, riding the vanishing list's corners downward —
             // the "dock slides off like it's falling" bug.
-            bool visible = !_dockModeFav && sc != null && sc.MainHUDVisible &&
+            bool visible = _dockMode == 1 && sc != null && sc.MainHUDVisible &&
                 (_pdPicking || _pdList.activeInHierarchy);
-            // While user-collapsed or swapped to favorites mode the fill
+            // While user-collapsed or swapped to another dock mode the fill
             // pump freezes — _pdDirty stays latched so showing the dock
             // finishes the build then.
-            if (!_pdUserHidden && !_dockModeFav &&
+            if (!_pdUserHidden && _dockMode == 1 &&
                 (_pdDirty || _pdPreviewDirty || _pdBuildSlots != null))
             {
                 // Consume the dirty edge instead of latching it as the
@@ -444,7 +446,7 @@ namespace Quest3TriggerUI
             }
             // Collapsed: nothing below the strip needs ticking.
             if (_pdUserHidden) return;
-            TickDockScroll(false);
+            TickDockScroll(1);
             TickPdHoverZoom();
             // Target label tracks the auto pick while unconfirmed; manual
             // picks keep their name until that atom leaves the scene.
@@ -653,9 +655,13 @@ namespace Quest3TriggerUI
                 delegate { SetPdHidden(true); });
             y += FavTagRowH + FavTagGap;
             // Mode switch: this dock slot is shared with the clothing
-            // favorites bar — both trees stay loaded, only visibility flips.
+            // favorites bar and the scene dock — all trees stay loaded,
+            // only visibility flips.
             CreatePdIoRow("服 装", y, new Color(0.14f, 0.30f, 0.24f, 1f),
-                delegate { SetDockMode(true); });
+                delegate { SetDockMode(0); });
+            y += FavTagRowH + FavTagGap;
+            CreatePdIoRow("场 景", y, new Color(0.30f, 0.20f, 0.34f, 1f),
+                delegate { SetDockMode(2); });
             y += FavTagRowH;
             _pdTabStrip.sizeDelta = new Vector2(PdStripW, y);
             PdPaintTabs();
@@ -842,28 +848,36 @@ namespace Quest3TriggerUI
         // Mode switch between the preset dock and the clothing favorites bar
         // at the shared left-edge dock slot. No teardown: the hidden side's
         // cells/thumbs/state all stay put for the instant flip back.
-        private static void SetDockMode(bool fav)
+        private static void SetDockMode(int mode)
         {
-            if (_dockModeFav == fav) return;
-            _dockModeFav = fav;
+            if (_dockMode == mode) return;
+            _dockMode = mode;
             ClearPdReorder();
             if (_pdHzPanel != null) _pdHzPanel.gameObject.SetActive(false);
             if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
-            if (!fav)
+            if (mode != 0)
             {
-                // Leaving the clothing side — fold its live interactions
-                // the same way the preset overlays fold above.
+                // Fold the clothing side's live interactions the same way
+                // the preset overlays fold below.
                 ClearFavoriteReorder();
                 if (_favTagEditing != null) CommitTagRename();
-                return;
             }
-            if (_pdSaveOverlay != null)
-            { _pdSaveOverlay.SetActive(false); _pdSaveTag = null; }
-            if (_pdRenameOverlay != null)
+            if (mode != 1)
             {
-                _pdRenameOverlay.SetActive(false);
-                _pdRenamePath = null;
-                VrTextInputBridge.Clear();
+                if (_pdSaveOverlay != null)
+                { _pdSaveOverlay.SetActive(false); _pdSaveTag = null; }
+                if (_pdRenameOverlay != null)
+                {
+                    _pdRenameOverlay.SetActive(false);
+                    _pdRenamePath = null;
+                    VrTextInputBridge.Clear();
+                }
+            }
+            if (mode != 2)
+            {
+                ExitSdSaveSession();
+                if (_sdTagEditing != null) CommitSdTagRename();
+                CancelSdRename();
             }
         }
 
@@ -951,7 +965,7 @@ namespace Quest3TriggerUI
                 ? rows * PdCellH + (rows - 1) * FavSpacing + FavPad
                 : FavPad;
             _pdCells.sizeDelta = new Vector2(FavColW, _pdContentH);
-            ApplyDockScroll(false, _pdScrollY);
+            ApplyDockScroll(1, _pdScrollY);
             // Name-strip clickability mirrors save-browse state.
             PaintDockSaveMode();
             return true;
@@ -1151,7 +1165,7 @@ namespace Quest3TriggerUI
                 ? rows * PdCellH + (rows - 1) * FavSpacing + FavPad
                 : FavPad;
             _pdCells.sizeDelta = new Vector2(FavColW, _pdContentH);
-            ApplyDockScroll(false, _pdScrollY);
+            ApplyDockScroll(1, _pdScrollY);
             // Dock: [left-edge tab strip][cells viewport] — fixed grid height,
             // the scroll offset replaces the old bottom nav row.
             float stripNeed = _pdTabStrip == null ? 0f

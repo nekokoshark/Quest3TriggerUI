@@ -1,0 +1,1738 @@
+=== MVR.FileManagement.FileManager.Refresh CompilerControlled, Public, Static, HideBySig ===
+IL_0000: ldstr "[FileManager.Refresh] 被调用，packagesAlreadyLoaded="
+IL_0005: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_000a: brfalse.s IL_001b
+IL_000c: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0011: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_0016: ldc.i4.0
+IL_0017: cgt
+IL_0019: br.s IL_001c
+IL_001b: ldc.i4.0
+IL_001c: stloc.s V_7
+IL_001e: ldloca.s V_7
+IL_0020: call System.String System.Boolean::ToString()
+IL_0025: ldstr "
+调用栈:
+"
+IL_002a: ldc.i4.1
+IL_002b: newobj System.Void System.Diagnostics.StackTrace::.ctor(System.Boolean)
+IL_0030: callvirt System.String System.Object::ToString()
+IL_0035: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_003a: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_003f: ldsfld System.Boolean MVR.FileManagement.FileManager::debug
+IL_0044: brfalse.s IL_0050
+IL_0046: ldstr "FileManager Refresh()"
+IL_004b: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0050: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0055: brtrue.s IL_0066
+IL_0057: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastPkgCount
+IL_005c: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::.ctor(System.Int32)
+IL_0061: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0066: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_006b: brtrue.s IL_007e
+IL_006d: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastPkgCount
+IL_0072: ldc.i4.4
+IL_0073: mul
+IL_0074: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::.ctor(System.Int32)
+IL_0079: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_007e: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0083: brtrue.s IL_0094
+IL_0085: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastPkgCount
+IL_008a: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::.ctor(System.Int32)
+IL_008f: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0094: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_0099: brtrue.s IL_00a5
+IL_009b: newobj System.Void System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::.ctor()
+IL_00a0: stsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_00a5: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_00aa: brtrue.s IL_00b6
+IL_00ac: newobj System.Void System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry>::.ctor()
+IL_00b1: stsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_00b6: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_00bb: brtrue.s IL_00c7
+IL_00bd: newobj System.Void System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry>::.ctor()
+IL_00c2: stsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_00c7: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_00cc: brtrue.s IL_00dd
+IL_00ce: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastFileEntryCount
+IL_00d3: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::.ctor(System.Int32)
+IL_00d8: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_00dd: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_00e2: brtrue.s IL_00f5
+IL_00e4: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastFileEntryCount
+IL_00e9: ldc.i4.4
+IL_00ea: mul
+IL_00eb: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::.ctor(System.Int32)
+IL_00f0: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_00f5: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_00fa: brtrue.s IL_010b
+IL_00fc: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastDirEntryCount
+IL_0101: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::.ctor(System.Int32)
+IL_0106: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_010b: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0110: brtrue.s IL_0123
+IL_0112: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastDirEntryCount
+IL_0117: ldc.i4.4
+IL_0118: mul
+IL_0119: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::.ctor(System.Int32)
+IL_011e: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0123: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_0128: brtrue.s IL_013b
+IL_012a: ldsfld System.Int32 MVR.FileManagement.FileManager::_lastPkgCount
+IL_012f: ldc.i4.2
+IL_0130: mul
+IL_0131: newobj System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::.ctor(System.Int32)
+IL_0136: stsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_013b: ldc.i4.0
+IL_013c: stloc.0
+IL_013d: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_0142: stloc.1
+IL_0143: call System.Void MVR.FileManagement.VarPackage::ResetLaunchPerfCounters()
+IL_0148: ldsfld System.Boolean MVR.FileManagement.FileManager::packagesEnabled
+IL_014d: brfalse.s IL_0194
+IL_014f: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_0154: stloc.s V_8
+IL_0156: ldloc.s V_8
+IL_0158: call System.Boolean System.IO.Directory::Exists(System.String)
+IL_015d: brfalse.s IL_018f
+IL_015f: ldloc.s V_8
+IL_0161: ldstr "*.var"
+IL_0166: ldc.i4.1
+IL_0167: call System.String[] System.IO.Directory::GetDirectories(System.String,System.String,System.IO.SearchOption)
+IL_016c: ldloc.s V_8
+IL_016e: ldstr "*.var"
+IL_0173: ldc.i4.1
+IL_0174: call System.String[] System.IO.Directory::GetFiles(System.String,System.String,System.IO.SearchOption)
+IL_0179: stloc.s V_9
+IL_017b: dup
+IL_017c: ldloc.s V_9
+IL_017e: call System.Int32 MVR.FileManagement.FileManager::ComputeFileSnapshotHash(System.String[],System.String[])
+IL_0183: call System.Void MVR.FileManagement.AssetRegistry::SetCurrentSnapshotHash(System.Int32)
+IL_0188: ldloc.s V_9
+IL_018a: call System.Void MVR.FileManagement.AssetRegistry::SetPreScanResult(System.String[],System.String[])
+IL_018f: leave.s IL_0194
+IL_0191: pop
+IL_0192: leave.s IL_0194
+IL_0194: ldc.i4.0
+IL_0195: stloc.s V_4
+IL_0197: ldc.i4.0
+IL_0198: stloc.s V_5
+IL_019a: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_019f: brfalse.s IL_01b0
+IL_01a1: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_01a6: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_01ab: ldc.i4.0
+IL_01ac: cgt
+IL_01ae: br.s IL_01b1
+IL_01b0: ldc.i4.0
+IL_01b1: stloc.s V_6
+IL_01b3: ldloc.s V_6
+IL_01b5: brtrue IL_05cd
+IL_01ba: ldloca.s V_5
+IL_01bc: call System.Boolean MVR.FileManagement.AssetRegistry::TryLoad(System.Boolean&)
+IL_01c1: brfalse IL_05cd
+IL_01c6: ldstr "[LaunchPerf]   AssetRegistry: 缓存加载成功, needsUpdate="
+IL_01cb: ldloca.s V_5
+IL_01cd: call System.String System.Boolean::ToString()
+IL_01d2: call System.String System.String::Concat(System.String,System.String)
+IL_01d7: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_01dc: call System.Void MVR.FileManagement.VarPackage::LoadZipDirCache()
+IL_01e1: newobj System.Void System.Collections.Generic.List`1<MVR.FileManagement.VarPackage>::.ctor()
+IL_01e6: stloc.s V_10
+IL_01e8: ldloca.s V_10
+IL_01ea: call System.Collections.Generic.List`1<System.String> MVR.FileManagement.AssetRegistry::RebuildFromCache(System.Collections.Generic.List`1<MVR.FileManagement.VarPackage>&)
+IL_01ef: stloc.s V_11
+IL_01f1: ldloc.s V_10
+IL_01f3: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_01f8: stloc.s V_12
+IL_01fa: br IL_0417
+IL_01ff: ldloca.s V_12
+IL_0201: call !0 System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarPackage>::get_Current()
+IL_0206: stloc.s V_13
+IL_0208: ldloc.s V_13
+IL_020a: brfalse IL_0417
+IL_020f: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0214: ldloc.s V_13
+IL_0216: callvirt System.String MVR.FileManagement.VarPackage::get_Uid()
+IL_021b: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::ContainsKey(!0)
+IL_0220: brtrue IL_0417
+IL_0225: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_022a: ldloc.s V_13
+IL_022c: callvirt System.String MVR.FileManagement.VarPackage::get_Uid()
+IL_0231: ldloc.s V_13
+IL_0233: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::set_Item(!0,!1)
+IL_0238: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_023d: ldloc.s V_13
+IL_023f: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_0244: ldloc.s V_13
+IL_0246: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::set_Item(!0,!1)
+IL_024b: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_0250: ldloc.s V_13
+IL_0252: callvirt System.String MVR.FileManagement.VarPackage::get_SlashPath()
+IL_0257: ldloc.s V_13
+IL_0259: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::set_Item(!0,!1)
+IL_025e: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_0263: ldloc.s V_13
+IL_0265: callvirt System.String MVR.FileManagement.VarPackage::get_FullPath()
+IL_026a: ldloc.s V_13
+IL_026c: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::set_Item(!0,!1)
+IL_0271: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_0276: ldloc.s V_13
+IL_0278: callvirt System.String MVR.FileManagement.VarPackage::get_FullSlashPath()
+IL_027d: ldloc.s V_13
+IL_027f: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::set_Item(!0,!1)
+IL_0284: ldloc.s V_13
+IL_0286: callvirt MVR.FileManagement.VarPackageGroup MVR.FileManagement.VarPackage::get_Group()
+IL_028b: ldloc.s V_13
+IL_028d: callvirt System.Void MVR.FileManagement.VarPackageGroup::AddPackage(MVR.FileManagement.VarPackage)
+IL_0292: ldloc.s V_13
+IL_0294: callvirt System.Boolean MVR.FileManagement.VarPackage::get_Enabled()
+IL_0299: brfalse IL_0417
+IL_029e: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_02a3: ldloc.s V_13
+IL_02a5: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::Add(!0)
+IL_02aa: pop
+IL_02ab: ldloc.s V_13
+IL_02ad: callvirt System.Collections.Generic.List`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.VarPackage::get_FileEntries()
+IL_02b2: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<MVR.FileManagement.VarFileEntry>::GetEnumerator()
+IL_02b7: stloc.s V_14
+IL_02b9: br.s IL_0330
+IL_02bb: ldloca.s V_14
+IL_02bd: call !0 System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>::get_Current()
+IL_02c2: stloc.s V_15
+IL_02c4: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_02c9: ldloc.s V_15
+IL_02cb: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry>::Add(!0)
+IL_02d0: pop
+IL_02d1: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_02d6: ldloc.s V_15
+IL_02d8: callvirt System.String MVR.FileManagement.FileEntry::get_Uid()
+IL_02dd: ldloc.s V_15
+IL_02df: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::set_Item(!0,!1)
+IL_02e4: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_02e9: ldloc.s V_15
+IL_02eb: callvirt System.String MVR.FileManagement.FileEntry::get_Path()
+IL_02f0: ldloc.s V_15
+IL_02f2: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::set_Item(!0,!1)
+IL_02f7: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_02fc: ldloc.s V_15
+IL_02fe: callvirt System.String MVR.FileManagement.FileEntry::get_SlashPath()
+IL_0303: ldloc.s V_15
+IL_0305: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::set_Item(!0,!1)
+IL_030a: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_030f: ldloc.s V_15
+IL_0311: callvirt System.String MVR.FileManagement.FileEntry::get_FullPath()
+IL_0316: ldloc.s V_15
+IL_0318: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::set_Item(!0,!1)
+IL_031d: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_0322: ldloc.s V_15
+IL_0324: callvirt System.String MVR.FileManagement.FileEntry::get_FullSlashPath()
+IL_0329: ldloc.s V_15
+IL_032b: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::set_Item(!0,!1)
+IL_0330: ldloca.s V_14
+IL_0332: call System.Boolean System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>::MoveNext()
+IL_0337: brtrue.s IL_02bb
+IL_0339: leave.s IL_0349
+IL_033b: ldloca.s V_14
+IL_033d: constrained. System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>
+IL_0343: callvirt System.Void System.IDisposable::Dispose()
+IL_0348: endfinally
+IL_0349: ldloc.s V_13
+IL_034b: callvirt System.Collections.Generic.List`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.VarPackage::get_DirectoryEntries()
+IL_0350: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<MVR.FileManagement.VarDirectoryEntry>::GetEnumerator()
+IL_0355: stloc.s V_16
+IL_0357: br.s IL_03ce
+IL_0359: ldloca.s V_16
+IL_035b: call !0 System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>::get_Current()
+IL_0360: stloc.s V_17
+IL_0362: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_0367: ldloc.s V_17
+IL_0369: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry>::Add(!0)
+IL_036e: pop
+IL_036f: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_0374: ldloc.s V_17
+IL_0376: callvirt System.String MVR.FileManagement.DirectoryEntry::get_Uid()
+IL_037b: ldloc.s V_17
+IL_037d: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_0382: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0387: ldloc.s V_17
+IL_0389: callvirt System.String MVR.FileManagement.DirectoryEntry::get_Path()
+IL_038e: ldloc.s V_17
+IL_0390: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_0395: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_039a: ldloc.s V_17
+IL_039c: callvirt System.String MVR.FileManagement.DirectoryEntry::get_SlashPath()
+IL_03a1: ldloc.s V_17
+IL_03a3: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_03a8: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_03ad: ldloc.s V_17
+IL_03af: callvirt System.String MVR.FileManagement.DirectoryEntry::get_FullPath()
+IL_03b4: ldloc.s V_17
+IL_03b6: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_03bb: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_03c0: ldloc.s V_17
+IL_03c2: callvirt System.String MVR.FileManagement.DirectoryEntry::get_FullSlashPath()
+IL_03c7: ldloc.s V_17
+IL_03c9: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_03ce: ldloca.s V_16
+IL_03d0: call System.Boolean System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>::MoveNext()
+IL_03d5: brtrue.s IL_0359
+IL_03d7: leave.s IL_03e7
+IL_03d9: ldloca.s V_16
+IL_03db: constrained. System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>
+IL_03e1: callvirt System.Void System.IDisposable::Dispose()
+IL_03e6: endfinally
+IL_03e7: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_03ec: ldloc.s V_13
+IL_03ee: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_03f3: ldloc.s V_13
+IL_03f5: callvirt MVR.FileManagement.VarDirectoryEntry MVR.FileManagement.VarPackage::get_RootDirectory()
+IL_03fa: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_03ff: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_0404: ldloc.s V_13
+IL_0406: callvirt System.String MVR.FileManagement.VarPackage::get_FullPath()
+IL_040b: ldloc.s V_13
+IL_040d: callvirt MVR.FileManagement.VarDirectoryEntry MVR.FileManagement.VarPackage::get_RootDirectory()
+IL_0412: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::set_Item(!0,!1)
+IL_0417: ldloca.s V_12
+IL_0419: call System.Boolean System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarPackage>::MoveNext()
+IL_041e: brtrue IL_01ff
+IL_0423: leave.s IL_0433
+IL_0425: ldloca.s V_12
+IL_0427: constrained. System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarPackage>
+IL_042d: callvirt System.Void System.IDisposable::Dispose()
+IL_0432: endfinally
+IL_0433: ldstr "[LaunchPerf]   AssetRegistry: 重建完成, valid="
+IL_0438: ldloc.s V_10
+IL_043a: callvirt System.Int32 System.Collections.Generic.List`1<MVR.FileManagement.VarPackage>::get_Count()
+IL_043f: stloc.s V_18
+IL_0441: ldloca.s V_18
+IL_0443: call System.String System.Int32::ToString()
+IL_0448: ldstr " needRescan="
+IL_044d: ldloc.s V_11
+IL_044f: callvirt System.Int32 System.Collections.Generic.List`1<System.String>::get_Count()
+IL_0454: stloc.s V_18
+IL_0456: ldloca.s V_18
+IL_0458: call System.String System.Int32::ToString()
+IL_045d: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_0462: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0467: ldloc.s V_11
+IL_0469: callvirt System.Int32 System.Collections.Generic.List`1<System.String>::get_Count()
+IL_046e: ldc.i4.0
+IL_046f: ble IL_0538
+IL_0474: ldstr "[LaunchPerf]   AssetRegistry: 增量更新, rescanCount="
+IL_0479: ldloc.s V_11
+IL_047b: callvirt System.Int32 System.Collections.Generic.List`1<System.String>::get_Count()
+IL_0480: stloc.s V_18
+IL_0482: ldloca.s V_18
+IL_0484: call System.String System.Int32::ToString()
+IL_0489: call System.String System.String::Concat(System.String,System.String)
+IL_048e: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0493: ldloc.s V_11
+IL_0495: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<System.String>::GetEnumerator()
+IL_049a: stloc.s V_19
+IL_049c: br.s IL_051c
+IL_049e: ldloca.s V_19
+IL_04a0: call !0 System.Collections.Generic.List`1/Enumerator<System.String>::get_Current()
+IL_04a5: stloc.s V_20
+IL_04a7: ldloc.s V_20
+IL_04a9: call System.Boolean System.IO.File::Exists(System.String)
+IL_04ae: brtrue.s IL_04b9
+IL_04b0: ldloc.s V_20
+IL_04b2: call System.Boolean System.IO.Directory::Exists(System.String)
+IL_04b7: brfalse.s IL_04c3
+IL_04b9: ldloc.s V_20
+IL_04bb: call MVR.FileManagement.VarPackage MVR.FileManagement.FileManager::RegisterPackage(System.String)
+IL_04c0: pop
+IL_04c1: br.s IL_051c
+IL_04c3: ldnull
+IL_04c4: stloc.s V_21
+IL_04c6: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_04cb: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_04d0: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_04d5: stloc.s V_22
+IL_04d7: br.s IL_04f8
+IL_04d9: ldloca.s V_22
+IL_04db: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_04e0: stloc.s V_23
+IL_04e2: ldloc.s V_23
+IL_04e4: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_04e9: ldloc.s V_20
+IL_04eb: call System.Boolean System.String::op_Equality(System.String,System.String)
+IL_04f0: brfalse.s IL_04f8
+IL_04f2: ldloc.s V_23
+IL_04f4: stloc.s V_21
+IL_04f6: br.s IL_0501
+IL_04f8: ldloca.s V_22
+IL_04fa: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_04ff: brtrue.s IL_04d9
+IL_0501: leave.s IL_0511
+IL_0503: ldloca.s V_22
+IL_0505: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_050b: callvirt System.Void System.IDisposable::Dispose()
+IL_0510: endfinally
+IL_0511: ldloc.s V_21
+IL_0513: brfalse.s IL_051c
+IL_0515: ldloc.s V_21
+IL_0517: call System.Void MVR.FileManagement.FileManager::UnregisterPackage(MVR.FileManagement.VarPackage)
+IL_051c: ldloca.s V_19
+IL_051e: call System.Boolean System.Collections.Generic.List`1/Enumerator<System.String>::MoveNext()
+IL_0523: brtrue IL_049e
+IL_0528: leave.s IL_0538
+IL_052a: ldloca.s V_19
+IL_052c: constrained. System.Collections.Generic.List`1/Enumerator<System.String>
+IL_0532: callvirt System.Void System.IDisposable::Dispose()
+IL_0537: endfinally
+IL_0538: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_053d: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_0542: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_0547: stloc.s V_22
+IL_0549: br.s IL_0557
+IL_054b: ldloca.s V_22
+IL_054d: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_0552: callvirt System.Void MVR.FileManagement.VarPackage::LoadMetaData()
+IL_0557: ldloca.s V_22
+IL_0559: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_055e: brtrue.s IL_054b
+IL_0560: leave.s IL_0570
+IL_0562: ldloca.s V_22
+IL_0564: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_056a: callvirt System.Void System.IDisposable::Dispose()
+IL_056f: endfinally
+IL_0570: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0575: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::get_Values()
+IL_057a: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackageGroup>::GetEnumerator()
+IL_057f: stloc.s V_24
+IL_0581: br.s IL_058f
+IL_0583: ldloca.s V_24
+IL_0585: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>::get_Current()
+IL_058a: callvirt System.Void MVR.FileManagement.VarPackageGroup::Init()
+IL_058f: ldloca.s V_24
+IL_0591: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>::MoveNext()
+IL_0596: brtrue.s IL_0583
+IL_0598: leave.s IL_05a8
+IL_059a: ldloca.s V_24
+IL_059c: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>
+IL_05a2: callvirt System.Void System.IDisposable::Dispose()
+IL_05a7: endfinally
+IL_05a8: ldc.i4.1
+IL_05a9: stloc.s V_4
+IL_05ab: ldstr "[LaunchPerf]   AssetRegistry: 全部完成, 总包数="
+IL_05b0: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_05b5: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_05ba: stloc.s V_18
+IL_05bc: ldloca.s V_18
+IL_05be: call System.String System.Int32::ToString()
+IL_05c3: call System.String System.String::Concat(System.String,System.String)
+IL_05c8: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_05cd: leave.s IL_05f8
+IL_05cf: stloc.s V_25
+IL_05d1: ldstr "[AssetRegistry] 加载失败，降级到全量扫描: "
+IL_05d6: ldloc.s V_25
+IL_05d8: callvirt System.String System.Exception::get_Message()
+IL_05dd: ldstr "
+"
+IL_05e2: ldloc.s V_25
+IL_05e4: callvirt System.String System.Exception::get_StackTrace()
+IL_05e9: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_05ee: call System.Void SuperController::LogError(System.String)
+IL_05f3: ldc.i4.0
+IL_05f4: stloc.s V_4
+IL_05f6: leave.s IL_05f8
+IL_05f8: ldstr "[AssetRegistry] assetRegistryLoaded="
+IL_05fd: ldloca.s V_4
+IL_05ff: call System.String System.Boolean::ToString()
+IL_0604: ldstr " packagesAlreadyLoaded="
+IL_0609: ldloca.s V_6
+IL_060b: call System.String System.Boolean::ToString()
+IL_0610: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_0615: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_061a: ldloc.s V_4
+IL_061c: brfalse.s IL_065f
+IL_061e: call System.Void MVR.FileManagement.VarPackage::RebuildZipDirCacheFromPackages()
+IL_0623: call System.Void MVR.FileManagement.VarPackage::SaveZipDirCache()
+IL_0628: call System.Void MVR.FileManagement.AssetRegistry::SaveFromCurrentState()
+IL_062d: call System.DateTime System.DateTime::get_Now()
+IL_0632: call System.Void MVR.FileManagement.FileManager::set_lastPackageRefreshTime(System.DateTime)
+IL_0637: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_063c: stloc.2
+IL_063d: ldstr "[LaunchPerf]     FileManager.Refresh: 总计 "
+IL_0642: ldloc.2
+IL_0643: ldloc.1
+IL_0644: sub
+IL_0645: conv.i4
+IL_0646: stloc.s V_18
+IL_0648: ldloca.s V_18
+IL_064a: call System.String System.Int32::ToString()
+IL_064f: ldstr "ms (AssetRegistry 缓存)"
+IL_0654: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_0659: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_065e: ret
+IL_065f: call System.Void MVR.FileManagement.VarPackage::LoadZipDirCache()
+IL_0664: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_0669: call System.Boolean System.IO.Directory::Exists(System.String)
+IL_066e: brtrue.s IL_067a
+IL_0670: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_0675: call System.Void MVR.FileManagement.FileManager::CreateDirectory(System.String)
+IL_067a: ldsfld System.String MVR.FileManagement.FileManager::userPrefsFolder
+IL_067f: call System.Boolean System.IO.Directory::Exists(System.String)
+IL_0684: brtrue.s IL_0690
+IL_0686: ldsfld System.String MVR.FileManagement.FileManager::userPrefsFolder
+IL_068b: call System.Void MVR.FileManagement.FileManager::CreateDirectory(System.String)
+IL_0690: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_0695: call System.Boolean System.IO.Directory::Exists(System.String)
+IL_069a: brfalse IL_0d7f
+IL_069f: ldnull
+IL_06a0: stloc.s V_27
+IL_06a2: ldnull
+IL_06a3: stloc.s V_28
+IL_06a5: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_06aa: stloc.3
+IL_06ab: ldsfld System.Boolean MVR.FileManagement.FileManager::packagesEnabled
+IL_06b0: brfalse IL_0889
+IL_06b5: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_06ba: ldstr "*.var"
+IL_06bf: ldc.i4.1
+IL_06c0: call System.String[] System.IO.Directory::GetDirectories(System.String,System.String,System.IO.SearchOption)
+IL_06c5: stloc.s V_27
+IL_06c7: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_06cc: ldstr "*.var"
+IL_06d1: ldc.i4.1
+IL_06d2: call System.String[] System.IO.Directory::GetFiles(System.String,System.String,System.IO.SearchOption)
+IL_06d7: stloc.s V_28
+IL_06d9: ldc.i4.7
+IL_06da: newarr System.String
+IL_06df: dup
+IL_06e0: ldc.i4.0
+IL_06e1: ldstr "[LaunchPerf]       Refresh-DirScan: dirs="
+IL_06e6: stelem.ref
+IL_06e7: dup
+IL_06e8: ldc.i4.1
+IL_06e9: ldloc.s V_27
+IL_06eb: brtrue.s IL_06f0
+IL_06ed: ldc.i4.0
+IL_06ee: br.s IL_06f4
+IL_06f0: ldloc.s V_27
+IL_06f2: ldlen
+IL_06f3: conv.i4
+IL_06f4: stloc.s V_18
+IL_06f6: ldloca.s V_18
+IL_06f8: call System.String System.Int32::ToString()
+IL_06fd: stelem.ref
+IL_06fe: dup
+IL_06ff: ldc.i4.2
+IL_0700: ldstr " files="
+IL_0705: stelem.ref
+IL_0706: dup
+IL_0707: ldc.i4.3
+IL_0708: ldloc.s V_28
+IL_070a: brtrue.s IL_070f
+IL_070c: ldc.i4.0
+IL_070d: br.s IL_0713
+IL_070f: ldloc.s V_28
+IL_0711: ldlen
+IL_0712: conv.i4
+IL_0713: stloc.s V_18
+IL_0715: ldloca.s V_18
+IL_0717: call System.String System.Int32::ToString()
+IL_071c: stelem.ref
+IL_071d: dup
+IL_071e: ldc.i4.4
+IL_071f: ldstr " "
+IL_0724: stelem.ref
+IL_0725: dup
+IL_0726: ldc.i4.5
+IL_0727: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_072c: ldloc.3
+IL_072d: sub
+IL_072e: ldc.r4 1000
+IL_0733: mul
+IL_0734: conv.i4
+IL_0735: stloc.s V_18
+IL_0737: ldloca.s V_18
+IL_0739: call System.String System.Int32::ToString()
+IL_073e: stelem.ref
+IL_073f: dup
+IL_0740: ldc.i4.6
+IL_0741: ldstr "ms"
+IL_0746: stelem.ref
+IL_0747: call System.String System.String::Concat(System.String[])
+IL_074c: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0751: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0756: brfalse IL_087d
+IL_075b: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0760: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_0765: ldc.i4.0
+IL_0766: ble IL_087d
+IL_076b: ldloc.s V_27
+IL_076d: ldloc.s V_28
+IL_076f: call System.Int32 MVR.FileManagement.FileManager::ComputeFileSnapshotHash(System.String[],System.String[])
+IL_0774: stloc.s V_32
+IL_0776: ldloc.s V_32
+IL_0778: call System.Void MVR.FileManagement.AssetRegistry::SetCurrentSnapshotHash(System.Int32)
+IL_077d: call System.Int32 MVR.FileManagement.VarPackage::GetSavedSnapshotHash()
+IL_0782: stloc.s V_33
+IL_0784: ldloc.s V_33
+IL_0786: brfalse IL_083f
+IL_078b: ldloc.s V_32
+IL_078d: ldloc.s V_33
+IL_078f: bne.un IL_083f
+IL_0794: ldsfld System.Int32 MVR.FileManagement.FileManager::_snapshotSkipCount
+IL_0799: ldc.i4.1
+IL_079a: add
+IL_079b: stsfld System.Int32 MVR.FileManagement.FileManager::_snapshotSkipCount
+IL_07a0: ldstr "[LaunchPerf]       Refresh-OptA-Snapshot: SKIP (无变化) skipCount="
+IL_07a5: ldsflda System.Int32 MVR.FileManagement.FileManager::_snapshotSkipCount
+IL_07aa: call System.String System.Int32::ToString()
+IL_07af: call System.String System.String::Concat(System.String,System.String)
+IL_07b4: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_07b9: ldc.i4.0
+IL_07ba: stloc.s V_34
+IL_07bc: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_07c1: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_07c6: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_07cb: stloc.s V_22
+IL_07cd: br.s IL_07e0
+IL_07cf: ldloca.s V_22
+IL_07d1: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_07d6: callvirt System.Boolean MVR.FileManagement.VarPackage::get_forceRefresh()
+IL_07db: brfalse.s IL_07e0
+IL_07dd: ldc.i4.1
+IL_07de: stloc.s V_34
+IL_07e0: ldloca.s V_22
+IL_07e2: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_07e7: brtrue.s IL_07cf
+IL_07e9: leave.s IL_07f9
+IL_07eb: ldloca.s V_22
+IL_07ed: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_07f3: callvirt System.Void System.IDisposable::Dispose()
+IL_07f8: endfinally
+IL_07f9: ldloc.s V_34
+IL_07fb: brtrue.s IL_0833
+IL_07fd: call System.DateTime System.DateTime::get_Now()
+IL_0802: call System.Void MVR.FileManagement.FileManager::set_lastPackageRefreshTime(System.DateTime)
+IL_0807: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_080c: stloc.2
+IL_080d: ldstr "[LaunchPerf]     FileManager.Refresh: 总计 "
+IL_0812: ldloc.2
+IL_0813: ldloc.1
+IL_0814: sub
+IL_0815: conv.i4
+IL_0816: stloc.s V_18
+IL_0818: ldloca.s V_18
+IL_081a: call System.String System.Int32::ToString()
+IL_081f: ldstr "ms (快照跳过)"
+IL_0824: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_0829: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_082e: leave IL_1181
+IL_0833: ldstr "[LaunchPerf]       Refresh-OptA-Snapshot: forceRefresh detected, continuing"
+IL_0838: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_083d: br.s IL_0861
+IL_083f: ldstr "[LaunchPerf]       Refresh-OptA-Snapshot: CHANGED oldHash="
+IL_0844: ldloca.s V_33
+IL_0846: call System.String System.Int32::ToString()
+IL_084b: ldstr " newHash="
+IL_0850: ldloca.s V_32
+IL_0852: call System.String System.Int32::ToString()
+IL_0857: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_085c: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0861: leave.s IL_087d
+IL_0863: stloc.s V_35
+IL_0865: ldstr "[LaunchPerf]       Refresh-OptA-Snapshot: ERROR "
+IL_086a: ldloc.s V_35
+IL_086c: callvirt System.String System.Exception::get_Message()
+IL_0871: call System.String System.String::Concat(System.String,System.String)
+IL_0876: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_087b: leave.s IL_087d
+IL_087d: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_0882: call System.Void MVR.FileManagement.VarPackage::PreloadFileInfoBulk(System.String)
+IL_0887: br.s IL_08fd
+IL_0889: ldsfld System.String[] MVR.FileManagement.FileManager::demoPackagePrefixes
+IL_088e: brfalse.s IL_08fd
+IL_0890: newobj System.Void System.Collections.Generic.List`1<System.String>::.ctor()
+IL_0895: stloc.s V_36
+IL_0897: ldsfld System.String[] MVR.FileManagement.FileManager::demoPackagePrefixes
+IL_089c: stloc.s V_37
+IL_089e: ldc.i4.0
+IL_089f: stloc.s V_18
+IL_08a1: br.s IL_08ec
+IL_08a3: ldloc.s V_37
+IL_08a5: ldloc.s V_18
+IL_08a7: ldelem.ref
+IL_08a8: stloc.s V_38
+IL_08aa: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_08af: ldloc.s V_38
+IL_08b1: ldstr "*.var"
+IL_08b6: call System.String System.String::Concat(System.String,System.String)
+IL_08bb: ldc.i4.1
+IL_08bc: call System.String[] System.IO.Directory::GetFiles(System.String,System.String,System.IO.SearchOption)
+IL_08c1: stloc.s V_39
+IL_08c3: ldc.i4.0
+IL_08c4: stloc.s V_40
+IL_08c6: br.s IL_08de
+IL_08c8: ldloc.s V_39
+IL_08ca: ldloc.s V_40
+IL_08cc: ldelem.ref
+IL_08cd: stloc.s V_41
+IL_08cf: ldloc.s V_36
+IL_08d1: ldloc.s V_41
+IL_08d3: callvirt System.Void System.Collections.Generic.List`1<System.String>::Add(!0)
+IL_08d8: ldloc.s V_40
+IL_08da: ldc.i4.1
+IL_08db: add
+IL_08dc: stloc.s V_40
+IL_08de: ldloc.s V_40
+IL_08e0: ldloc.s V_39
+IL_08e2: ldlen
+IL_08e3: conv.i4
+IL_08e4: blt.s IL_08c8
+IL_08e6: ldloc.s V_18
+IL_08e8: ldc.i4.1
+IL_08e9: add
+IL_08ea: stloc.s V_18
+IL_08ec: ldloc.s V_18
+IL_08ee: ldloc.s V_37
+IL_08f0: ldlen
+IL_08f1: conv.i4
+IL_08f2: blt.s IL_08a3
+IL_08f4: ldloc.s V_36
+IL_08f6: callvirt !0[] System.Collections.Generic.List`1<System.String>::ToArray()
+IL_08fb: stloc.s V_28
+IL_08fd: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0902: stloc.3
+IL_0903: newobj System.Void System.Collections.Generic.HashSet`1<System.String>::.ctor()
+IL_0908: stloc.s V_29
+IL_090a: newobj System.Void System.Collections.Generic.HashSet`1<System.String>::.ctor()
+IL_090f: stloc.s V_30
+IL_0911: ldloc.s V_27
+IL_0913: brfalse IL_099f
+IL_0918: ldloc.s V_27
+IL_091a: stloc.s V_37
+IL_091c: ldc.i4.0
+IL_091d: stloc.s V_18
+IL_091f: br.s IL_0997
+IL_0921: ldloc.s V_37
+IL_0923: ldloc.s V_18
+IL_0925: ldelem.ref
+IL_0926: stloc.s V_42
+IL_0928: ldloc.s V_29
+IL_092a: ldloc.s V_42
+IL_092c: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_0931: pop
+IL_0932: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_0937: ldloc.s V_42
+IL_0939: ldloca.s V_43
+IL_093b: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::TryGetValue(!0,!1&)
+IL_0940: brfalse.s IL_0987
+IL_0942: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_0947: ldloc.s V_43
+IL_0949: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::Contains(!0)
+IL_094e: stloc.s V_44
+IL_0950: ldloc.s V_43
+IL_0952: callvirt System.Boolean MVR.FileManagement.VarPackage::get_Enabled()
+IL_0957: stloc.s V_45
+IL_0959: ldloc.s V_44
+IL_095b: ldc.i4.0
+IL_095c: ceq
+IL_095e: ldloc.s V_45
+IL_0960: and
+IL_0961: brtrue.s IL_0974
+IL_0963: ldloc.s V_44
+IL_0965: brfalse.s IL_096b
+IL_0967: ldloc.s V_45
+IL_0969: brfalse.s IL_0974
+IL_096b: ldloc.s V_43
+IL_096d: callvirt System.Boolean MVR.FileManagement.VarPackage::get_IsSimulated()
+IL_0972: brtrue.s IL_0991
+IL_0974: ldloc.s V_43
+IL_0976: call System.Void MVR.FileManagement.FileManager::UnregisterPackage(MVR.FileManagement.VarPackage)
+IL_097b: ldloc.s V_30
+IL_097d: ldloc.s V_42
+IL_097f: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_0984: pop
+IL_0985: br.s IL_0991
+IL_0987: ldloc.s V_30
+IL_0989: ldloc.s V_42
+IL_098b: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_0990: pop
+IL_0991: ldloc.s V_18
+IL_0993: ldc.i4.1
+IL_0994: add
+IL_0995: stloc.s V_18
+IL_0997: ldloc.s V_18
+IL_0999: ldloc.s V_37
+IL_099b: ldlen
+IL_099c: conv.i4
+IL_099d: blt.s IL_0921
+IL_099f: ldloc.s V_28
+IL_09a1: brfalse IL_0a2d
+IL_09a6: ldloc.s V_28
+IL_09a8: stloc.s V_37
+IL_09aa: ldc.i4.0
+IL_09ab: stloc.s V_18
+IL_09ad: br.s IL_0a25
+IL_09af: ldloc.s V_37
+IL_09b1: ldloc.s V_18
+IL_09b3: ldelem.ref
+IL_09b4: stloc.s V_46
+IL_09b6: ldloc.s V_29
+IL_09b8: ldloc.s V_46
+IL_09ba: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_09bf: pop
+IL_09c0: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_09c5: ldloc.s V_46
+IL_09c7: ldloca.s V_47
+IL_09c9: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::TryGetValue(!0,!1&)
+IL_09ce: brfalse.s IL_0a15
+IL_09d0: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_09d5: ldloc.s V_47
+IL_09d7: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::Contains(!0)
+IL_09dc: stloc.s V_48
+IL_09de: ldloc.s V_47
+IL_09e0: callvirt System.Boolean MVR.FileManagement.VarPackage::get_Enabled()
+IL_09e5: stloc.s V_49
+IL_09e7: ldloc.s V_48
+IL_09e9: ldc.i4.0
+IL_09ea: ceq
+IL_09ec: ldloc.s V_49
+IL_09ee: and
+IL_09ef: brtrue.s IL_0a02
+IL_09f1: ldloc.s V_48
+IL_09f3: brfalse.s IL_09f9
+IL_09f5: ldloc.s V_49
+IL_09f7: brfalse.s IL_0a02
+IL_09f9: ldloc.s V_47
+IL_09fb: callvirt System.Boolean MVR.FileManagement.VarPackage::get_IsSimulated()
+IL_0a00: brfalse.s IL_0a1f
+IL_0a02: ldloc.s V_47
+IL_0a04: call System.Void MVR.FileManagement.FileManager::UnregisterPackage(MVR.FileManagement.VarPackage)
+IL_0a09: ldloc.s V_30
+IL_0a0b: ldloc.s V_46
+IL_0a0d: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_0a12: pop
+IL_0a13: br.s IL_0a1f
+IL_0a15: ldloc.s V_30
+IL_0a17: ldloc.s V_46
+IL_0a19: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Add(!0)
+IL_0a1e: pop
+IL_0a1f: ldloc.s V_18
+IL_0a21: ldc.i4.1
+IL_0a22: add
+IL_0a23: stloc.s V_18
+IL_0a25: ldloc.s V_18
+IL_0a27: ldloc.s V_37
+IL_0a29: ldlen
+IL_0a2a: conv.i4
+IL_0a2b: blt.s IL_09af
+IL_0a2d: newobj System.Void System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::.ctor()
+IL_0a32: stloc.s V_31
+IL_0a34: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0a39: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_0a3e: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_0a43: stloc.s V_22
+IL_0a45: br.s IL_0a6a
+IL_0a47: ldloca.s V_22
+IL_0a49: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_0a4e: stloc.s V_50
+IL_0a50: ldloc.s V_29
+IL_0a52: ldloc.s V_50
+IL_0a54: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_0a59: callvirt System.Boolean System.Collections.Generic.HashSet`1<System.String>::Contains(!0)
+IL_0a5e: brtrue.s IL_0a6a
+IL_0a60: ldloc.s V_31
+IL_0a62: ldloc.s V_50
+IL_0a64: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::Add(!0)
+IL_0a69: pop
+IL_0a6a: ldloca.s V_22
+IL_0a6c: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_0a71: brtrue.s IL_0a47
+IL_0a73: leave.s IL_0a83
+IL_0a75: ldloca.s V_22
+IL_0a77: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_0a7d: callvirt System.Void System.IDisposable::Dispose()
+IL_0a82: endfinally
+IL_0a83: ldc.i4.7
+IL_0a84: newarr System.String
+IL_0a89: dup
+IL_0a8a: ldc.i4.0
+IL_0a8b: ldstr "[LaunchPerf]       Refresh-DiffCalc: toUnreg="
+IL_0a90: stelem.ref
+IL_0a91: dup
+IL_0a92: ldc.i4.1
+IL_0a93: ldloc.s V_31
+IL_0a95: callvirt System.Int32 System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::get_Count()
+IL_0a9a: stloc.s V_18
+IL_0a9c: ldloca.s V_18
+IL_0a9e: call System.String System.Int32::ToString()
+IL_0aa3: stelem.ref
+IL_0aa4: dup
+IL_0aa5: ldc.i4.2
+IL_0aa6: ldstr " toReg="
+IL_0aab: stelem.ref
+IL_0aac: dup
+IL_0aad: ldc.i4.3
+IL_0aae: ldloc.s V_30
+IL_0ab0: callvirt System.Int32 System.Collections.Generic.HashSet`1<System.String>::get_Count()
+IL_0ab5: stloc.s V_18
+IL_0ab7: ldloca.s V_18
+IL_0ab9: call System.String System.Int32::ToString()
+IL_0abe: stelem.ref
+IL_0abf: dup
+IL_0ac0: ldc.i4.4
+IL_0ac1: ldstr " "
+IL_0ac6: stelem.ref
+IL_0ac7: dup
+IL_0ac8: ldc.i4.5
+IL_0ac9: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0ace: ldloc.3
+IL_0acf: sub
+IL_0ad0: ldc.r4 1000
+IL_0ad5: mul
+IL_0ad6: conv.i4
+IL_0ad7: stloc.s V_18
+IL_0ad9: ldloca.s V_18
+IL_0adb: call System.String System.Int32::ToString()
+IL_0ae0: stelem.ref
+IL_0ae1: dup
+IL_0ae2: ldc.i4.6
+IL_0ae3: ldstr "ms"
+IL_0ae8: stelem.ref
+IL_0ae9: call System.String System.String::Concat(System.String[])
+IL_0aee: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0af3: ldloc.s V_31
+IL_0af5: callvirt System.Collections.Generic.HashSet`1/Enumerator<!0> System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_0afa: stloc.s V_51
+IL_0afc: br.s IL_0b0c
+IL_0afe: ldloca.s V_51
+IL_0b00: call !0 System.Collections.Generic.HashSet`1/Enumerator<MVR.FileManagement.VarPackage>::get_Current()
+IL_0b05: call System.Void MVR.FileManagement.FileManager::UnregisterPackage(MVR.FileManagement.VarPackage)
+IL_0b0a: ldc.i4.1
+IL_0b0b: stloc.0
+IL_0b0c: ldloca.s V_51
+IL_0b0e: call System.Boolean System.Collections.Generic.HashSet`1/Enumerator<MVR.FileManagement.VarPackage>::MoveNext()
+IL_0b13: brtrue.s IL_0afe
+IL_0b15: leave.s IL_0b25
+IL_0b17: ldloca.s V_51
+IL_0b19: constrained. System.Collections.Generic.HashSet`1/Enumerator<MVR.FileManagement.VarPackage>
+IL_0b1f: callvirt System.Void System.IDisposable::Dispose()
+IL_0b24: endfinally
+IL_0b25: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0b2a: stloc.3
+IL_0b2b: ldloc.s V_30
+IL_0b2d: callvirt System.Int32 System.Collections.Generic.HashSet`1<System.String>::get_Count()
+IL_0b32: ldc.i4.0
+IL_0b33: ble.s IL_0b68
+IL_0b35: ldc.i4.1
+IL_0b36: stloc.0
+IL_0b37: ldloc.s V_30
+IL_0b39: callvirt System.Collections.Generic.HashSet`1/Enumerator<!0> System.Collections.Generic.HashSet`1<System.String>::GetEnumerator()
+IL_0b3e: stloc.s V_52
+IL_0b40: br.s IL_0b4f
+IL_0b42: ldloca.s V_52
+IL_0b44: call !0 System.Collections.Generic.HashSet`1/Enumerator<System.String>::get_Current()
+IL_0b49: call MVR.FileManagement.VarPackage MVR.FileManagement.FileManager::RegisterPackage(System.String)
+IL_0b4e: pop
+IL_0b4f: ldloca.s V_52
+IL_0b51: call System.Boolean System.Collections.Generic.HashSet`1/Enumerator<System.String>::MoveNext()
+IL_0b56: brtrue.s IL_0b42
+IL_0b58: leave.s IL_0b68
+IL_0b5a: ldloca.s V_52
+IL_0b5c: constrained. System.Collections.Generic.HashSet`1/Enumerator<System.String>
+IL_0b62: callvirt System.Void System.IDisposable::Dispose()
+IL_0b67: endfinally
+IL_0b68: ldc.i4.5
+IL_0b69: newarr System.String
+IL_0b6e: dup
+IL_0b6f: ldc.i4.0
+IL_0b70: ldstr "[LaunchPerf]       Refresh-RegisterAll: count="
+IL_0b75: stelem.ref
+IL_0b76: dup
+IL_0b77: ldc.i4.1
+IL_0b78: ldloc.s V_30
+IL_0b7a: callvirt System.Int32 System.Collections.Generic.HashSet`1<System.String>::get_Count()
+IL_0b7f: stloc.s V_18
+IL_0b81: ldloca.s V_18
+IL_0b83: call System.String System.Int32::ToString()
+IL_0b88: stelem.ref
+IL_0b89: dup
+IL_0b8a: ldc.i4.2
+IL_0b8b: ldstr " "
+IL_0b90: stelem.ref
+IL_0b91: dup
+IL_0b92: ldc.i4.3
+IL_0b93: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0b98: ldloc.3
+IL_0b99: sub
+IL_0b9a: ldc.r4 1000
+IL_0b9f: mul
+IL_0ba0: conv.i4
+IL_0ba1: stloc.s V_18
+IL_0ba3: ldloca.s V_18
+IL_0ba5: call System.String System.Int32::ToString()
+IL_0baa: stelem.ref
+IL_0bab: dup
+IL_0bac: ldc.i4.4
+IL_0bad: ldstr "ms"
+IL_0bb2: stelem.ref
+IL_0bb3: call System.String System.String::Concat(System.String[])
+IL_0bb8: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0bbd: ldc.i4.8
+IL_0bbe: newarr System.String
+IL_0bc3: dup
+IL_0bc4: ldc.i4.0
+IL_0bc5: ldstr "[LaunchPerf]         Refresh-RegisterAll-ZipScanTotal: "
+IL_0bca: stelem.ref
+IL_0bcb: dup
+IL_0bcc: ldc.i4.1
+IL_0bcd: ldsflda System.Single MVR.FileManagement.VarPackage::_lpScanZipTotalMs
+IL_0bd2: ldstr "F1"
+IL_0bd7: call System.String System.Single::ToString(System.String)
+IL_0bdc: stelem.ref
+IL_0bdd: dup
+IL_0bde: ldc.i4.2
+IL_0bdf: ldstr "ms, CacheTotal: "
+IL_0be4: stelem.ref
+IL_0be5: dup
+IL_0be6: ldc.i4.3
+IL_0be7: ldsflda System.Single MVR.FileManagement.VarPackage::_lpScanCacheTotalMs
+IL_0bec: ldstr "F1"
+IL_0bf1: call System.String System.Single::ToString(System.String)
+IL_0bf6: stelem.ref
+IL_0bf7: dup
+IL_0bf8: ldc.i4.4
+IL_0bf9: ldstr "ms, pkgs="
+IL_0bfe: stelem.ref
+IL_0bff: dup
+IL_0c00: ldc.i4.5
+IL_0c01: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpScanCount
+IL_0c06: call System.String System.Int32::ToString()
+IL_0c0b: stelem.ref
+IL_0c0c: dup
+IL_0c0d: ldc.i4.6
+IL_0c0e: ldstr " slowPkgs(>10ms)="
+IL_0c13: stelem.ref
+IL_0c14: dup
+IL_0c15: ldc.i4.7
+IL_0c16: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpScanSlowCount
+IL_0c1b: call System.String System.Int32::ToString()
+IL_0c20: stelem.ref
+IL_0c21: call System.String System.String::Concat(System.String[])
+IL_0c26: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0c2b: ldstr "[LaunchPerf]         Refresh-ZipDirCache: hits="
+IL_0c30: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpCacheHitCount
+IL_0c35: call System.String System.Int32::ToString()
+IL_0c3a: ldstr " misses="
+IL_0c3f: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpCacheMissCount
+IL_0c44: call System.String System.Int32::ToString()
+IL_0c49: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_0c4e: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0c53: ldc.i4.6
+IL_0c54: newarr System.String
+IL_0c59: dup
+IL_0c5a: ldc.i4.0
+IL_0c5b: ldstr "[LaunchPerf]         Refresh-FileInfoPreload: bulkMs="
+IL_0c60: stelem.ref
+IL_0c61: dup
+IL_0c62: ldc.i4.1
+IL_0c63: ldsflda System.Single MVR.FileManagement.VarPackage::_lpBulkFileInfoMs
+IL_0c68: ldstr "F1"
+IL_0c6d: call System.String System.Single::ToString(System.String)
+IL_0c72: stelem.ref
+IL_0c73: dup
+IL_0c74: ldc.i4.2
+IL_0c75: ldstr " hits="
+IL_0c7a: stelem.ref
+IL_0c7b: dup
+IL_0c7c: ldc.i4.3
+IL_0c7d: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpFileInfoPreloadHit
+IL_0c82: call System.String System.Int32::ToString()
+IL_0c87: stelem.ref
+IL_0c88: dup
+IL_0c89: ldc.i4.4
+IL_0c8a: ldstr " misses="
+IL_0c8f: stelem.ref
+IL_0c90: dup
+IL_0c91: ldc.i4.5
+IL_0c92: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpFileInfoPreloadMiss
+IL_0c97: call System.String System.Int32::ToString()
+IL_0c9c: stelem.ref
+IL_0c9d: call System.String System.String::Concat(System.String[])
+IL_0ca2: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0ca7: ldstr "[LaunchPerf]         Refresh-Opt5-DirEntries: totalFiles="
+IL_0cac: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpTotalFileEntries
+IL_0cb1: call System.String System.Int32::ToString()
+IL_0cb6: ldstr " totalDirs="
+IL_0cbb: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpTotalDirEntries
+IL_0cc0: call System.String System.Int32::ToString()
+IL_0cc5: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_0cca: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0ccf: ldc.i4.8
+IL_0cd0: newarr System.String
+IL_0cd5: dup
+IL_0cd6: ldc.i4.0
+IL_0cd7: ldstr "[LaunchPerf]         Refresh-Opt6-DictPrealloc: uidToFile="
+IL_0cdc: stelem.ref
+IL_0cdd: dup
+IL_0cde: ldc.i4.1
+IL_0cdf: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_0ce4: brtrue.s IL_0ce9
+IL_0ce6: ldc.i4.0
+IL_0ce7: br.s IL_0cf3
+IL_0ce9: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_0cee: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::get_Count()
+IL_0cf3: stloc.s V_18
+IL_0cf5: ldloca.s V_18
+IL_0cf7: call System.String System.Int32::ToString()
+IL_0cfc: stelem.ref
+IL_0cfd: dup
+IL_0cfe: ldc.i4.2
+IL_0cff: ldstr " pathToFile="
+IL_0d04: stelem.ref
+IL_0d05: dup
+IL_0d06: ldc.i4.3
+IL_0d07: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_0d0c: brtrue.s IL_0d11
+IL_0d0e: ldc.i4.0
+IL_0d0f: br.s IL_0d1b
+IL_0d11: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_0d16: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::get_Count()
+IL_0d1b: stloc.s V_18
+IL_0d1d: ldloca.s V_18
+IL_0d1f: call System.String System.Int32::ToString()
+IL_0d24: stelem.ref
+IL_0d25: dup
+IL_0d26: ldc.i4.4
+IL_0d27: ldstr " uidToDir="
+IL_0d2c: stelem.ref
+IL_0d2d: dup
+IL_0d2e: ldc.i4.5
+IL_0d2f: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_0d34: brtrue.s IL_0d39
+IL_0d36: ldc.i4.0
+IL_0d37: br.s IL_0d43
+IL_0d39: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_0d3e: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::get_Count()
+IL_0d43: stloc.s V_18
+IL_0d45: ldloca.s V_18
+IL_0d47: call System.String System.Int32::ToString()
+IL_0d4c: stelem.ref
+IL_0d4d: dup
+IL_0d4e: ldc.i4.6
+IL_0d4f: ldstr " pathToDir="
+IL_0d54: stelem.ref
+IL_0d55: dup
+IL_0d56: ldc.i4.7
+IL_0d57: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0d5c: brtrue.s IL_0d61
+IL_0d5e: ldc.i4.0
+IL_0d5f: br.s IL_0d6b
+IL_0d61: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0d66: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::get_Count()
+IL_0d6b: stloc.s V_18
+IL_0d6d: ldloca.s V_18
+IL_0d6f: call System.String System.Int32::ToString()
+IL_0d74: stelem.ref
+IL_0d75: call System.String System.String::Concat(System.String[])
+IL_0d7a: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0d7f: ldloc.0
+IL_0d80: brfalse IL_0f35
+IL_0d85: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0d8a: stloc.3
+IL_0d8b: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0d90: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_0d95: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_0d9a: stloc.s V_22
+IL_0d9c: br.s IL_0daa
+IL_0d9e: ldloca.s V_22
+IL_0da0: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_0da5: callvirt System.Void MVR.FileManagement.VarPackage::LoadMetaData()
+IL_0daa: ldloca.s V_22
+IL_0dac: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_0db1: brtrue.s IL_0d9e
+IL_0db3: leave.s IL_0dc3
+IL_0db5: ldloca.s V_22
+IL_0db7: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_0dbd: callvirt System.Void System.IDisposable::Dispose()
+IL_0dc2: endfinally
+IL_0dc3: ldc.i4.5
+IL_0dc4: newarr System.String
+IL_0dc9: dup
+IL_0dca: ldc.i4.0
+IL_0dcb: ldstr "[LaunchPerf]       Refresh-LoadAllMetaData: pkgs="
+IL_0dd0: stelem.ref
+IL_0dd1: dup
+IL_0dd2: ldc.i4.1
+IL_0dd3: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0dd8: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_0ddd: stloc.s V_18
+IL_0ddf: ldloca.s V_18
+IL_0de1: call System.String System.Int32::ToString()
+IL_0de6: stelem.ref
+IL_0de7: dup
+IL_0de8: ldc.i4.2
+IL_0de9: ldstr " "
+IL_0dee: stelem.ref
+IL_0def: dup
+IL_0df0: ldc.i4.3
+IL_0df1: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0df6: ldloc.3
+IL_0df7: sub
+IL_0df8: ldc.r4 1000
+IL_0dfd: mul
+IL_0dfe: conv.i4
+IL_0dff: stloc.s V_18
+IL_0e01: ldloca.s V_18
+IL_0e03: call System.String System.Int32::ToString()
+IL_0e08: stelem.ref
+IL_0e09: dup
+IL_0e0a: ldc.i4.4
+IL_0e0b: ldstr "ms"
+IL_0e10: stelem.ref
+IL_0e11: call System.String System.String::Concat(System.String[])
+IL_0e16: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0e1b: ldc.i4.7
+IL_0e1c: newarr System.String
+IL_0e21: dup
+IL_0e22: ldc.i4.0
+IL_0e23: ldstr "[LaunchPerf]         Refresh-MetaCache: hits="
+IL_0e28: stelem.ref
+IL_0e29: dup
+IL_0e2a: ldc.i4.1
+IL_0e2b: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpMetaCacheHitCount
+IL_0e30: call System.String System.Int32::ToString()
+IL_0e35: stelem.ref
+IL_0e36: dup
+IL_0e37: ldc.i4.2
+IL_0e38: ldstr " misses="
+IL_0e3d: stelem.ref
+IL_0e3e: dup
+IL_0e3f: ldc.i4.3
+IL_0e40: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpMetaCacheMissCount
+IL_0e45: call System.String System.Int32::ToString()
+IL_0e4a: stelem.ref
+IL_0e4b: dup
+IL_0e4c: ldc.i4.4
+IL_0e4d: ldstr " metaLoadTotal="
+IL_0e52: stelem.ref
+IL_0e53: dup
+IL_0e54: ldc.i4.5
+IL_0e55: ldsflda System.Single MVR.FileManagement.VarPackage::_lpMetaLoadTotalMs
+IL_0e5a: ldstr "F1"
+IL_0e5f: call System.String System.Single::ToString(System.String)
+IL_0e64: stelem.ref
+IL_0e65: dup
+IL_0e66: ldc.i4.6
+IL_0e67: ldstr "ms"
+IL_0e6c: stelem.ref
+IL_0e6d: call System.String System.String::Concat(System.String[])
+IL_0e72: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0e77: ldstr "[LaunchPerf]         Refresh-MetaDataCache(A-New): hits="
+IL_0e7c: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpMetaDataCacheHit
+IL_0e81: call System.String System.Int32::ToString()
+IL_0e86: ldstr " misses="
+IL_0e8b: ldsflda System.Int32 MVR.FileManagement.VarPackage::_lpMetaDataCacheMiss
+IL_0e90: call System.String System.Int32::ToString()
+IL_0e95: call System.String System.String::Concat(System.String,System.String,System.String,System.String)
+IL_0e9a: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0e9f: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0ea4: stloc.3
+IL_0ea5: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0eaa: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::get_Values()
+IL_0eaf: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackageGroup>::GetEnumerator()
+IL_0eb4: stloc.s V_24
+IL_0eb6: br.s IL_0ec4
+IL_0eb8: ldloca.s V_24
+IL_0eba: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>::get_Current()
+IL_0ebf: callvirt System.Void MVR.FileManagement.VarPackageGroup::Init()
+IL_0ec4: ldloca.s V_24
+IL_0ec6: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>::MoveNext()
+IL_0ecb: brtrue.s IL_0eb8
+IL_0ecd: leave.s IL_0edd
+IL_0ecf: ldloca.s V_24
+IL_0ed1: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackageGroup>
+IL_0ed7: callvirt System.Void System.IDisposable::Dispose()
+IL_0edc: endfinally
+IL_0edd: ldc.i4.5
+IL_0ede: newarr System.String
+IL_0ee3: dup
+IL_0ee4: ldc.i4.0
+IL_0ee5: ldstr "[LaunchPerf]       Refresh-GroupInit: groups="
+IL_0eea: stelem.ref
+IL_0eeb: dup
+IL_0eec: ldc.i4.1
+IL_0eed: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0ef2: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::get_Count()
+IL_0ef7: stloc.s V_18
+IL_0ef9: ldloca.s V_18
+IL_0efb: call System.String System.Int32::ToString()
+IL_0f00: stelem.ref
+IL_0f01: dup
+IL_0f02: ldc.i4.2
+IL_0f03: ldstr " "
+IL_0f08: stelem.ref
+IL_0f09: dup
+IL_0f0a: ldc.i4.3
+IL_0f0b: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0f10: ldloc.3
+IL_0f11: sub
+IL_0f12: ldc.r4 1000
+IL_0f17: mul
+IL_0f18: conv.i4
+IL_0f19: stloc.s V_18
+IL_0f1b: ldloca.s V_18
+IL_0f1d: call System.String System.Int32::ToString()
+IL_0f22: stelem.ref
+IL_0f23: dup
+IL_0f24: ldc.i4.4
+IL_0f25: ldstr "ms"
+IL_0f2a: stelem.ref
+IL_0f2b: call System.String System.String::Concat(System.String[])
+IL_0f30: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0f35: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_0f3a: stloc.2
+IL_0f3b: ldloc.2
+IL_0f3c: ldloc.1
+IL_0f3d: sub
+IL_0f3e: stloc.s V_26
+IL_0f40: ldc.i4.5
+IL_0f41: newarr System.String
+IL_0f46: dup
+IL_0f47: ldc.i4.0
+IL_0f48: ldstr "Scanned "
+IL_0f4d: stelem.ref
+IL_0f4e: dup
+IL_0f4f: ldc.i4.1
+IL_0f50: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0f55: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_0f5a: stloc.s V_18
+IL_0f5c: ldloca.s V_18
+IL_0f5e: call System.String System.Int32::ToString()
+IL_0f63: stelem.ref
+IL_0f64: dup
+IL_0f65: ldc.i4.2
+IL_0f66: ldstr " packages in "
+IL_0f6b: stelem.ref
+IL_0f6c: dup
+IL_0f6d: ldc.i4.3
+IL_0f6e: ldloca.s V_26
+IL_0f70: ldstr "F1"
+IL_0f75: call System.String System.Single::ToString(System.String)
+IL_0f7a: stelem.ref
+IL_0f7b: dup
+IL_0f7c: ldc.i4.4
+IL_0f7d: ldstr " ms"
+IL_0f82: stelem.ref
+IL_0f83: call System.String System.String::Concat(System.String[])
+IL_0f88: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0f8d: ldloc.2
+IL_0f8e: stloc.1
+IL_0f8f: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0f94: callvirt System.Collections.Generic.Dictionary`2/ValueCollection<!0,!1> System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Values()
+IL_0f99: callvirt System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<!0,!1> System.Collections.Generic.Dictionary`2/ValueCollection<System.String,MVR.FileManagement.VarPackage>::GetEnumerator()
+IL_0f9e: stloc.s V_22
+IL_0fa0: br.s IL_0fd4
+IL_0fa2: ldloca.s V_22
+IL_0fa4: call !1 System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::get_Current()
+IL_0fa9: stloc.s V_53
+IL_0fab: ldloc.s V_53
+IL_0fad: callvirt System.Boolean MVR.FileManagement.VarPackage::get_forceRefresh()
+IL_0fb2: brfalse.s IL_0fd4
+IL_0fb4: ldstr "Force refresh of package "
+IL_0fb9: ldloc.s V_53
+IL_0fbb: callvirt System.String MVR.FileManagement.VarPackage::get_Uid()
+IL_0fc0: call System.String System.String::Concat(System.String,System.String)
+IL_0fc5: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0fca: ldc.i4.1
+IL_0fcb: stloc.0
+IL_0fcc: ldloc.s V_53
+IL_0fce: ldc.i4.0
+IL_0fcf: callvirt System.Void MVR.FileManagement.VarPackage::set_forceRefresh(System.Boolean)
+IL_0fd4: ldloca.s V_22
+IL_0fd6: call System.Boolean System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>::MoveNext()
+IL_0fdb: brtrue.s IL_0fa2
+IL_0fdd: leave.s IL_0fed
+IL_0fdf: ldloca.s V_22
+IL_0fe1: constrained. System.Collections.Generic.Dictionary`2/ValueCollection/Enumerator<System.String,MVR.FileManagement.VarPackage>
+IL_0fe7: callvirt System.Void System.IDisposable::Dispose()
+IL_0fec: endfinally
+IL_0fed: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_0ff2: stloc.3
+IL_0ff3: ldloc.0
+IL_0ff4: brfalse.s IL_1013
+IL_0ff6: ldstr "Package changes detected"
+IL_0ffb: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_1000: ldsfld MVR.FileManagementSecure.OnRefresh MVR.FileManagement.FileManager::onRefreshHandlers
+IL_1005: brfalse.s IL_101d
+IL_1007: ldsfld MVR.FileManagementSecure.OnRefresh MVR.FileManagement.FileManager::onRefreshHandlers
+IL_100c: callvirt System.Void MVR.FileManagementSecure.OnRefresh::Invoke()
+IL_1011: br.s IL_101d
+IL_1013: ldstr "No package changes detected"
+IL_1018: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_101d: ldc.i4.5
+IL_101e: newarr System.String
+IL_1023: dup
+IL_1024: ldc.i4.0
+IL_1025: ldstr "[LaunchPerf]       Refresh-OnRefreshHandlers: changed="
+IL_102a: stelem.ref
+IL_102b: dup
+IL_102c: ldc.i4.1
+IL_102d: ldloca.s V_0
+IL_102f: call System.String System.Boolean::ToString()
+IL_1034: stelem.ref
+IL_1035: dup
+IL_1036: ldc.i4.2
+IL_1037: ldstr " "
+IL_103c: stelem.ref
+IL_103d: dup
+IL_103e: ldc.i4.3
+IL_103f: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+IL_1044: ldloc.3
+IL_1045: sub
+IL_1046: ldc.r4 1000
+IL_104b: mul
+IL_104c: conv.i4
+IL_104d: stloc.s V_18
+IL_104f: ldloca.s V_18
+IL_1051: call System.String System.Int32::ToString()
+IL_1056: stelem.ref
+IL_1057: dup
+IL_1058: ldc.i4.4
+IL_1059: ldstr "ms"
+IL_105e: stelem.ref
+IL_105f: call System.String System.String::Concat(System.String[])
+IL_1064: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_1069: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_106e: stloc.2
+IL_106f: ldstr "Refresh Handlers took "
+IL_1074: ldloc.2
+IL_1075: ldloc.1
+IL_1076: sub
+IL_1077: stloc.s V_54
+IL_1079: ldloca.s V_54
+IL_107b: ldstr "F1"
+IL_1080: call System.String System.Single::ToString(System.String)
+IL_1085: ldstr " ms"
+IL_108a: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_108f: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_1094: ldloc.2
+IL_1095: stloc.1
+IL_1096: leave.s IL_10b9
+IL_1098: stloc.s V_55
+IL_109a: ldstr "Exception during package refresh "
+IL_109f: ldloc.s V_55
+IL_10a1: dup
+IL_10a2: brtrue.s IL_10a8
+IL_10a4: pop
+IL_10a5: ldnull
+IL_10a6: br.s IL_10ad
+IL_10a8: callvirt System.String System.Object::ToString()
+IL_10ad: call System.String System.String::Concat(System.String,System.String)
+IL_10b2: call System.Void SuperController::LogError(System.String)
+IL_10b7: leave.s IL_10b9
+IL_10b9: call System.Single GlobalStopwatch::GetElapsedMilliseconds()
+IL_10be: stloc.2
+IL_10bf: ldstr "Refresh package handlers took "
+IL_10c4: ldloc.2
+IL_10c5: ldloc.1
+IL_10c6: sub
+IL_10c7: stloc.s V_54
+IL_10c9: ldloca.s V_54
+IL_10cb: ldstr "F1"
+IL_10d0: call System.String System.Single::ToString(System.String)
+IL_10d5: ldstr " ms"
+IL_10da: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_10df: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_10e4: ldsfld System.Boolean MVR.FileManagement.FileManager::packagesEnabled
+IL_10e9: brfalse.s IL_1119
+IL_10eb: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_10f0: ldstr "*.var"
+IL_10f5: ldc.i4.1
+IL_10f6: call System.String[] System.IO.Directory::GetDirectories(System.String,System.String,System.IO.SearchOption)
+IL_10fb: ldsfld System.String MVR.FileManagement.FileManager::packageFolder
+IL_1100: ldstr "*.var"
+IL_1105: ldc.i4.1
+IL_1106: call System.String[] System.IO.Directory::GetFiles(System.String,System.String,System.IO.SearchOption)
+IL_110b: stloc.s V_56
+IL_110d: ldloc.s V_56
+IL_110f: call System.Int32 MVR.FileManagement.FileManager::ComputeFileSnapshotHash(System.String[],System.String[])
+IL_1114: call System.Void MVR.FileManagement.VarPackage::SetSavedSnapshotHash(System.Int32)
+IL_1119: leave.s IL_111e
+IL_111b: pop
+IL_111c: leave.s IL_111e
+IL_111e: call System.Void MVR.FileManagement.VarPackage::SaveZipDirCache()
+IL_1123: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_1128: brfalse.s IL_1172
+IL_112a: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_112f: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_1134: ldc.i4.0
+IL_1135: ble.s IL_1172
+IL_1137: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_113c: callvirt System.Int32 System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::get_Count()
+IL_1141: stsfld System.Int32 MVR.FileManagement.FileManager::_lastPkgCount
+IL_1146: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_114b: brfalse.s IL_115c
+IL_114d: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_1152: callvirt System.Int32 System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry>::get_Count()
+IL_1157: stsfld System.Int32 MVR.FileManagement.FileManager::_lastFileEntryCount
+IL_115c: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_1161: brfalse.s IL_1172
+IL_1163: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_1168: callvirt System.Int32 System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry>::get_Count()
+IL_116d: stsfld System.Int32 MVR.FileManagement.FileManager::_lastDirEntryCount
+IL_1172: call System.DateTime System.DateTime::get_Now()
+IL_1177: call System.Void MVR.FileManagement.FileManager::set_lastPackageRefreshTime(System.DateTime)
+IL_117c: call System.Void MVR.FileManagement.AssetRegistry::SaveFromCurrentState()
+IL_1181: ret
+=== MVR.FileManagement.FileManager.RegisterPackage CompilerControlled, Family, Static, HideBySig ===
+IL_0000: ldsfld System.Boolean MVR.FileManagement.FileManager::debug
+IL_0005: brfalse.s IL_0017
+IL_0007: ldstr "RegisterPackage "
+IL_000c: ldarg.0
+IL_000d: call System.String System.String::Concat(System.String,System.String)
+IL_0012: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0017: ldarg.0
+IL_0018: call System.String MVR.FileManagement.FileManager::packagePathToUid(System.String)
+IL_001d: stloc.0
+IL_001e: ldloc.0
+IL_001f: ldc.i4.1
+IL_0020: newarr System.Char
+IL_0025: dup
+IL_0026: ldc.i4.0
+IL_0027: ldc.i4.s 46
+IL_0029: stelem.i2
+IL_002a: callvirt System.String[] System.String::Split(System.Char[])
+IL_002f: stloc.1
+IL_0030: ldloc.1
+IL_0031: ldlen
+IL_0032: conv.i4
+IL_0033: ldc.i4.3
+IL_0034: bne.un IL_0306
+IL_0039: ldloc.1
+IL_003a: ldc.i4.0
+IL_003b: ldelem.ref
+IL_003c: stloc.2
+IL_003d: ldloc.1
+IL_003e: ldc.i4.1
+IL_003f: ldelem.ref
+IL_0040: stloc.3
+IL_0041: ldloc.2
+IL_0042: ldstr "."
+IL_0047: ldloc.3
+IL_0048: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_004d: stloc.s V_4
+IL_004f: ldloc.1
+IL_0050: ldc.i4.2
+IL_0051: ldelem.ref
+IL_0052: stloc.s V_5
+IL_0054: ldloc.s V_5
+IL_0056: call System.Int32 System.Int32::Parse(System.String)
+IL_005b: stloc.s V_6
+IL_005d: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_0062: ldloc.0
+IL_0063: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::ContainsKey(!0)
+IL_0068: brtrue IL_02d7
+IL_006d: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_0072: ldloc.s V_4
+IL_0074: ldloca.s V_7
+IL_0076: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::TryGetValue(!0,!1&)
+IL_007b: brtrue.s IL_0094
+IL_007d: ldloc.s V_4
+IL_007f: newobj System.Void MVR.FileManagement.VarPackageGroup::.ctor(System.String)
+IL_0084: stloc.s V_7
+IL_0086: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup> MVR.FileManagement.FileManager::packageGroups
+IL_008b: ldloc.s V_4
+IL_008d: ldloc.s V_7
+IL_008f: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackageGroup>::Add(!0,!1)
+IL_0094: ldloc.0
+IL_0095: ldarg.0
+IL_0096: ldloc.s V_7
+IL_0098: ldloc.2
+IL_0099: ldloc.3
+IL_009a: ldloc.s V_6
+IL_009c: ldc.i4.0
+IL_009d: newobj System.Void MVR.FileManagement.VarPackage::.ctor(System.String,System.String,MVR.FileManagement.VarPackageGroup,System.String,System.String,System.Int32,System.Boolean)
+IL_00a2: stloc.s V_8
+IL_00a4: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByUid
+IL_00a9: ldloc.0
+IL_00aa: ldloc.s V_8
+IL_00ac: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::Add(!0,!1)
+IL_00b1: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_00b6: ldloc.s V_8
+IL_00b8: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_00bd: ldloc.s V_8
+IL_00bf: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::Add(!0,!1)
+IL_00c4: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_00c9: ldloc.s V_8
+IL_00cb: callvirt System.String MVR.FileManagement.VarPackage::get_SlashPath()
+IL_00d0: ldloc.s V_8
+IL_00d2: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::Add(!0,!1)
+IL_00d7: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_00dc: ldloc.s V_8
+IL_00de: callvirt System.String MVR.FileManagement.VarPackage::get_FullPath()
+IL_00e3: ldloc.s V_8
+IL_00e5: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::Add(!0,!1)
+IL_00ea: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::packagesByPath
+IL_00ef: ldloc.s V_8
+IL_00f1: callvirt System.String MVR.FileManagement.VarPackage::get_FullSlashPath()
+IL_00f6: ldloc.s V_8
+IL_00f8: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarPackage>::Add(!0,!1)
+IL_00fd: ldloc.s V_7
+IL_00ff: ldloc.s V_8
+IL_0101: callvirt System.Void MVR.FileManagement.VarPackageGroup::AddPackage(MVR.FileManagement.VarPackage)
+IL_0106: ldloc.s V_8
+IL_0108: callvirt System.Boolean MVR.FileManagement.VarPackage::get_Enabled()
+IL_010d: brfalse IL_02d1
+IL_0112: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage> MVR.FileManagement.FileManager::enabledPackages
+IL_0117: ldloc.s V_8
+IL_0119: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarPackage>::Add(!0)
+IL_011e: pop
+IL_011f: ldloc.s V_8
+IL_0121: callvirt System.Collections.Generic.List`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.VarPackage::get_FileEntries()
+IL_0126: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<MVR.FileManagement.VarFileEntry>::GetEnumerator()
+IL_012b: stloc.s V_9
+IL_012d: br IL_01c4
+IL_0132: ldloca.s V_9
+IL_0134: call !0 System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>::get_Current()
+IL_0139: stloc.s V_10
+IL_013b: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::allVarFileEntries
+IL_0140: ldloc.s V_10
+IL_0142: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarFileEntry>::Add(!0)
+IL_0147: pop
+IL_0148: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::uidToVarFileEntry
+IL_014d: ldloc.s V_10
+IL_014f: callvirt System.String MVR.FileManagement.FileEntry::get_Uid()
+IL_0154: ldloc.s V_10
+IL_0156: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::Add(!0,!1)
+IL_015b: ldsfld System.Boolean MVR.FileManagement.FileManager::debug
+IL_0160: brfalse.s IL_0178
+IL_0162: ldstr "Add var file with UID "
+IL_0167: ldloc.s V_10
+IL_0169: callvirt System.String MVR.FileManagement.FileEntry::get_Uid()
+IL_016e: call System.String System.String::Concat(System.String,System.String)
+IL_0173: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0178: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_017d: ldloc.s V_10
+IL_017f: callvirt System.String MVR.FileManagement.FileEntry::get_Path()
+IL_0184: ldloc.s V_10
+IL_0186: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::Add(!0,!1)
+IL_018b: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_0190: ldloc.s V_10
+IL_0192: callvirt System.String MVR.FileManagement.FileEntry::get_SlashPath()
+IL_0197: ldloc.s V_10
+IL_0199: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::Add(!0,!1)
+IL_019e: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_01a3: ldloc.s V_10
+IL_01a5: callvirt System.String MVR.FileManagement.FileEntry::get_FullPath()
+IL_01aa: ldloc.s V_10
+IL_01ac: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::Add(!0,!1)
+IL_01b1: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry> MVR.FileManagement.FileManager::pathToVarFileEntry
+IL_01b6: ldloc.s V_10
+IL_01b8: callvirt System.String MVR.FileManagement.FileEntry::get_FullSlashPath()
+IL_01bd: ldloc.s V_10
+IL_01bf: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarFileEntry>::Add(!0,!1)
+IL_01c4: ldloca.s V_9
+IL_01c6: call System.Boolean System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>::MoveNext()
+IL_01cb: brtrue IL_0132
+IL_01d0: leave.s IL_01e0
+IL_01d2: ldloca.s V_9
+IL_01d4: constrained. System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarFileEntry>
+IL_01da: callvirt System.Void System.IDisposable::Dispose()
+IL_01df: endfinally
+IL_01e0: ldloc.s V_8
+IL_01e2: callvirt System.Collections.Generic.List`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.VarPackage::get_DirectoryEntries()
+IL_01e7: callvirt System.Collections.Generic.List`1/Enumerator<!0> System.Collections.Generic.List`1<MVR.FileManagement.VarDirectoryEntry>::GetEnumerator()
+IL_01ec: stloc.s V_11
+IL_01ee: br IL_0285
+IL_01f3: ldloca.s V_11
+IL_01f5: call !0 System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>::get_Current()
+IL_01fa: stloc.s V_12
+IL_01fc: ldsfld System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::allVarDirectoryEntries
+IL_0201: ldloc.s V_12
+IL_0203: callvirt System.Boolean System.Collections.Generic.HashSet`1<MVR.FileManagement.VarDirectoryEntry>::Add(!0)
+IL_0208: pop
+IL_0209: ldsfld System.Boolean MVR.FileManagement.FileManager::debug
+IL_020e: brfalse.s IL_0226
+IL_0210: ldstr "Add var directory with UID "
+IL_0215: ldloc.s V_12
+IL_0217: callvirt System.String MVR.FileManagement.DirectoryEntry::get_Uid()
+IL_021c: call System.String System.String::Concat(System.String,System.String)
+IL_0221: call System.Void UnityEngine.Debug::Log(System.Object)
+IL_0226: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::uidToVarDirectoryEntry
+IL_022b: ldloc.s V_12
+IL_022d: callvirt System.String MVR.FileManagement.DirectoryEntry::get_Uid()
+IL_0232: ldloc.s V_12
+IL_0234: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_0239: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_023e: ldloc.s V_12
+IL_0240: callvirt System.String MVR.FileManagement.DirectoryEntry::get_Path()
+IL_0245: ldloc.s V_12
+IL_0247: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_024c: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0251: ldloc.s V_12
+IL_0253: callvirt System.String MVR.FileManagement.DirectoryEntry::get_SlashPath()
+IL_0258: ldloc.s V_12
+IL_025a: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_025f: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0264: ldloc.s V_12
+IL_0266: callvirt System.String MVR.FileManagement.DirectoryEntry::get_FullPath()
+IL_026b: ldloc.s V_12
+IL_026d: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_0272: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::pathToVarDirectoryEntry
+IL_0277: ldloc.s V_12
+IL_0279: callvirt System.String MVR.FileManagement.DirectoryEntry::get_FullSlashPath()
+IL_027e: ldloc.s V_12
+IL_0280: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_0285: ldloca.s V_11
+IL_0287: call System.Boolean System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>::MoveNext()
+IL_028c: brtrue IL_01f3
+IL_0291: leave.s IL_02a1
+IL_0293: ldloca.s V_11
+IL_0295: constrained. System.Collections.Generic.List`1/Enumerator<MVR.FileManagement.VarDirectoryEntry>
+IL_029b: callvirt System.Void System.IDisposable::Dispose()
+IL_02a0: endfinally
+IL_02a1: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_02a6: ldloc.s V_8
+IL_02a8: callvirt System.String MVR.FileManagement.VarPackage::get_Path()
+IL_02ad: ldloc.s V_8
+IL_02af: callvirt MVR.FileManagement.VarDirectoryEntry MVR.FileManagement.VarPackage::get_RootDirectory()
+IL_02b4: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_02b9: ldsfld System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry> MVR.FileManagement.FileManager::varPackagePathToRootVarDirectory
+IL_02be: ldloc.s V_8
+IL_02c0: callvirt System.String MVR.FileManagement.VarPackage::get_FullPath()
+IL_02c5: ldloc.s V_8
+IL_02c7: callvirt MVR.FileManagement.VarDirectoryEntry MVR.FileManagement.VarPackage::get_RootDirectory()
+IL_02cc: callvirt System.Void System.Collections.Generic.Dictionary`2<System.String,MVR.FileManagement.VarDirectoryEntry>::Add(!0,!1)
+IL_02d1: ldloc.s V_8
+IL_02d3: stloc.s V_13
+IL_02d5: leave.s IL_031d
+IL_02d7: ldstr "Duplicate package uid "
+IL_02dc: ldloc.0
+IL_02dd: ldstr ". Cannot register"
+IL_02e2: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_02e7: call System.Void SuperController::LogError(System.String)
+IL_02ec: leave.s IL_031b
+IL_02ee: pop
+IL_02ef: ldstr "VAR file "
+IL_02f4: ldarg.0
+IL_02f5: ldstr " does not use integer version field in name <creator>.<name>.<version>"
+IL_02fa: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_02ff: call System.Void SuperController::LogError(System.String)
+IL_0304: leave.s IL_031b
+IL_0306: ldstr "VAR file "
+IL_030b: ldarg.0
+IL_030c: ldstr " is not named with convention <creator>.<name>.<version>"
+IL_0311: call System.String System.String::Concat(System.String,System.String,System.String)
+IL_0316: call System.Void SuperController::LogError(System.String)
+IL_031b: ldnull
+IL_031c: ret
+IL_031d: ldloc.s V_13
+IL_031f: ret
+=== SuperController.RescanPackages CompilerControlled, Public, HideBySig ===
+IL_0000: call System.Void MVR.FileManagement.FileManager::Refresh()
+IL_0005: ret
+=== SuperController.OnPackageRefresh CompilerControlled, Family, HideBySig ===
+IL_0000: ldarg.0
+IL_0001: call System.Void SuperController::ClearFileBrowsersCurrentPath()
+IL_0006: ldarg.0
+IL_0007: call System.Void SuperController::SyncVamX()
+IL_000c: ret

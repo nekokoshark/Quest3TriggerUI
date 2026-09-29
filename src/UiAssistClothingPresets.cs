@@ -46,13 +46,13 @@ namespace Quest3TriggerUI
                 _presetBrowsing = false;
                 _presetState = null;
             }
-            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
             {
                 Snapshot state = FindEditor(sc);
-                if (state == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (state == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 GameObject list = Read(state.Editor.GetType(), state.Editor, "aceScrollListGO") as GameObject;
-                if (list == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (list == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 bool fresh = !(_presetList == list &&
                     ReferenceEquals(_presetEditor, state.Editor) &&
                     _editorVisibilityButton != null);
@@ -67,6 +67,8 @@ namespace Quest3TriggerUI
                 long tBan = ElapsedMs(t); t = Mark();
                 UpdateLockBar(state, list);
                 long tLock = ElapsedMs(t); t = Mark();
+                UpdateSceneDock(list);
+                long tSd = ElapsedMs(t); t = Mark();
                 if (!fresh) return;
                 ClearPresetButtons();
                 object canvas = Read(state.Editor.GetType(), state.Editor, "_uiButtonCanvas");
@@ -78,7 +80,7 @@ namespace Quest3TriggerUI
                     ToggleEditorVisibility);
                 BindPanelPresentation(canvas, list);
                 Log("[ACE] sidebars: dock=" + tDock + "ms fav=" + tFav +
-                    "ms ban=" + tBan + "ms lock=" + tLock +
+                    "ms ban=" + tBan + "ms lock=" + tLock + "ms scene=" + tSd +
                     "ms button+bind=" + ElapsedMs(t) + "ms");
             }
             catch (Exception e) { ClearPresetButtons(); _nextPresetCheck = Time.unscaledTime + 5f; Error(e); }

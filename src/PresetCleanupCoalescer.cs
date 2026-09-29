@@ -10,14 +10,24 @@ namespace Quest3TriggerUI
 {
     // Observe native sweeps; only coalesce our supplemental sweep. Native
     // optimization callbacks, GC and completion delegates are never skipped.
+    //
+    // Coverage model: every real UnloadUnusedAssets submission registers a
+    // coverage point (NoteSweep). The janitor's supplemental sweep may reuse
+    // that coverage instead of paying a second full-heap mark, but the reuse
+    // is bounded — past ReuseSeconds or DeferMax release events the backstop
+    // sweep runs, so coverage never rides forever. Debt is counted in release
+    // events, not bytes; keep DeferMax small (a single janitor pass can hold
+    // person-scale assets).
     internal static class PresetCleanupCoalescer
     {
         internal static ConfigEntry<bool> Enabled;
+        internal static ConfigEntry<float> ReuseSeconds;
+        internal static ConfigEntry<int> DeferMax;
         private static Harmony _harmony;
         private static bool _tried;
-        private static long _released, _covered = -1;
+        private static long _released, _covered = -1, _deferred;
         private static AsyncOperation _operation;
-        private static int _releaseFrame = -1, _coveredFrame = -1;
+        private static float _coveredAt = -1f;
 
         internal static void Install()
         {
@@ -68,7 +78,16 @@ namespace Quest3TriggerUI
             return code;
         }
 
-        internal static void NoteReleased() { _released++; _releaseFrame = Time.frameCount; }
+        internal static void NoteReleased() { _released++; }
+
+        internal static void NoteSweep(AsyncOperation op)
+        {
+            if (op == null) return;
+            _operation = op;
+            _covered = _released;
+            _deferred = 0;
+            _coveredAt = Time.realtimeSinceStartup;
+        }
 
         internal static bool Covered(long released, long covered, bool hasOperation)
         {
@@ -84,10 +103,15 @@ namespace Quest3TriggerUI
 
         internal static AsyncOperation UnloadForJanitor()
         {
-            if ((Enabled == null || Enabled.Value) && _coveredFrame > _releaseFrame &&
-                Covered(_released, _covered, _operation != null))
+            if (Enabled == null || !Enabled.Value) return StartSweep("supplemental");
+            _deferred = _released > _covered ? _released - _covered : 0;
+            float age = _coveredAt >= 0f ? Time.realtimeSinceStartup - _coveredAt : float.MaxValue;
+            float reuse = ReuseSeconds != null && ReuseSeconds.Value > 0f ? ReuseSeconds.Value : 80f;
+            int deferMax = DeferMax != null && DeferMax.Value > 0 ? DeferMax.Value : 4;
+            if (_operation != null && age <= reuse && _deferred <= deferMax)
             {
-                Log("reuse covered sweep epoch=" + _released + " completed=" + _operation.isDone);
+                Log("reuse covered sweep epoch=" + _released + " age=" + age.ToString("0.#") +
+                    "s deferred=" + _deferred + " completed=" + _operation.isDone);
                 return _operation;
             }
             return StartSweep("supplemental");
@@ -97,10 +121,7 @@ namespace Quest3TriggerUI
         {
             long epoch = _released;
             AsyncOperation op = Resources.UnloadUnusedAssets();
-            // Publish only after native submission succeeds.
-            _operation = op;
-            _covered = epoch;
-            _coveredFrame = Time.frameCount;
+            NoteSweep(op);
             Log("sweep " + origin + " covers release epoch=" + epoch);
             return op;
         }
@@ -113,7 +134,8 @@ namespace Quest3TriggerUI
             _operation = null;
             _released = 0;
             _covered = -1;
-            _releaseFrame = _coveredFrame = -1;
+            _deferred = 0;
+            _coveredAt = -1f;
         }
 
         private static void Log(string message)

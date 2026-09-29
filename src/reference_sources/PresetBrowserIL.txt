@@ -1,0 +1,1112 @@
+=== System.Void JSONStorableUrl::FileBrowse() ===
+0000: ldarg.0 
+0001: ldfld JSONStorableUrl/BeginBrowseCallback JSONStorableUrl::beginBrowseCallback
+0006: brfalse.s IL_0013: ldarg.0
+0008: ldarg.0 
+0009: ldfld JSONStorableUrl/BeginBrowseCallback JSONStorableUrl::beginBrowseCallback
+000E: callvirt System.Void JSONStorableUrl/BeginBrowseCallback::Invoke()
+0013: ldarg.0 
+0014: ldfld JSONStorableUrl/BeginBrowseWithObjectCallback JSONStorableUrl::beginBrowseWithObjectCallback
+0019: brfalse.s IL_0027: call SuperController SuperController::get_singleton()
+001B: ldarg.0 
+001C: ldfld JSONStorableUrl/BeginBrowseWithObjectCallback JSONStorableUrl::beginBrowseWithObjectCallback
+0021: ldarg.0 
+0022: callvirt System.Void JSONStorableUrl/BeginBrowseWithObjectCallback::Invoke(JSONStorableUrl)
+0027: call SuperController SuperController::get_singleton()
+002C: ldnull 
+002D: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0032: brfalse IL_00ed: ret
+0037: ldarg.0 
+0038: call System.String JSONStorableUrl::get_suggestedPathGroup()
+003D: brfalse.s IL_0056: ldarg.0
+003F: ldsfld System.Collections.Generic.Dictionary`2<System.String,System.String> JSONStorableUrl::suggestedPathGroups
+0044: ldarg.0 
+0045: call System.String JSONStorableUrl::get_suggestedPathGroup()
+004A: ldarg.0 
+004B: ldflda System.String JSONStorableUrl::_activeSuggestedPath
+0050: callvirt System.Boolean System.Collections.Generic.Dictionary`2<System.String,System.String>::TryGetValue(!0,!1&)
+0055: pop 
+0056: ldarg.0 
+0057: ldfld System.String JSONStorableUrl::_activeSuggestedPath
+005C: brfalse.s IL_0070: ldarg.0
+005E: ldarg.0 
+005F: ldfld System.String JSONStorableUrl::_activeSuggestedPath
+0064: ldsfld System.String System.String::Empty
+0069: call System.Boolean System.String::op_Equality(System.String,System.String)
+006E: brfalse.s IL_0084: ldarg.0
+0070: ldarg.0 
+0071: ldarg.0 
+0072: ldfld System.String JSONStorableUrl::_suggestedPath
+0077: stfld System.String JSONStorableUrl::_activeSuggestedPath
+007C: ldarg.0 
+007D: call System.Void JSONStorableUrl::ReplaceSuggestedPathGroupPathWithActivePath()
+0082: br.s IL_00a5: call SuperController SuperController::get_singleton()
+0084: ldarg.0 
+0085: ldfld System.String JSONStorableUrl::_activeSuggestedPath
+008A: ldc.i4.0 
+008B: ldc.i4.0 
+008C: call System.Boolean MVR.FileManagement.FileManager::DirectoryExists(System.String,System.Boolean,System.Boolean)
+0091: brtrue.s IL_00a5: call SuperController SuperController::get_singleton()
+0093: ldarg.0 
+0094: ldarg.0 
+0095: ldfld System.String JSONStorableUrl::_suggestedPath
+009A: stfld System.String JSONStorableUrl::_activeSuggestedPath
+009F: ldarg.0 
+00A0: call System.Void JSONStorableUrl::ReplaceSuggestedPathGroupPathWithActivePath()
+00A5: call SuperController SuperController::get_singleton()
+00AA: ldarg.0 
+00AB: ldftn System.Void JSONStorableUrl::SetFilePathBrowseCallback(System.String,System.Boolean)
+00B1: newobj System.Void uFileBrowser.FileBrowserFullCallback::.ctor(System.Object,System.IntPtr)
+00B6: ldarg.0 
+00B7: ldfld System.String JSONStorableUrl::_filter
+00BC: ldarg.0 
+00BD: ldfld System.String JSONStorableUrl::_activeSuggestedPath
+00C2: ldarg.0 
+00C3: ldfld System.Boolean JSONStorableUrl::allowFullComputerBrowse
+00C8: ldarg.0 
+00C9: ldfld System.Boolean JSONStorableUrl::showDirs
+00CE: ldc.i4.0 
+00CF: ldarg.0 
+00D0: ldfld System.String JSONStorableUrl::fileRemovePrefix
+00D5: ldarg.0 
+00D6: ldfld System.Boolean JSONStorableUrl::hideExtension
+00DB: ldarg.0 
+00DC: ldfld System.Collections.Generic.List`1<MVR.FileManagementSecure.ShortCut> JSONStorableUrl::shortCuts
+00E1: ldc.i4.1 
+00E2: ldarg.0 
+00E3: call System.Boolean JSONStorableUrl::get_allowBrowseAboveSuggestedPath()
+00E8: callvirt System.Void SuperController::GetMediaPathDialog(uFileBrowser.FileBrowserFullCallback,System.String,System.String,System.Boolean,System.Boolean,System.Boolean,System.String,System.Boolean,System.Collections.Generic.List`1<MVR.FileManagementSecure.ShortCut>,System.Boolean,System.Boolean)
+00ED: ret 
+=== System.Void JSONStorableUrl::SetFilePathBrowseCallback(System.String,System.Boolean) ===
+0000: ldarg.0 
+0001: ldc.i4.1 
+0002: stfld System.Boolean JSONStorableUrl::_valueSetFromBrowse
+0007: ldarg.0 
+0008: ldarg.1 
+0009: call System.Void JSONStorableUrl::SetFilePath(System.String)
+000E: ldarg.0 
+000F: ldc.i4.0 
+0010: stfld System.Boolean JSONStorableUrl::_valueSetFromBrowse
+0015: ldarg.2 
+0016: brfalse.s IL_003f: ret
+0018: ldarg.0 
+0019: ldfld JSONStorableUrl/EndBrowseCallback JSONStorableUrl::endBrowseCallback
+001E: brfalse.s IL_002b: ldarg.0
+0020: ldarg.0 
+0021: ldfld JSONStorableUrl/EndBrowseCallback JSONStorableUrl::endBrowseCallback
+0026: callvirt System.Void JSONStorableUrl/EndBrowseCallback::Invoke()
+002B: ldarg.0 
+002C: ldfld JSONStorableUrl/EndBrowseWithObjectCallback JSONStorableUrl::endBrowseWithObjectCallback
+0031: brfalse.s IL_003f: ret
+0033: ldarg.0 
+0034: ldfld JSONStorableUrl/EndBrowseWithObjectCallback JSONStorableUrl::endBrowseWithObjectCallback
+0039: ldarg.0 
+003A: callvirt System.Void JSONStorableUrl/EndBrowseWithObjectCallback::Invoke(JSONStorableUrl)
+003F: ret 
+=== System.Void MeshVR.PresetManagerControl::Init() ===
+0000: ldarg.0 
+0001: ldarg.0 
+0002: call !!0 UnityEngine.Component::GetComponent<MeshVR.PresetManager>()
+0007: stfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+000C: ldarg.0 
+000D: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0012: ldnull 
+0013: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0018: brtrue.s IL_001b: ldsfld System.String System.String::Empty
+001A: ret 
+001B: ldsfld System.String System.String::Empty
+0020: stloc.0 
+0021: ldarg.0 
+0022: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0027: ldfld MeshVR.PresetManager/ItemType MeshVR.PresetManager::itemType
+002C: ldc.i4.5 
+002D: bne.un.s IL_0063: ldarg.0
+002F: ldarg.0 
+0030: ldfld Atom JSONStorable::containingAtom
+0035: ldnull 
+0036: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+003B: brfalse.s IL_0063: ldarg.0
+003D: ldarg.0 
+003E: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0043: ldarg.0 
+0044: ldfld Atom JSONStorable::containingAtom
+0049: ldfld System.String Atom::type
+004E: ldstr /
+0053: call System.String System.String::Concat(System.String,System.String)
+0058: stfld System.String MeshVR.PresetManager::customPath
+005D: ldstr Textures
+0062: stloc.0 
+0063: ldarg.0 
+0064: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0069: ldc.i4.1 
+006A: callvirt System.String MeshVR.PresetManager::GetStoreFolderPath(System.Boolean)
+006F: stloc.1 
+0070: ldloc.1 
+0071: brfalse.s IL_00c1: ldarg.0
+0073: ldloc.1 
+0074: call System.IO.DirectoryInfo System.IO.Directory::CreateDirectory(System.String)
+0079: pop 
+007A: ldarg.0 
+007B: ldfld System.Boolean MeshVR.PresetManagerControl::setMaterialOptionsTexturePaths
+0080: brfalse.s IL_00c1: ldarg.0
+0082: ldarg.0 
+0083: ldc.i4.1 
+0084: call !!0[] UnityEngine.Component::GetComponentsInChildren<MaterialOptions>(System.Boolean)
+0089: stloc.2 
+008A: ldloc.2 
+008B: brfalse.s IL_00c1: ldarg.0
+008D: ldloc.2 
+008E: ldlen 
+008F: brfalse.s IL_00c1: ldarg.0
+0091: ldloc.1 
+0092: ldloc.0 
+0093: call System.String System.String::Concat(System.String,System.String)
+0098: stloc.3 
+0099: ldloc.3 
+009A: call System.IO.DirectoryInfo System.IO.Directory::CreateDirectory(System.String)
+009F: pop 
+00A0: ldloc.2 
+00A1: stloc.s V_4
+00A3: ldc.i4.0 
+00A4: stloc.s V_5
+00A6: br.s IL_00b9: ldloc.s V_5
+00A8: ldloc.s V_4
+00AA: ldloc.s V_5
+00AC: ldelem.ref 
+00AD: ldloc.3 
+00AE: callvirt System.Void MaterialOptions::SetCustomTextureFolder(System.String)
+00B3: ldloc.s V_5
+00B5: ldc.i4.1 
+00B6: add 
+00B7: stloc.s V_5
+00B9: ldloc.s V_5
+00BB: ldloc.s V_4
+00BD: ldlen 
+00BE: conv.i4 
+00BF: blt.s IL_00a8: ldloc.s V_4
+00C1: ldarg.0 
+00C2: ldstr presetBrowsePath
+00C7: ldsfld System.String System.String::Empty
+00CC: ldarg.0 
+00CD: ldftn System.Void MeshVR.PresetManagerControl::SyncPresetBrowsePath(System.String)
+00D3: newobj System.Void JSONStorableString/SetStringCallback::.ctor(System.Object,System.IntPtr)
+00D8: ldstr vap
+00DD: ldarg.0 
+00DE: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+00E3: ldc.i4.1 
+00E4: callvirt System.String MeshVR.PresetManager::GetStoreFolderPath(System.Boolean)
+00E9: ldc.i4.1 
+00EA: newobj System.Void JSONStorableUrl::.ctor(System.String,System.String,JSONStorableString/SetStringCallback,System.String,System.String,System.Boolean)
+00EF: stfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+00F4: ldarg.0 
+00F5: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+00FA: ldarg.0 
+00FB: ldftn System.Void MeshVR.PresetManagerControl::BeginBrowse(JSONStorableUrl)
+0101: newobj System.Void JSONStorableUrl/BeginBrowseWithObjectCallback::.ctor(System.Object,System.IntPtr)
+0106: stfld JSONStorableUrl/BeginBrowseWithObjectCallback JSONStorableUrl::beginBrowseWithObjectCallback
+010B: ldarg.0 
+010C: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0111: ldarg.0 
+0112: ldftn System.Void MeshVR.PresetManagerControl::EndBrowse(JSONStorableUrl)
+0118: newobj System.Void JSONStorableUrl/EndBrowseWithObjectCallback::.ctor(System.Object,System.IntPtr)
+011D: stfld JSONStorableUrl/EndBrowseWithObjectCallback JSONStorableUrl::endBrowseWithObjectCallback
+0122: ldarg.0 
+0123: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0128: ldc.i4.0 
+0129: stfld System.Boolean JSONStorableUrl::allowFullComputerBrowse
+012E: ldarg.0 
+012F: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0134: ldc.i4.0 
+0135: callvirt System.Void JSONStorableUrl::set_allowBrowseAboveSuggestedPath(System.Boolean)
+013A: ldarg.0 
+013B: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0140: ldc.i4.1 
+0141: stfld System.Boolean JSONStorableUrl::hideExtension
+0146: ldarg.0 
+0147: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+014C: ldarg.0 
+014D: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0152: ldfld System.String MeshVR.PresetManager::storeName
+0157: ldstr _
+015C: call System.String System.String::Concat(System.String,System.String)
+0161: stfld System.String JSONStorableUrl::fileRemovePrefix
+0166: ldarg.0 
+0167: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+016C: ldc.i4.1 
+016D: stfld System.Boolean JSONStorableUrl::showDirs
+0172: ldarg.0 
+0173: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0178: ldc.i4.0 
+0179: stfld System.Boolean JSONStorableParam::isStorable
+017E: ldarg.0 
+017F: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0184: ldc.i4.0 
+0185: stfld System.Boolean JSONStorableParam::isRestorable
+018A: ldarg.0 
+018B: ldarg.0 
+018C: ldfld JSONStorableUrl MeshVR.PresetManagerControl::presetBrowsePathJSON
+0191: call System.Void JSONStorable::RegisterUrl(JSONStorableUrl)
+0196: ldarg.0 
+0197: ldstr OpenPresetBrowsePathInExplorerAction
+019C: ldarg.0 
+019D: ldftn System.Void MeshVR.PresetManagerControl::OpenPresetBrowsePathInExplorer()
+01A3: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+01A8: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+01AD: stfld JSONStorableAction MeshVR.PresetManagerControl::openPresetBrowsePathInExplorerAction
+01B2: ldarg.0 
+01B3: ldarg.0 
+01B4: ldfld JSONStorableAction MeshVR.PresetManagerControl::openPresetBrowsePathInExplorerAction
+01B9: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+01BE: ldarg.0 
+01BF: ldstr presetName
+01C4: ldsfld System.String System.String::Empty
+01C9: ldarg.0 
+01CA: ldftn System.Void MeshVR.PresetManagerControl::SyncPresetName(System.String)
+01D0: newobj System.Void JSONStorableString/SetStringCallback::.ctor(System.Object,System.IntPtr)
+01D5: newobj System.Void JSONStorableString::.ctor(System.String,System.String,JSONStorableString/SetStringCallback)
+01DA: stfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+01DF: ldarg.0 
+01E0: ldfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+01E5: ldc.i4.3 
+01E6: stfld JSONStorableParam/StoreType JSONStorableParam::storeType
+01EB: ldarg.0 
+01EC: ldfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+01F1: ldc.i4.0 
+01F2: stfld System.Boolean JSONStorableParam::isStorable
+01F7: ldarg.0 
+01F8: ldfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+01FD: ldc.i4.1 
+01FE: stfld System.Boolean JSONStorableParam::isRestorable
+0203: ldarg.0 
+0204: ldfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+0209: ldc.i4.1 
+020A: stfld System.Boolean JSONStorableString::enableOnChange
+020F: ldarg.0 
+0210: ldarg.0 
+0211: ldfld JSONStorableString MeshVR.PresetManagerControl::presetNameJSON
+0216: call System.Void JSONStorable::RegisterString(JSONStorableString)
+021B: ldarg.0 
+021C: ldstr storePresetName
+0221: ldc.i4.0 
+0222: ldarg.0 
+0223: ldftn System.Void MeshVR.PresetManagerControl::SyncStorePresetName(System.Boolean)
+0229: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+022E: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+0233: stfld JSONStorableBool MeshVR.PresetManagerControl::storePresetNameJSON
+0238: ldarg.0 
+0239: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetNameJSON
+023E: ldc.i4.3 
+023F: stfld JSONStorableParam/StoreType JSONStorableParam::storeType
+0244: ldarg.0 
+0245: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetNameJSON
+024A: ldc.i4.1 
+024B: stfld System.Boolean JSONStorableParam::isStorable
+0250: ldarg.0 
+0251: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetNameJSON
+0256: ldc.i4.1 
+0257: stfld System.Boolean JSONStorableParam::isRestorable
+025C: ldarg.0 
+025D: ldarg.0 
+025E: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetNameJSON
+0263: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0268: ldarg.0 
+0269: ldstr favorite
+026E: ldc.i4.0 
+026F: ldarg.0 
+0270: ldftn System.Void MeshVR.PresetManagerControl::SyncFavorite(System.Boolean)
+0276: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+027B: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+0280: stfld JSONStorableBool MeshVR.PresetManagerControl::favoriteJSON
+0285: ldarg.0 
+0286: ldfld JSONStorableBool MeshVR.PresetManagerControl::favoriteJSON
+028B: ldc.i4.0 
+028C: stfld System.Boolean JSONStorableParam::isStorable
+0291: ldarg.0 
+0292: ldfld JSONStorableBool MeshVR.PresetManagerControl::favoriteJSON
+0297: ldc.i4.0 
+0298: stfld System.Boolean JSONStorableParam::isRestorable
+029D: ldarg.0 
+029E: ldarg.0 
+029F: ldfld JSONStorableBool MeshVR.PresetManagerControl::favoriteJSON
+02A4: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+02A9: ldarg.0 
+02AA: ldstr StorePreset
+02AF: ldarg.0 
+02B0: dup 
+02B1: ldvirtftn System.Void MeshVR.PresetManagerControl::StorePreset()
+02B7: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+02BC: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+02C1: stfld JSONStorableAction MeshVR.PresetManagerControl::storePresetAction
+02C6: ldarg.0 
+02C7: ldarg.0 
+02C8: ldfld JSONStorableAction MeshVR.PresetManagerControl::storePresetAction
+02CD: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+02D2: ldarg.0 
+02D3: ldstr StorePresetWithScreenshot
+02D8: ldarg.0 
+02D9: dup 
+02DA: ldvirtftn System.Void MeshVR.PresetManagerControl::StorePresetWithScreenshot()
+02E0: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+02E5: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+02EA: stfld JSONStorableAction MeshVR.PresetManagerControl::storePresetWithScreenshotAction
+02EF: ldarg.0 
+02F0: ldarg.0 
+02F1: ldfld JSONStorableAction MeshVR.PresetManagerControl::storePresetWithScreenshotAction
+02F6: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+02FB: ldarg.0 
+02FC: ldstr StoreOverlayPreset
+0301: ldarg.0 
+0302: dup 
+0303: ldvirtftn System.Void MeshVR.PresetManagerControl::StoreOverlayPreset()
+0309: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+030E: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+0313: stfld JSONStorableAction MeshVR.PresetManagerControl::storeOverlayPresetAction
+0318: ldarg.0 
+0319: ldarg.0 
+031A: ldfld JSONStorableAction MeshVR.PresetManagerControl::storeOverlayPresetAction
+031F: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+0324: ldarg.0 
+0325: ldstr StoreOverlayPresetWithScreenshot
+032A: ldarg.0 
+032B: dup 
+032C: ldvirtftn System.Void MeshVR.PresetManagerControl::StoreOverlayPresetWithScreenshot()
+0332: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+0337: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+033C: stfld JSONStorableAction MeshVR.PresetManagerControl::storeOverlayPresetWithScreenshotAction
+0341: ldarg.0 
+0342: ldarg.0 
+0343: ldfld JSONStorableAction MeshVR.PresetManagerControl::storeOverlayPresetWithScreenshotAction
+0348: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+034D: ldarg.0 
+034E: ldstr StorePresetWithName
+0353: ldsfld System.String System.String::Empty
+0358: ldarg.0 
+0359: ldftn System.Void MeshVR.PresetManagerControl::SyncStorePresetWithName(System.String)
+035F: newobj System.Void JSONStorableString/SetStringCallback::.ctor(System.Object,System.IntPtr)
+0364: newobj System.Void JSONStorableString::.ctor(System.String,System.String,JSONStorableString/SetStringCallback)
+0369: stfld JSONStorableString MeshVR.PresetManagerControl::storePresetWithNameJSON
+036E: ldarg.0 
+036F: ldfld JSONStorableString MeshVR.PresetManagerControl::storePresetWithNameJSON
+0374: ldc.i4.0 
+0375: stfld System.Boolean JSONStorableParam::isStorable
+037A: ldarg.0 
+037B: ldfld JSONStorableString MeshVR.PresetManagerControl::storePresetWithNameJSON
+0380: ldc.i4.0 
+0381: stfld System.Boolean JSONStorableParam::isRestorable
+0386: ldarg.0 
+0387: ldarg.0 
+0388: ldfld JSONStorableString MeshVR.PresetManagerControl::storePresetWithNameJSON
+038D: call System.Void JSONStorable::RegisterString(JSONStorableString)
+0392: ldarg.0 
+0393: ldstr storeOptional
+0398: ldarg.0 
+0399: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+039E: ldfld System.Boolean MeshVR.PresetManager::storeOptionalStorables
+03A3: ldarg.0 
+03A4: ldftn System.Void MeshVR.PresetManagerControl::SyncStoreOptional(System.Boolean)
+03AA: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+03AF: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+03B4: stfld JSONStorableBool MeshVR.PresetManagerControl::storeOptionalJSON
+03B9: ldarg.0 
+03BA: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptionalJSON
+03BF: ldc.i4.0 
+03C0: stfld System.Boolean JSONStorableParam::isStorable
+03C5: ldarg.0 
+03C6: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptionalJSON
+03CB: ldc.i4.0 
+03CC: stfld System.Boolean JSONStorableParam::isRestorable
+03D1: ldarg.0 
+03D2: ldarg.0 
+03D3: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptionalJSON
+03D8: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+03DD: ldarg.0 
+03DE: ldstr storeOptional2
+03E3: ldarg.0 
+03E4: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+03E9: ldfld System.Boolean MeshVR.PresetManager::storeOptionalStorables2
+03EE: ldarg.0 
+03EF: ldftn System.Void MeshVR.PresetManagerControl::SyncStoreOptional2(System.Boolean)
+03F5: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+03FA: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+03FF: stfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional2JSON
+0404: ldarg.0 
+0405: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional2JSON
+040A: ldc.i4.0 
+040B: stfld System.Boolean JSONStorableParam::isStorable
+0410: ldarg.0 
+0411: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional2JSON
+0416: ldc.i4.0 
+0417: stfld System.Boolean JSONStorableParam::isRestorable
+041C: ldarg.0 
+041D: ldarg.0 
+041E: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional2JSON
+0423: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0428: ldarg.0 
+0429: ldstr storeOptional3
+042E: ldarg.0 
+042F: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0434: ldfld System.Boolean MeshVR.PresetManager::storeOptionalStorables3
+0439: ldarg.0 
+043A: ldftn System.Void MeshVR.PresetManagerControl::SyncStoreOptional3(System.Boolean)
+0440: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+0445: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+044A: stfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional3JSON
+044F: ldarg.0 
+0450: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional3JSON
+0455: ldc.i4.0 
+0456: stfld System.Boolean JSONStorableParam::isStorable
+045B: ldarg.0 
+045C: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional3JSON
+0461: ldc.i4.0 
+0462: stfld System.Boolean JSONStorableParam::isRestorable
+0467: ldarg.0 
+0468: ldarg.0 
+0469: ldfld JSONStorableBool MeshVR.PresetManagerControl::storeOptional3JSON
+046E: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0473: ldarg.0 
+0474: ldstr storeBinary
+0479: ldarg.0 
+047A: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+047F: ldfld System.Boolean MeshVR.PresetManager::storePresetBinary
+0484: ldarg.0 
+0485: ldftn System.Void MeshVR.PresetManagerControl::SyncStorePresetBinary(System.Boolean)
+048B: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+0490: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+0495: stfld JSONStorableBool MeshVR.PresetManagerControl::storePresetBinaryJSON
+049A: ldarg.0 
+049B: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetBinaryJSON
+04A0: ldc.i4.0 
+04A1: stfld System.Boolean JSONStorableParam::isStorable
+04A6: ldarg.0 
+04A7: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetBinaryJSON
+04AC: ldc.i4.0 
+04AD: stfld System.Boolean JSONStorableParam::isRestorable
+04B2: ldarg.0 
+04B3: ldarg.0 
+04B4: ldfld JSONStorableBool MeshVR.PresetManagerControl::storePresetBinaryJSON
+04B9: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+04BE: ldarg.0 
+04BF: ldstr LoadPreset
+04C4: ldarg.0 
+04C5: dup 
+04C6: ldvirtftn System.Void MeshVR.PresetManagerControl::LoadPreset()
+04CC: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+04D1: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+04D6: stfld JSONStorableAction MeshVR.PresetManagerControl::loadPresetAction
+04DB: ldarg.0 
+04DC: ldarg.0 
+04DD: ldfld JSONStorableAction MeshVR.PresetManagerControl::loadPresetAction
+04E2: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+04E7: ldarg.0 
+04E8: ldstr MergeLoadPreset
+04ED: ldarg.0 
+04EE: dup 
+04EF: ldvirtftn System.Void MeshVR.PresetManagerControl::MergeLoadPreset()
+04F5: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+04FA: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+04FF: stfld JSONStorableAction MeshVR.PresetManagerControl::mergeLoadPresetAction
+0504: ldarg.0 
+0505: ldarg.0 
+0506: ldfld JSONStorableAction MeshVR.PresetManagerControl::mergeLoadPresetAction
+050B: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+0510: ldarg.0 
+0511: ldstr AutoTypeLoadPreset
+0516: ldarg.0 
+0517: dup 
+0518: ldvirtftn System.Void MeshVR.PresetManagerControl::AutoTypeLoadPreset()
+051E: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+0523: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+0528: stfld JSONStorableAction MeshVR.PresetManagerControl::autoTypeLoadPresetAction
+052D: ldarg.0 
+052E: ldarg.0 
+052F: ldfld JSONStorableAction MeshVR.PresetManagerControl::autoTypeLoadPresetAction
+0534: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+0539: ldarg.0 
+053A: ldstr loadPresetWithPathUrl
+053F: ldsfld System.String System.String::Empty
+0544: ldstr vap
+0549: ldarg.0 
+054A: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+054F: ldc.i4.1 
+0550: callvirt System.String MeshVR.PresetManager::GetStoreFolderPath(System.Boolean)
+0555: newobj System.Void JSONStorableUrl::.ctor(System.String,System.String,System.String,System.String)
+055A: stfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+055F: ldarg.0 
+0560: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+0565: ldarg.0 
+0566: ldftn System.Void MeshVR.PresetManagerControl::BeginBrowse(JSONStorableUrl)
+056C: newobj System.Void JSONStorableUrl/BeginBrowseWithObjectCallback::.ctor(System.Object,System.IntPtr)
+0571: stfld JSONStorableUrl/BeginBrowseWithObjectCallback JSONStorableUrl::beginBrowseWithObjectCallback
+0576: ldarg.0 
+0577: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+057C: ldc.i4.0 
+057D: stfld System.Boolean JSONStorableUrl::allowFullComputerBrowse
+0582: ldarg.0 
+0583: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+0588: ldc.i4.0 
+0589: callvirt System.Void JSONStorableUrl::set_allowBrowseAboveSuggestedPath(System.Boolean)
+058E: ldarg.0 
+058F: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+0594: ldc.i4.1 
+0595: stfld System.Boolean JSONStorableUrl::hideExtension
+059A: ldarg.0 
+059B: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+05A0: ldarg.0 
+05A1: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+05A6: ldfld System.String MeshVR.PresetManager::storeName
+05AB: ldstr _
+05B0: call System.String System.String::Concat(System.String,System.String)
+05B5: stfld System.String JSONStorableUrl::fileRemovePrefix
+05BA: ldarg.0 
+05BB: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+05C0: ldc.i4.1 
+05C1: stfld System.Boolean JSONStorableUrl::showDirs
+05C6: ldarg.0 
+05C7: ldstr LoadPresetWithPath
+05CC: ldarg.0 
+05CD: ldftn System.Void MeshVR.PresetManagerControl::LoadPresetWithPath(System.String)
+05D3: newobj System.Void JSONStorableActionPresetFilePath/PresetFilePathActionCallback::.ctor(System.Object,System.IntPtr)
+05D8: ldarg.0 
+05D9: ldfld JSONStorableUrl MeshVR.PresetManagerControl::loadPresetWithPathUrlJSON
+05DE: newobj System.Void JSONStorableActionPresetFilePath::.ctor(System.String,JSONStorableActionPresetFilePath/PresetFilePathActionCallback,JSONStorableUrl)
+05E3: stfld JSONStorableActionPresetFilePath MeshVR.PresetManagerControl::loadPresetWithPathJSON
+05E8: ldarg.0 
+05E9: ldarg.0 
+05EA: ldfld JSONStorableActionPresetFilePath MeshVR.PresetManagerControl::loadPresetWithPathJSON
+05EF: call System.Void JSONStorable::RegisterPresetFilePathAction(JSONStorableActionPresetFilePath)
+05F4: ldarg.0 
+05F5: ldstr loadPresetWithPathUrl
+05FA: ldsfld System.String System.String::Empty
+05FF: ldstr vap
+0604: ldarg.0 
+0605: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+060A: ldc.i4.1 
+060B: callvirt System.String MeshVR.PresetManager::GetStoreFolderPath(System.Boolean)
+0610: newobj System.Void JSONStorableUrl::.ctor(System.String,System.String,System.String,System.String)
+0615: stfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+061A: ldarg.0 
+061B: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+0620: ldarg.0 
+0621: ldftn System.Void MeshVR.PresetManagerControl::BeginBrowse(JSONStorableUrl)
+0627: newobj System.Void JSONStorableUrl/BeginBrowseWithObjectCallback::.ctor(System.Object,System.IntPtr)
+062C: stfld JSONStorableUrl/BeginBrowseWithObjectCallback JSONStorableUrl::beginBrowseWithObjectCallback
+0631: ldarg.0 
+0632: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+0637: ldc.i4.0 
+0638: stfld System.Boolean JSONStorableUrl::allowFullComputerBrowse
+063D: ldarg.0 
+063E: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+0643: ldc.i4.0 
+0644: callvirt System.Void JSONStorableUrl::set_allowBrowseAboveSuggestedPath(System.Boolean)
+0649: ldarg.0 
+064A: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+064F: ldc.i4.1 
+0650: stfld System.Boolean JSONStorableUrl::hideExtension
+0655: ldarg.0 
+0656: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+065B: ldarg.0 
+065C: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0661: ldfld System.String MeshVR.PresetManager::storeName
+0666: ldstr _
+066B: call System.String System.String::Concat(System.String,System.String)
+0670: stfld System.String JSONStorableUrl::fileRemovePrefix
+0675: ldarg.0 
+0676: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+067B: ldc.i4.1 
+067C: stfld System.Boolean JSONStorableUrl::showDirs
+0681: ldarg.0 
+0682: ldstr MergeLoadPresetWithPath
+0687: ldarg.0 
+0688: ldftn System.Void MeshVR.PresetManagerControl::MergeLoadPresetWithPath(System.String)
+068E: newobj System.Void JSONStorableActionPresetFilePath/PresetFilePathActionCallback::.ctor(System.Object,System.IntPtr)
+0693: ldarg.0 
+0694: ldfld JSONStorableUrl MeshVR.PresetManagerControl::mergeLoadPresetWithPathUrlJSON
+0699: newobj System.Void JSONStorableActionPresetFilePath::.ctor(System.String,JSONStorableActionPresetFilePath/PresetFilePathActionCallback,JSONStorableUrl)
+069E: stfld JSONStorableActionPresetFilePath MeshVR.PresetManagerControl::mergeLoadPresetWithPathJSON
+06A3: ldarg.0 
+06A4: ldarg.0 
+06A5: ldfld JSONStorableActionPresetFilePath MeshVR.PresetManagerControl::mergeLoadPresetWithPathJSON
+06AA: call System.Void JSONStorable::RegisterPresetFilePathAction(JSONStorableActionPresetFilePath)
+06AF: ldarg.0 
+06B0: ldstr LoadPresetWithName
+06B5: ldsfld System.String System.String::Empty
+06BA: ldarg.0 
+06BB: ldftn System.Void MeshVR.PresetManagerControl::SyncLoadPresetWithName(System.String)
+06C1: newobj System.Void JSONStorableString/SetStringCallback::.ctor(System.Object,System.IntPtr)
+06C6: newobj System.Void JSONStorableString::.ctor(System.String,System.String,JSONStorableString/SetStringCallback)
+06CB: stfld JSONStorableString MeshVR.PresetManagerControl::loadPresetWithNameJSON
+06D0: ldarg.0 
+06D1: ldfld JSONStorableString MeshVR.PresetManagerControl::loadPresetWithNameJSON
+06D6: ldc.i4.0 
+06D7: stfld System.Boolean JSONStorableParam::isStorable
+06DC: ldarg.0 
+06DD: ldfld JSONStorableString MeshVR.PresetManagerControl::loadPresetWithNameJSON
+06E2: ldc.i4.0 
+06E3: stfld System.Boolean JSONStorableParam::isRestorable
+06E8: ldarg.0 
+06E9: ldarg.0 
+06EA: ldfld JSONStorableString MeshVR.PresetManagerControl::loadPresetWithNameJSON
+06EF: call System.Void JSONStorable::RegisterString(JSONStorableString)
+06F4: ldarg.0 
+06F5: ldstr MergeLoadPresetWithName
+06FA: ldsfld System.String System.String::Empty
+06FF: ldarg.0 
+0700: ldftn System.Void MeshVR.PresetManagerControl::SyncMergeLoadPresetWithName(System.String)
+0706: newobj System.Void JSONStorableString/SetStringCallback::.ctor(System.Object,System.IntPtr)
+070B: newobj System.Void JSONStorableString::.ctor(System.String,System.String,JSONStorableString/SetStringCallback)
+0710: stfld JSONStorableString MeshVR.PresetManagerControl::mergeLoadPresetWithNameJSON
+0715: ldarg.0 
+0716: ldfld JSONStorableString MeshVR.PresetManagerControl::mergeLoadPresetWithNameJSON
+071B: ldc.i4.0 
+071C: stfld System.Boolean JSONStorableParam::isStorable
+0721: ldarg.0 
+0722: ldfld JSONStorableString MeshVR.PresetManagerControl::mergeLoadPresetWithNameJSON
+0727: ldc.i4.0 
+0728: stfld System.Boolean JSONStorableParam::isRestorable
+072D: ldarg.0 
+072E: ldarg.0 
+072F: ldfld JSONStorableString MeshVR.PresetManagerControl::mergeLoadPresetWithNameJSON
+0734: call System.Void JSONStorable::RegisterString(JSONStorableString)
+0739: ldarg.0 
+073A: ldstr LoadDefaults
+073F: ldarg.0 
+0740: dup 
+0741: ldvirtftn System.Void MeshVR.PresetManagerControl::LoadDefaults()
+0747: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+074C: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+0751: stfld JSONStorableAction MeshVR.PresetManagerControl::loadDefaultsAction
+0756: ldarg.0 
+0757: ldarg.0 
+0758: ldfld JSONStorableAction MeshVR.PresetManagerControl::loadDefaultsAction
+075D: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+0762: ldarg.0 
+0763: ldstr StoreUserDefaults
+0768: ldarg.0 
+0769: ldftn System.Void MeshVR.PresetManagerControl::StoreUserDefaults()
+076F: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+0774: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+0779: stfld JSONStorableAction MeshVR.PresetManagerControl::storeUserDefaultsAction
+077E: ldarg.0 
+077F: ldarg.0 
+0780: ldfld JSONStorableAction MeshVR.PresetManagerControl::storeUserDefaultsAction
+0785: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+078A: ldarg.0 
+078B: ldstr ClearUserDefaults
+0790: ldarg.0 
+0791: ldftn System.Void MeshVR.PresetManagerControl::ClearUserDefaults()
+0797: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+079C: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+07A1: stfld JSONStorableAction MeshVR.PresetManagerControl::clearUserDefaultsAction
+07A6: ldarg.0 
+07A7: ldarg.0 
+07A8: ldfld JSONStorableAction MeshVR.PresetManagerControl::clearUserDefaultsAction
+07AD: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+07B2: ldarg.0 
+07B3: ldstr LoadUserDefaults
+07B8: ldarg.0 
+07B9: ldftn System.Void MeshVR.PresetManagerControl::LoadUserDefaults()
+07BF: newobj System.Void JSONStorableAction/ActionCallback::.ctor(System.Object,System.IntPtr)
+07C4: newobj System.Void JSONStorableAction::.ctor(System.String,JSONStorableAction/ActionCallback)
+07C9: stfld JSONStorableAction MeshVR.PresetManagerControl::loadUserDefaultsAction
+07CE: ldarg.0 
+07CF: ldarg.0 
+07D0: ldfld JSONStorableAction MeshVR.PresetManagerControl::loadUserDefaultsAction
+07D5: call System.Void JSONStorable::RegisterAction(JSONStorableAction)
+07DA: ldarg.0 
+07DB: ldstr loadPresetOnSelect
+07E0: ldc.i4.1 
+07E1: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean)
+07E6: stfld JSONStorableBool MeshVR.PresetManagerControl::loadPresetOnSelectJSON
+07EB: ldarg.0 
+07EC: ldfld JSONStorableBool MeshVR.PresetManagerControl::loadPresetOnSelectJSON
+07F1: ldc.i4.0 
+07F2: stfld System.Boolean JSONStorableParam::isStorable
+07F7: ldarg.0 
+07F8: ldfld JSONStorableBool MeshVR.PresetManagerControl::loadPresetOnSelectJSON
+07FD: ldc.i4.0 
+07FE: stfld System.Boolean JSONStorableParam::isRestorable
+0803: ldarg.0 
+0804: ldarg.0 
+0805: ldfld JSONStorableBool MeshVR.PresetManagerControl::loadPresetOnSelectJSON
+080A: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+080F: ldarg.0 
+0810: ldstr useMergeLoad
+0815: ldc.i4.0 
+0816: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean)
+081B: stfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0820: ldarg.0 
+0821: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0826: ldc.i4.0 
+0827: stfld System.Boolean JSONStorableParam::isStorable
+082C: ldarg.0 
+082D: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0832: ldc.i4.0 
+0833: stfld System.Boolean JSONStorableParam::isRestorable
+0838: ldarg.0 
+0839: ldarg.0 
+083A: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+083F: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0844: ldarg.0 
+0845: ldstr favoriteSelection
+084A: ldnull 
+084B: ldsfld System.String System.String::Empty
+0850: ldstr Favorite Selection
+0855: ldarg.0 
+0856: ldftn System.Void MeshVR.PresetManagerControl::SyncFavoriteSelection(System.String)
+085C: newobj System.Void JSONStorableStringChooser/SetStringCallback::.ctor(System.Object,System.IntPtr)
+0861: newobj System.Void JSONStorableStringChooser::.ctor(System.String,System.Collections.Generic.List`1<System.String>,System.String,System.String,JSONStorableStringChooser/SetStringCallback)
+0866: stfld JSONStorableStringChooser MeshVR.PresetManagerControl::favoriteSelectionJSON
+086B: ldarg.0 
+086C: ldfld JSONStorableStringChooser MeshVR.PresetManagerControl::favoriteSelectionJSON
+0871: ldc.i4.0 
+0872: stfld System.Boolean JSONStorableParam::isStorable
+0877: ldarg.0 
+0878: ldfld JSONStorableStringChooser MeshVR.PresetManagerControl::favoriteSelectionJSON
+087D: ldc.i4.0 
+087E: stfld System.Boolean JSONStorableParam::isRestorable
+0883: ldarg.0 
+0884: ldstr includeOptional
+0889: ldarg.0 
+088A: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+088F: ldfld System.Boolean MeshVR.PresetManager::includeOptional
+0894: ldarg.0 
+0895: ldftn System.Void MeshVR.PresetManagerControl::SyncIncludeOptional(System.Boolean)
+089B: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+08A0: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+08A5: stfld JSONStorableBool MeshVR.PresetManagerControl::includeOptionalJSON
+08AA: ldarg.0 
+08AB: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptionalJSON
+08B0: ldc.i4.0 
+08B1: stfld System.Boolean JSONStorableParam::isStorable
+08B6: ldarg.0 
+08B7: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptionalJSON
+08BC: ldc.i4.0 
+08BD: stfld System.Boolean JSONStorableParam::isRestorable
+08C2: ldarg.0 
+08C3: ldarg.0 
+08C4: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptionalJSON
+08C9: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+08CE: ldarg.0 
+08CF: ldstr includeOptional2
+08D4: ldarg.0 
+08D5: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+08DA: ldfld System.Boolean MeshVR.PresetManager::includeOptional2
+08DF: ldarg.0 
+08E0: ldftn System.Void MeshVR.PresetManagerControl::SyncIncludeOptional2(System.Boolean)
+08E6: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+08EB: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+08F0: stfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional2JSON
+08F5: ldarg.0 
+08F6: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional2JSON
+08FB: ldc.i4.0 
+08FC: stfld System.Boolean JSONStorableParam::isStorable
+0901: ldarg.0 
+0902: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional2JSON
+0907: ldc.i4.0 
+0908: stfld System.Boolean JSONStorableParam::isRestorable
+090D: ldarg.0 
+090E: ldarg.0 
+090F: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional2JSON
+0914: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0919: ldarg.0 
+091A: ldstr includeOptional3
+091F: ldarg.0 
+0920: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0925: ldfld System.Boolean MeshVR.PresetManager::includeOptional3
+092A: ldarg.0 
+092B: ldftn System.Void MeshVR.PresetManagerControl::SyncIncludeOptional3(System.Boolean)
+0931: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+0936: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+093B: stfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional3JSON
+0940: ldarg.0 
+0941: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional3JSON
+0946: ldc.i4.0 
+0947: stfld System.Boolean JSONStorableParam::isStorable
+094C: ldarg.0 
+094D: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional3JSON
+0952: ldc.i4.0 
+0953: stfld System.Boolean JSONStorableParam::isRestorable
+0958: ldarg.0 
+0959: ldarg.0 
+095A: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeOptional3JSON
+095F: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+0964: ldarg.0 
+0965: ldstr includeAppearance
+096A: ldarg.0 
+096B: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0970: ldfld System.Boolean MeshVR.PresetManager::includeAppearance
+0975: ldarg.0 
+0976: ldftn System.Void MeshVR.PresetManagerControl::SyncIncludeAppearance(System.Boolean)
+097C: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+0981: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+0986: stfld JSONStorableBool MeshVR.PresetManagerControl::includeAppearanceJSON
+098B: ldarg.0 
+098C: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeAppearanceJSON
+0991: ldc.i4.0 
+0992: stfld System.Boolean JSONStorableParam::isStorable
+0997: ldarg.0 
+0998: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeAppearanceJSON
+099D: ldc.i4.0 
+099E: stfld System.Boolean JSONStorableParam::isRestorable
+09A3: ldarg.0 
+09A4: ldarg.0 
+09A5: ldfld JSONStorableBool MeshVR.PresetManagerControl::includeAppearanceJSON
+09AA: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+09AF: ldarg.0 
+09B0: ldstr includePhysical
+09B5: ldarg.0 
+09B6: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+09BB: ldfld System.Boolean MeshVR.PresetManager::includePhysical
+09C0: ldarg.0 
+09C1: ldftn System.Void MeshVR.PresetManagerControl::SyncIncludePhysical(System.Boolean)
+09C7: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+09CC: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+09D1: stfld JSONStorableBool MeshVR.PresetManagerControl::includePhysicalJSON
+09D6: ldarg.0 
+09D7: ldfld JSONStorableBool MeshVR.PresetManagerControl::includePhysicalJSON
+09DC: ldc.i4.0 
+09DD: stfld System.Boolean JSONStorableParam::isStorable
+09E2: ldarg.0 
+09E3: ldfld JSONStorableBool MeshVR.PresetManagerControl::includePhysicalJSON
+09E8: ldc.i4.0 
+09E9: stfld System.Boolean JSONStorableParam::isRestorable
+09EE: ldarg.0 
+09EF: ldarg.0 
+09F0: ldfld JSONStorableBool MeshVR.PresetManagerControl::includePhysicalJSON
+09F5: call System.Void JSONStorable::RegisterBool(JSONStorableBool)
+09FA: ldarg.0 
+09FB: ldstr lockParams
+0A00: ldc.i4.0 
+0A01: ldarg.0 
+0A02: ldftn System.Void MeshVR.PresetManagerControl::SyncLockParams(System.Boolean)
+0A08: newobj System.Void JSONStorableBool/SetBoolCallback::.ctor(System.Object,System.IntPtr)
+0A0D: newobj System.Void JSONStorableBool::.ctor(System.String,System.Boolean,JSONStorableBool/SetBoolCallback)
+0A12: stfld JSONStorableBool MeshVR.PresetManagerControl::lockParamsJSON
+0A17: ldarg.0 
+0A18: call System.Void MeshVR.PresetManagerControl::RefreshFavoriteNames()
+0A1D: ldarg.0 
+0A1E: ldarg.0 
+0A1F: ldfld JSONStorableStringChooser MeshVR.PresetManagerControl::favoriteSelectionJSON
+0A24: call System.Void JSONStorable::RegisterStringChooser(JSONStorableStringChooser)
+0A29: ret 
+=== System.Void MeshVR.PresetManagerControl::LoadPreset() ===
+0000: ldarg.0 
+0001: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0006: ldnull 
+0007: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+000C: brtrue.s IL_000f: ldarg.0
+000E: ret 
+000F: ldarg.0 
+0010: ldc.i4.1 
+0011: stfld System.Boolean MeshVR.PresetManagerControl::isLoadingPreset
+0016: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+001B: stloc.0 
+001C: ldarg.0 
+001D: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0022: ldc.i4.0 
+0023: callvirt System.Boolean MeshVR.PresetManager::LoadPresetPre(System.Boolean)
+0028: brfalse IL_0172: ldarg.0
+002D: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+0032: stloc.1 
+0033: ldarg.0 
+0034: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0039: ldfld MeshVR.PresetManager/ItemType MeshVR.PresetManager::itemType
+003E: ldc.i4.5 
+003F: beq.s IL_004f: ldarg.0
+0041: ldarg.0 
+0042: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0047: ldfld MeshVR.PresetManager/ItemType MeshVR.PresetManager::itemType
+004C: ldc.i4.1 
+004D: bne.un.s IL_0089: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+004F: ldarg.0 
+0050: ldfld Atom JSONStorable::containingAtom
+0055: ldnull 
+0056: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+005B: brfalse.s IL_0089: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+005D: ldarg.0 
+005E: ldfld Atom JSONStorable::containingAtom
+0063: ldarg.0 
+0064: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0069: ldfld SimpleJSON.JSONClass MeshVR.PresetManager::lastLoadedJSON
+006E: ldarg.0 
+006F: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0074: ldfld System.Boolean MeshVR.PresetManager::includeAppearance
+0079: ldarg.0 
+007A: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+007F: ldfld System.Boolean MeshVR.PresetManager::includePhysical
+0084: callvirt System.Void Atom::SetLastRestoredData(SimpleJSON.JSONClass,System.Boolean,System.Boolean)
+0089: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+008E: stloc.2 
+008F: ldarg.0 
+0090: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0095: callvirt System.Boolean MeshVR.PresetManager::LoadPresetPost()
+009A: brfalse IL_0155: ldarg.0
+009F: call System.Single UnityEngine.Time::get_realtimeSinceStartup()
+00A4: ldloc.1 
+00A5: ldloc.0 
+00A6: sub 
+00A7: ldc.r4 1000
+00AC: mul 
+00AD: stloc.3 
+00AE: ldloc.2 
+00AF: sub 
+00B0: ldc.r4 1000
+00B5: mul 
+00B6: stloc.s V_4
+00B8: ldloc.3 
+00B9: ldloc.s V_4
+00BB: add 
+00BC: ldc.r4 50
+00C1: ble.un.s IL_0138: ldarg.0
+00C3: ldc.i4.s 9
+00C5: newarr System.String
+00CA: dup 
+00CB: ldc.i4.0 
+00CC: ldstr [LaunchPerf]         LoadPreset(
+00D1: stelem.ref 
+00D2: dup 
+00D3: ldc.i4.1 
+00D4: ldarg.0 
+00D5: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+00DA: ldfld System.String MeshVR.PresetManager::storeName
+00DF: stelem.ref 
+00E0: dup 
+00E1: ldc.i4.2 
+00E2: ldstr ): Pre=
+00E7: stelem.ref 
+00E8: dup 
+00E9: ldc.i4.3 
+00EA: ldloc.3 
+00EB: conv.i4 
+00EC: stloc.s V_5
+00EE: ldloca.s V_5
+00F0: call System.String System.Int32::ToString()
+00F5: stelem.ref 
+00F6: dup 
+00F7: ldc.i4.4 
+00F8: ldstr ms Post=
+00FD: stelem.ref 
+00FE: dup 
+00FF: ldc.i4.5 
+0100: ldloc.s V_4
+0102: conv.i4 
+0103: stloc.s V_5
+0105: ldloca.s V_5
+0107: call System.String System.Int32::ToString()
+010C: stelem.ref 
+010D: dup 
+010E: ldc.i4.6 
+010F: ldstr ms Total=
+0114: stelem.ref 
+0115: dup 
+0116: ldc.i4.7 
+0117: ldloc.3 
+0118: ldloc.s V_4
+011A: add 
+011B: conv.i4 
+011C: stloc.s V_5
+011E: ldloca.s V_5
+0120: call System.String System.Int32::ToString()
+0125: stelem.ref 
+0126: dup 
+0127: ldc.i4.8 
+0128: ldstr ms
+012D: stelem.ref 
+012E: call System.String System.String::Concat(System.String[])
+0133: call System.Void SuperController::LaunchPerfLog(System.String)
+0138: ldarg.0 
+0139: ldstr Loaded preset 
+013E: ldarg.0 
+013F: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0144: callvirt System.String MeshVR.PresetManager::get_presetName()
+0149: call System.String System.String::Concat(System.String,System.String)
+014E: callvirt System.Void MeshVR.PresetManagerControl::SetStatus(System.String)
+0153: br.s IL_018d: ldarg.0
+0155: ldarg.0 
+0156: ldstr Failed to load preset 
+015B: ldarg.0 
+015C: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0161: callvirt System.String MeshVR.PresetManager::get_presetName()
+0166: call System.String System.String::Concat(System.String,System.String)
+016B: callvirt System.Void MeshVR.PresetManagerControl::SetStatus(System.String)
+0170: br.s IL_018d: ldarg.0
+0172: ldarg.0 
+0173: ldstr Failed to load preset 
+0178: ldarg.0 
+0179: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+017E: callvirt System.String MeshVR.PresetManager::get_presetName()
+0183: call System.String System.String::Concat(System.String,System.String)
+0188: callvirt System.Void MeshVR.PresetManagerControl::SetStatus(System.String)
+018D: ldarg.0 
+018E: ldc.i4.0 
+018F: stfld System.Boolean MeshVR.PresetManagerControl::isLoadingPreset
+0194: ldarg.0 
+0195: call System.Void MeshVR.PresetManagerControl::RefreshFavoriteNames()
+019A: ret 
+=== System.Void MeshVR.PresetManagerControl::BeginBrowse(JSONStorableUrl) ===
+0000: ldarg.0 
+0001: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0006: ldnull 
+0007: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+000C: brfalse IL_009c: ret
+0011: ldarg.1 
+0012: ldarg.0 
+0013: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0018: ldfld System.String MeshVR.PresetManager::storeName
+001D: ldstr _
+0022: call System.String System.String::Concat(System.String,System.String)
+0027: stfld System.String JSONStorableUrl::fileRemovePrefix
+002C: ldarg.0 
+002D: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+0032: callvirt System.Void MeshVR.PresetManager::CreateStoreFolderPath()
+0037: ldarg.0 
+0038: ldfld MeshVR.PresetManager MeshVR.PresetManagerControl::pm
+003D: ldc.i4.0 
+003E: callvirt System.String MeshVR.PresetManager::GetStoreFolderPath(System.Boolean)
+0043: dup 
+0044: stloc.0 
+0045: ldloc.0 
+0046: ldstr /$
+004B: ldsfld System.String System.String::Empty
+0050: call System.String System.Text.RegularExpressions.Regex::Replace(System.String,System.String,System.String)
+0055: stloc.0 
+0056: ldarg.1 
+0057: ldloc.0 
+0058: callvirt System.Void JSONStorableUrl::set_suggestedPath(System.String)
+005D: ldc.i4.0 
+005E: ldc.i4.0 
+005F: ldc.i4.1 
+0060: ldc.i4.1 
+0061: call System.Collections.Generic.List`1<MVR.FileManagementSecure.ShortCut> MVR.FileManagement.FileManager::GetShortCutsForDirectory(System.String,System.Boolean,System.Boolean,System.Boolean,System.Boolean)
+0066: stloc.1 
+0067: ldarg.1 
+0068: ldloc.1 
+0069: stfld System.Collections.Generic.List`1<MVR.FileManagementSecure.ShortCut> JSONStorableUrl::shortCuts
+006E: ldarg.0 
+006F: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0074: callvirt UnityEngine.UI.Toggle JSONStorableBool::get_toggleAlt()
+0079: ldnull 
+007A: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+007F: brfalse.s IL_009c: ret
+0081: ldarg.0 
+0082: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0087: callvirt UnityEngine.UI.Toggle JSONStorableBool::get_toggleAlt()
+008C: callvirt UnityEngine.GameObject UnityEngine.Component::get_gameObject()
+0091: ldarg.0 
+0092: ldfld System.Boolean MeshVR.PresetManagerControl::showMergeLoad
+0097: callvirt System.Void UnityEngine.GameObject::SetActive(System.Boolean)
+009C: ret 
+=== System.Void MeshVR.PresetManagerControl::EndBrowse(JSONStorableUrl) ===
+0000: ldarg.0 
+0001: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0006: callvirt UnityEngine.UI.Toggle JSONStorableBool::get_toggleAlt()
+000B: ldnull 
+000C: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0011: brfalse.s IL_0029: ret
+0013: ldarg.0 
+0014: ldfld JSONStorableBool MeshVR.PresetManagerControl::useMergeLoadJSON
+0019: callvirt UnityEngine.UI.Toggle JSONStorableBool::get_toggleAlt()
+001E: callvirt UnityEngine.GameObject UnityEngine.Component::get_gameObject()
+0023: ldc.i4.0 
+0024: callvirt System.Void UnityEngine.GameObject::SetActive(System.Boolean)
+0029: ret 

@@ -1,0 +1,700 @@
+=== System.Void SuperController::ProcessMotionControllerNavigation() ===
+0000: ldarg.0 
+0001: ldfld System.Boolean SuperController::isMonitorOnly
+0006: brfalse.s IL_0009: ldarg.0
+0008: ret 
+0009: ldarg.0 
+000A: ldc.i4.0 
+000B: stfld System.Boolean SuperController::didStartLeftNavigate
+0010: ldarg.0 
+0011: ldc.i4.0 
+0012: stfld System.Boolean SuperController::didStartRightNavigate
+0017: ldarg.0 
+0018: ldfld UnityEngine.Transform SuperController::navigationPlayArea
+001D: ldnull 
+001E: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0023: brfalse IL_00aa: ldarg.0
+0028: ldarg.0 
+0029: ldfld UnityEngine.MeshRenderer SuperController::regularPlayAreaMR
+002E: ldnull 
+002F: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0034: brfalse.s IL_0042: ldarg.0
+0036: ldarg.0 
+0037: ldfld UnityEngine.MeshRenderer SuperController::regularPlayAreaMR
+003C: ldc.i4.0 
+003D: callvirt System.Void UnityEngine.Renderer::set_enabled(System.Boolean)
+0042: ldarg.0 
+0043: ldfld UnityEngine.MeshRenderer SuperController::navigationPlayAreaMR
+0048: ldnull 
+0049: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+004E: brfalse.s IL_005c: ldarg.0
+0050: ldarg.0 
+0051: ldfld UnityEngine.MeshRenderer SuperController::navigationPlayAreaMR
+0056: ldc.i4.0 
+0057: callvirt System.Void UnityEngine.Renderer::set_enabled(System.Boolean)
+005C: ldarg.0 
+005D: ldfld UnityEngine.MeshRenderer SuperController::navigationPlayerMR
+0062: ldnull 
+0063: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0068: brfalse.s IL_0076: ldarg.0
+006A: ldarg.0 
+006B: ldfld UnityEngine.MeshRenderer SuperController::navigationPlayerMR
+0070: ldc.i4.0 
+0071: callvirt System.Void UnityEngine.Renderer::set_enabled(System.Boolean)
+0076: ldarg.0 
+0077: ldfld UnityEngine.MeshRenderer SuperController::navigationCameraMR
+007C: ldnull 
+007D: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0082: brfalse.s IL_0090: ldarg.0
+0084: ldarg.0 
+0085: ldfld UnityEngine.MeshRenderer SuperController::navigationCameraMR
+008A: ldc.i4.0 
+008B: callvirt System.Void UnityEngine.Renderer::set_enabled(System.Boolean)
+0090: ldarg.0 
+0091: ldfld CubicBezierCurve SuperController::navigationCurve
+0096: ldnull 
+0097: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+009C: brfalse.s IL_00aa: ldarg.0
+009E: ldarg.0 
+009F: ldfld CubicBezierCurve SuperController::navigationCurve
+00A4: ldc.i4.0 
+00A5: callvirt System.Void CubicBezierCurve::set_draw(System.Boolean)
+00AA: ldarg.0 
+00AB: call System.Boolean SuperController::get_navigationDisabled()
+00B0: brtrue.s IL_00d0: ret
+00B2: ldarg.0 
+00B3: ldfld System.Boolean SuperController::_disableAllNavigation
+00B8: brtrue.s IL_00d0: ret
+00BA: ldarg.0 
+00BB: call System.Boolean SuperController::get_worldUIActivated()
+00C0: brtrue.s IL_00d0: ret
+00C2: ldarg.0 
+00C3: ldfld UnityEngine.Transform SuperController::navigationRig
+00C8: ldnull 
+00C9: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+00CE: brtrue.s IL_00d1: ldarg.0
+00D0: ret 
+00D1: ldarg.0 
+00D2: call System.Boolean SuperController::GetLeftSelect()
+00D7: brfalse.s IL_00e9: ldc.i4.0
+00D9: ldarg.0 
+00DA: ldfld System.Collections.Generic.List`1<FreeControllerV3> SuperController::highlightedControllersLeft
+00DF: callvirt System.Int32 System.Collections.Generic.List`1<FreeControllerV3>::get_Count()
+00E4: ldc.i4.0 
+00E5: cgt 
+00E7: br.s IL_00ea: stloc.0
+00E9: ldc.i4.0 
+00EA: stloc.0 
+00EB: ldarg.0 
+00EC: call System.Boolean SuperController::GetRightSelect()
+00F1: brfalse.s IL_0103: ldc.i4.0
+00F3: ldarg.0 
+00F4: ldfld System.Collections.Generic.List`1<FreeControllerV3> SuperController::highlightedControllersRight
+00F9: callvirt System.Int32 System.Collections.Generic.List`1<FreeControllerV3>::get_Count()
+00FE: ldc.i4.0 
+00FF: cgt 
+0101: br.s IL_0104: stloc.1
+0103: ldc.i4.0 
+0104: stloc.1 
+0105: ldarg.0 
+0106: ldfld System.Boolean SuperController::_disableGrabNavigation
+010B: brtrue.s IL_0148: ldarg.0
+010D: ldarg.0 
+010E: call System.Boolean SuperController::GetGrabNavigateStartLeft()
+0113: brfalse.s IL_0148: ldarg.0
+0115: ldloc.0 
+0116: brtrue.s IL_0148: ldarg.0
+0118: ldarg.0 
+0119: ldarg.0 
+011A: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+011F: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0124: stfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionLeft
+0129: ldarg.0 
+012A: ldarg.0 
+012B: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+0130: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+0135: stfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationLeft
+013A: ldarg.0 
+013B: ldc.i4.1 
+013C: stfld System.Boolean SuperController::isGrabNavigatingLeft
+0141: ldarg.0 
+0142: ldc.i4.1 
+0143: stfld System.Boolean SuperController::didStartLeftNavigate
+0148: ldarg.0 
+0149: ldfld System.Boolean SuperController::isGrabNavigatingLeft
+014E: brfalse IL_02c2: ldarg.0
+0153: ldarg.0 
+0154: call System.Boolean SuperController::GetGrabNavigateLeft()
+0159: brfalse IL_02c2: ldarg.0
+015E: ldarg.0 
+015F: ldfld UnityEngine.Transform SuperController::navigationRig
+0164: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0169: stloc.2 
+016A: ldloc.2 
+016B: ldarg.0 
+016C: ldfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionLeft
+0171: ldarg.0 
+0172: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+0177: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+017C: call UnityEngine.Vector3 UnityEngine.Vector3::op_Subtraction(UnityEngine.Vector3,UnityEngine.Vector3)
+0181: ldarg.0 
+0182: ldfld System.Single SuperController::_grabNavigationPositionMultiplier
+0187: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+018C: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+0191: stloc.2 
+0192: ldarg.0 
+0193: ldfld UnityEngine.Transform SuperController::navigationRig
+0198: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+019D: stloc.3 
+019E: ldloc.2 
+019F: ldarg.0 
+01A0: ldfld UnityEngine.Transform SuperController::navigationRig
+01A5: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+01AA: call UnityEngine.Vector3 UnityEngine.Vector3::op_Subtraction(UnityEngine.Vector3,UnityEngine.Vector3)
+01AF: ldloc.3 
+01B0: call System.Single UnityEngine.Vector3::Dot(UnityEngine.Vector3,UnityEngine.Vector3)
+01B5: stloc.s V_4
+01B7: ldloc.2 
+01B8: ldloc.3 
+01B9: ldc.r4 0
+01BE: ldloc.s V_4
+01C0: sub 
+01C1: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+01C6: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+01CB: stloc.2 
+01CC: ldarg.0 
+01CD: ldfld UnityEngine.Transform SuperController::navigationRig
+01D2: ldloc.2 
+01D3: callvirt System.Void UnityEngine.Transform::set_position(UnityEngine.Vector3)
+01D8: ldarg.0 
+01D9: ldfld System.Boolean SuperController::_lockHeightDuringNavigate
+01DE: brtrue.s IL_01ef: ldarg.0
+01E0: ldarg.0 
+01E1: ldarg.0 
+01E2: call System.Single SuperController::get_playerHeightAdjust()
+01E7: ldloc.s V_4
+01E9: add 
+01EA: call System.Void SuperController::set_playerHeightAdjust(System.Single)
+01EF: ldarg.0 
+01F0: ldarg.0 
+01F1: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+01F6: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+01FB: stfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionLeft
+0200: ldarg.0 
+0201: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+0206: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+020B: ldarg.0 
+020C: ldfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationLeft
+0211: call UnityEngine.Quaternion UnityEngine.Quaternion::Inverse(UnityEngine.Quaternion)
+0216: call UnityEngine.Quaternion UnityEngine.Quaternion::op_Multiply(UnityEngine.Quaternion,UnityEngine.Quaternion)
+021B: ldc.i4.4 
+021C: call UnityEngine.Vector3 Quaternion2Angles::GetAngles(UnityEngine.Quaternion,Quaternion2Angles/RotationOrder)
+0221: ldc.r4 57.29578
+0226: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+022B: ldfld System.Single UnityEngine.Vector3::y
+0230: ldarg.0 
+0231: ldfld System.Single SuperController::_grabNavigationRotationMultiplier
+0236: mul 
+0237: stloc.s V_5
+0239: ldloc.s V_5
+023B: ldc.r4 0
+0240: ble.un.s IL_025d: ldloc.s V_5
+0242: ldloc.s V_5
+0244: ldarg.0 
+0245: ldfld System.Single SuperController::_grabNavigationRotationResistance
+024A: sub 
+024B: stloc.s V_5
+024D: ldloc.s V_5
+024F: ldc.r4 0
+0254: bge.un.s IL_025d: ldloc.s V_5
+0256: ldc.r4 0
+025B: stloc.s V_5
+025D: ldloc.s V_5
+025F: ldc.r4 0
+0264: bge.un.s IL_0281: ldarg.0
+0266: ldloc.s V_5
+0268: ldarg.0 
+0269: ldfld System.Single SuperController::_grabNavigationRotationResistance
+026E: add 
+026F: stloc.s V_5
+0271: ldloc.s V_5
+0273: ldc.r4 0
+0278: ble.un.s IL_0281: ldarg.0
+027A: ldc.r4 0
+027F: stloc.s V_5
+0281: ldarg.0 
+0282: ldfld UnityEngine.Transform SuperController::navigationRig
+0287: ldarg.0 
+0288: ldfld UnityEngine.Camera SuperController::lookCamera
+028D: callvirt UnityEngine.Transform UnityEngine.Component::get_transform()
+0292: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0297: ldarg.0 
+0298: ldfld UnityEngine.Transform SuperController::navigationRig
+029D: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+02A2: ldc.r4 0
+02A7: ldloc.s V_5
+02A9: sub 
+02AA: callvirt System.Void UnityEngine.Transform::RotateAround(UnityEngine.Vector3,UnityEngine.Vector3,System.Single)
+02AF: ldarg.0 
+02B0: ldarg.0 
+02B1: call UnityEngine.Transform SuperController::get_motionControllerLeft()
+02B6: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+02BB: stfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationLeft
+02C0: br.s IL_02c9: ldarg.0
+02C2: ldarg.0 
+02C3: ldc.i4.0 
+02C4: stfld System.Boolean SuperController::isGrabNavigatingLeft
+02C9: ldarg.0 
+02CA: ldfld System.Boolean SuperController::_disableGrabNavigation
+02CF: brtrue.s IL_030c: ldarg.0
+02D1: ldarg.0 
+02D2: call System.Boolean SuperController::GetGrabNavigateStartRight()
+02D7: brfalse.s IL_030c: ldarg.0
+02D9: ldloc.1 
+02DA: brtrue.s IL_030c: ldarg.0
+02DC: ldarg.0 
+02DD: ldarg.0 
+02DE: call UnityEngine.Transform SuperController::get_motionControllerRight()
+02E3: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+02E8: stfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionRight
+02ED: ldarg.0 
+02EE: ldarg.0 
+02EF: call UnityEngine.Transform SuperController::get_motionControllerRight()
+02F4: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+02F9: stfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationRight
+02FE: ldarg.0 
+02FF: ldc.i4.1 
+0300: stfld System.Boolean SuperController::isGrabNavigatingRight
+0305: ldarg.0 
+0306: ldc.i4.1 
+0307: stfld System.Boolean SuperController::didStartRightNavigate
+030C: ldarg.0 
+030D: ldfld System.Boolean SuperController::isGrabNavigatingRight
+0312: brfalse IL_0490: ldarg.0
+0317: ldarg.0 
+0318: call System.Boolean SuperController::GetGrabNavigateRight()
+031D: brfalse IL_0490: ldarg.0
+0322: ldarg.0 
+0323: ldfld UnityEngine.Transform SuperController::navigationRig
+0328: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+032D: stloc.s V_6
+032F: ldloc.s V_6
+0331: ldarg.0 
+0332: ldfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionRight
+0337: ldarg.0 
+0338: call UnityEngine.Transform SuperController::get_motionControllerRight()
+033D: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0342: call UnityEngine.Vector3 UnityEngine.Vector3::op_Subtraction(UnityEngine.Vector3,UnityEngine.Vector3)
+0347: ldarg.0 
+0348: ldfld System.Single SuperController::_grabNavigationPositionMultiplier
+034D: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+0352: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+0357: stloc.s V_6
+0359: ldarg.0 
+035A: ldfld UnityEngine.Transform SuperController::navigationRig
+035F: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+0364: stloc.s V_7
+0366: ldloc.s V_6
+0368: ldarg.0 
+0369: ldfld UnityEngine.Transform SuperController::navigationRig
+036E: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0373: call UnityEngine.Vector3 UnityEngine.Vector3::op_Subtraction(UnityEngine.Vector3,UnityEngine.Vector3)
+0378: ldloc.s V_7
+037A: call System.Single UnityEngine.Vector3::Dot(UnityEngine.Vector3,UnityEngine.Vector3)
+037F: stloc.s V_8
+0381: ldloc.s V_6
+0383: ldloc.s V_7
+0385: ldc.r4 0
+038A: ldloc.s V_8
+038C: sub 
+038D: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+0392: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+0397: stloc.s V_6
+0399: ldarg.0 
+039A: ldfld UnityEngine.Transform SuperController::navigationRig
+039F: ldloc.s V_6
+03A1: callvirt System.Void UnityEngine.Transform::set_position(UnityEngine.Vector3)
+03A6: ldarg.0 
+03A7: ldfld System.Boolean SuperController::_lockHeightDuringNavigate
+03AC: brtrue.s IL_03bd: ldarg.0
+03AE: ldarg.0 
+03AF: ldarg.0 
+03B0: call System.Single SuperController::get_playerHeightAdjust()
+03B5: ldloc.s V_8
+03B7: add 
+03B8: call System.Void SuperController::set_playerHeightAdjust(System.Single)
+03BD: ldarg.0 
+03BE: ldarg.0 
+03BF: call UnityEngine.Transform SuperController::get_motionControllerRight()
+03C4: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+03C9: stfld UnityEngine.Vector3 SuperController::startGrabNavigatePositionRight
+03CE: ldarg.0 
+03CF: call UnityEngine.Transform SuperController::get_motionControllerRight()
+03D4: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+03D9: ldarg.0 
+03DA: ldfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationRight
+03DF: call UnityEngine.Quaternion UnityEngine.Quaternion::Inverse(UnityEngine.Quaternion)
+03E4: call UnityEngine.Quaternion UnityEngine.Quaternion::op_Multiply(UnityEngine.Quaternion,UnityEngine.Quaternion)
+03E9: ldc.i4.4 
+03EA: call UnityEngine.Vector3 Quaternion2Angles::GetAngles(UnityEngine.Quaternion,Quaternion2Angles/RotationOrder)
+03EF: ldc.r4 57.29578
+03F4: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+03F9: ldfld System.Single UnityEngine.Vector3::y
+03FE: ldarg.0 
+03FF: ldfld System.Single SuperController::_grabNavigationRotationMultiplier
+0404: mul 
+0405: stloc.s V_9
+0407: ldloc.s V_9
+0409: ldc.r4 0
+040E: ble.un.s IL_042b: ldloc.s V_9
+0410: ldloc.s V_9
+0412: ldarg.0 
+0413: ldfld System.Single SuperController::_grabNavigationRotationResistance
+0418: sub 
+0419: stloc.s V_9
+041B: ldloc.s V_9
+041D: ldc.r4 0
+0422: bge.un.s IL_042b: ldloc.s V_9
+0424: ldc.r4 0
+0429: stloc.s V_9
+042B: ldloc.s V_9
+042D: ldc.r4 0
+0432: bge.un.s IL_044f: ldarg.0
+0434: ldloc.s V_9
+0436: ldarg.0 
+0437: ldfld System.Single SuperController::_grabNavigationRotationResistance
+043C: add 
+043D: stloc.s V_9
+043F: ldloc.s V_9
+0441: ldc.r4 0
+0446: ble.un.s IL_044f: ldarg.0
+0448: ldc.r4 0
+044D: stloc.s V_9
+044F: ldarg.0 
+0450: ldfld UnityEngine.Transform SuperController::navigationRig
+0455: ldarg.0 
+0456: ldfld UnityEngine.Camera SuperController::lookCamera
+045B: callvirt UnityEngine.Transform UnityEngine.Component::get_transform()
+0460: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0465: ldarg.0 
+0466: ldfld UnityEngine.Transform SuperController::navigationRig
+046B: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+0470: ldc.r4 0
+0475: ldloc.s V_9
+0477: sub 
+0478: callvirt System.Void UnityEngine.Transform::RotateAround(UnityEngine.Vector3,UnityEngine.Vector3,System.Single)
+047D: ldarg.0 
+047E: ldarg.0 
+047F: call UnityEngine.Transform SuperController::get_motionControllerRight()
+0484: callvirt UnityEngine.Quaternion UnityEngine.Transform::get_rotation()
+0489: stfld UnityEngine.Quaternion SuperController::startGrabNavigateRotationRight
+048E: br.s IL_0497: ldarg.0
+0490: ldarg.0 
+0491: ldc.i4.0 
+0492: stfld System.Boolean SuperController::isGrabNavigatingRight
+0497: ldarg.0 
+0498: ldfld UnityEngine.Transform SuperController::navigationHologrid
+049D: ldnull 
+049E: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+04A3: brfalse.s IL_04cd: ldarg.0
+04A5: ldarg.0 
+04A6: ldfld System.Boolean SuperController::_showNavigationHologrid
+04AB: brfalse.s IL_04c6: ldarg.0
+04AD: ldarg.0 
+04AE: ldfld System.Boolean SuperController::isGrabNavigatingLeft
+04B3: brtrue.s IL_04bd: ldarg.0
+04B5: ldarg.0 
+04B6: ldfld System.Boolean SuperController::isGrabNavigatingRight
+04BB: brfalse.s IL_04c6: ldarg.0
+04BD: ldarg.0 
+04BE: ldc.i4.1 
+04BF: stfld System.Boolean SuperController::navigationHologridVisible
+04C4: br.s IL_04cd: ldarg.0
+04C6: ldarg.0 
+04C7: ldc.i4.0 
+04C8: stfld System.Boolean SuperController::navigationHologridVisible
+04CD: ldarg.0 
+04CE: ldfld System.Boolean SuperController::_disableTeleport
+04D3: brtrue IL_058d: ret
+04D8: ldarg.0 
+04D9: ldfld System.Boolean SuperController::_disableTeleportDuringPossess
+04DE: brfalse.s IL_0510: ldarg.0
+04E0: ldarg.0 
+04E1: ldfld FreeControllerV3 SuperController::leftPossessedController
+04E6: ldnull 
+04E7: call System.Boolean UnityEngine.Object::op_Equality(UnityEngine.Object,UnityEngine.Object)
+04EC: brfalse IL_058d: ret
+04F1: ldarg.0 
+04F2: ldfld FreeControllerV3 SuperController::rightPossessedController
+04F7: ldnull 
+04F8: call System.Boolean UnityEngine.Object::op_Equality(UnityEngine.Object,UnityEngine.Object)
+04FD: brfalse IL_058d: ret
+0502: ldarg.0 
+0503: ldfld FreeControllerV3 SuperController::headPossessedController
+0508: ldnull 
+0509: call System.Boolean UnityEngine.Object::op_Equality(UnityEngine.Object,UnityEngine.Object)
+050E: brfalse.s IL_058d: ret
+0510: ldarg.0 
+0511: ldc.i4.0 
+0512: call System.Boolean SuperController::GetTeleportStartLeft(System.Boolean)
+0517: brfalse.s IL_0529: ldarg.0
+0519: ldloc.0 
+051A: brtrue.s IL_0529: ldarg.0
+051C: ldarg.0 
+051D: call System.Void SuperController::ProcessTeleportStart()
+0522: ldarg.0 
+0523: ldc.i4.1 
+0524: stfld System.Boolean SuperController::didStartLeftNavigate
+0529: ldarg.0 
+052A: ldc.i4.0 
+052B: call System.Boolean SuperController::GetTeleportStartRight(System.Boolean)
+0530: brfalse.s IL_0542: ldarg.0
+0532: ldloc.1 
+0533: brtrue.s IL_0542: ldarg.0
+0535: ldarg.0 
+0536: call System.Void SuperController::ProcessTeleportStart()
+053B: ldarg.0 
+053C: ldc.i4.1 
+053D: stfld System.Boolean SuperController::didStartRightNavigate
+0542: ldarg.0 
+0543: ldc.i4.0 
+0544: call System.Boolean SuperController::GetTeleportShowLeft(System.Boolean)
+0549: brfalse.s IL_0561: ldarg.0
+054B: ldarg.0 
+054C: ldfld System.Collections.Generic.List`1<FreeControllerV3> SuperController::highlightedControllersLeft
+0551: callvirt System.Int32 System.Collections.Generic.List`1<FreeControllerV3>::get_Count()
+0556: brtrue.s IL_0561: ldarg.0
+0558: ldarg.0 
+0559: ldc.i4.1 
+055A: call System.Void SuperController::ProcessTeleportShow(System.Boolean)
+055F: br.s IL_057e: ldarg.0
+0561: ldarg.0 
+0562: ldc.i4.0 
+0563: call System.Boolean SuperController::GetTeleportShowRight(System.Boolean)
+0568: brfalse.s IL_057e: ldarg.0
+056A: ldarg.0 
+056B: ldfld System.Collections.Generic.List`1<FreeControllerV3> SuperController::highlightedControllersRight
+0570: callvirt System.Int32 System.Collections.Generic.List`1<FreeControllerV3>::get_Count()
+0575: brtrue.s IL_057e: ldarg.0
+0577: ldarg.0 
+0578: ldc.i4.0 
+0579: call System.Void SuperController::ProcessTeleportShow(System.Boolean)
+057E: ldarg.0 
+057F: ldc.i4.0 
+0580: call System.Boolean SuperController::GetTeleportFinish(System.Boolean)
+0585: brfalse.s IL_058d: ret
+0587: ldarg.0 
+0588: call System.Void SuperController::ProcessTeleportFinish()
+058D: ret 
+=== System.Void SuperController::ResetNavigationRigPositionRotation() ===
+0000: ldarg.0 
+0001: ldfld UnityEngine.Transform SuperController::navigationRig
+0006: ldnull 
+0007: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+000C: brfalse.s IL_004b: ret
+000E: ldarg.0 
+000F: call System.Void SuperController::ClearPossess()
+0014: ldarg.0 
+0015: call System.Void SuperController::DisconnectNavRigFromPlayerNavCollider()
+001A: ldarg.0 
+001B: ldfld UnityEngine.Transform SuperController::navigationRig
+0020: call UnityEngine.Vector3 UnityEngine.Vector3::get_zero()
+0025: callvirt System.Void UnityEngine.Transform::set_localPosition(UnityEngine.Vector3)
+002A: ldarg.0 
+002B: ldfld UnityEngine.Transform SuperController::navigationRig
+0030: call UnityEngine.Quaternion UnityEngine.Quaternion::get_identity()
+0035: callvirt System.Void UnityEngine.Transform::set_localRotation(UnityEngine.Quaternion)
+003A: ldarg.0 
+003B: ldc.r4 0
+0040: call System.Void SuperController::set_playerHeightAdjust(System.Single)
+0045: ldarg.0 
+0046: call System.Void SuperController::ResetMonitorCenterCamera()
+004B: ret 
+=== System.Void SuperController::ProcessControllerNavigation(Valve.VR.SteamVR_Action_Vector2,System.Boolean) ===
+0000: ldarg.0 
+0001: call System.Void SuperController::CheckSwapAxis()
+0006: ldarg.0 
+0007: ldfld UnityEngine.Transform SuperController::navigationRig
+000C: ldnull 
+000D: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0012: brfalse IL_0210: ret
+0017: ldarg.0 
+0018: ldfld UnityEngine.Camera SuperController::lookCamera
+001D: ldnull 
+001E: call System.Boolean UnityEngine.Object::op_Inequality(UnityEngine.Object,UnityEngine.Object)
+0023: brfalse IL_0210: ret
+0028: ldarg.0 
+0029: call System.Boolean SuperController::get_navigationDisabled()
+002E: brtrue IL_0210: ret
+0033: ldarg.0 
+0034: ldfld System.Boolean SuperController::_disableAllNavigation
+0039: brtrue IL_0210: ret
+003E: ldarg.0 
+003F: call System.Boolean SuperController::get_worldUIActivated()
+0044: brtrue IL_0210: ret
+0049: ldarg.0 
+004A: ldarg.1 
+004B: ldarg.2 
+004C: call UnityEngine.Vector4 SuperController::GetFreeNavigateVector(Valve.VR.SteamVR_Action_Vector2,System.Boolean)
+0051: stloc.0 
+0052: ldarg.0 
+0053: ldfld System.Single SuperController::_freeMoveMultiplier
+0058: ldarg.0 
+0059: ldfld System.Single SuperController::_worldScale
+005E: mul 
+005F: stloc.1 
+0060: ldc.i4.0 
+0061: stloc.2 
+0062: ldloc.0 
+0063: ldfld System.Single UnityEngine.Vector4::x
+0068: ldc.r4 0.01
+006D: bgt.s IL_007c: ldarg.0
+006F: ldloc.0 
+0070: ldfld System.Single UnityEngine.Vector4::x
+0075: ldc.r4 -0.01
+007A: bge.un.s IL_00e7: ldloc.0
+007C: ldarg.0 
+007D: ldfld UnityEngine.Camera SuperController::lookCamera
+0082: callvirt UnityEngine.Transform UnityEngine.Component::get_transform()
+0087: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_right()
+008C: ldarg.0 
+008D: ldfld UnityEngine.Transform SuperController::navigationRig
+0092: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+0097: call UnityEngine.Vector3 UnityEngine.Vector3::ProjectOnPlane(UnityEngine.Vector3,UnityEngine.Vector3)
+009C: stloc.3 
+009D: ldloca.s V_3
+009F: call System.Void UnityEngine.Vector3::Normalize()
+00A4: ldarg.0 
+00A5: ldfld UnityEngine.Transform SuperController::navigationRig
+00AA: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+00AF: stloc.s V_4
+00B1: ldloc.s V_4
+00B3: ldloc.3 
+00B4: ldloc.0 
+00B5: ldfld System.Single UnityEngine.Vector4::x
+00BA: ldc.r4 0.5
+00BF: mul 
+00C0: call System.Single UnityEngine.Time::get_unscaledDeltaTime()
+00C5: mul 
+00C6: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+00CB: ldloc.1 
+00CC: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+00D1: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+00D6: stloc.s V_4
+00D8: ldarg.0 
+00D9: ldfld UnityEngine.Transform SuperController::navigationRig
+00DE: ldloc.s V_4
+00E0: callvirt System.Void UnityEngine.Transform::set_position(UnityEngine.Vector3)
+00E5: ldc.i4.1 
+00E6: stloc.2 
+00E7: ldloc.0 
+00E8: ldfld System.Single UnityEngine.Vector4::y
+00ED: ldc.r4 0.01
+00F2: bgt.s IL_0101: ldarg.0
+00F4: ldloc.0 
+00F5: ldfld System.Single UnityEngine.Vector4::y
+00FA: ldc.r4 -0.01
+00FF: bge.un.s IL_016e: ldloc.0
+0101: ldarg.0 
+0102: ldfld UnityEngine.Camera SuperController::lookCamera
+0107: callvirt UnityEngine.Transform UnityEngine.Component::get_transform()
+010C: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_forward()
+0111: ldarg.0 
+0112: ldfld UnityEngine.Transform SuperController::navigationRig
+0117: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+011C: call UnityEngine.Vector3 UnityEngine.Vector3::ProjectOnPlane(UnityEngine.Vector3,UnityEngine.Vector3)
+0121: stloc.s V_5
+0123: ldloca.s V_5
+0125: call System.Void UnityEngine.Vector3::Normalize()
+012A: ldarg.0 
+012B: ldfld UnityEngine.Transform SuperController::navigationRig
+0130: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+0135: stloc.s V_6
+0137: ldloc.s V_6
+0139: ldloc.s V_5
+013B: ldloc.0 
+013C: ldfld System.Single UnityEngine.Vector4::y
+0141: ldc.r4 0.5
+0146: mul 
+0147: call System.Single UnityEngine.Time::get_unscaledDeltaTime()
+014C: mul 
+014D: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+0152: ldloc.1 
+0153: call UnityEngine.Vector3 UnityEngine.Vector3::op_Multiply(UnityEngine.Vector3,System.Single)
+0158: call UnityEngine.Vector3 UnityEngine.Vector3::op_Addition(UnityEngine.Vector3,UnityEngine.Vector3)
+015D: stloc.s V_6
+015F: ldarg.0 
+0160: ldfld UnityEngine.Transform SuperController::navigationRig
+0165: ldloc.s V_6
+0167: callvirt System.Void UnityEngine.Transform::set_position(UnityEngine.Vector3)
+016C: ldc.i4.1 
+016D: stloc.2 
+016E: ldloc.0 
+016F: ldfld System.Single UnityEngine.Vector4::z
+0174: ldc.r4 0.01
+0179: bgt.s IL_0188: ldarg.0
+017B: ldloc.0 
+017C: ldfld System.Single UnityEngine.Vector4::z
+0181: ldc.r4 -0.01
+0186: bge.un.s IL_01c2: ldloc.0
+0188: ldarg.0 
+0189: ldfld UnityEngine.Transform SuperController::navigationRig
+018E: ldarg.0 
+018F: ldfld UnityEngine.Camera SuperController::lookCamera
+0194: callvirt UnityEngine.Transform UnityEngine.Component::get_transform()
+0199: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_position()
+019E: ldarg.0 
+019F: ldfld UnityEngine.Transform SuperController::navigationRig
+01A4: callvirt UnityEngine.Vector3 UnityEngine.Transform::get_up()
+01A9: ldloc.0 
+01AA: ldfld System.Single UnityEngine.Vector4::z
+01AF: ldc.r4 50
+01B4: mul 
+01B5: call System.Single UnityEngine.Time::get_unscaledDeltaTime()
+01BA: mul 
+01BB: callvirt System.Void UnityEngine.Transform::RotateAround(UnityEngine.Vector3,UnityEngine.Vector3,System.Single)
+01C0: ldc.i4.1 
+01C1: stloc.2 
+01C2: ldloc.0 
+01C3: ldfld System.Single UnityEngine.Vector4::w
+01C8: ldc.r4 0.01
+01CD: bgt.s IL_01dc: ldarg.0
+01CF: ldloc.0 
+01D0: ldfld System.Single UnityEngine.Vector4::w
+01D5: ldc.r4 -0.01
+01DA: bge.un.s IL_0207: ldloc.2
+01DC: ldarg.0 
+01DD: ldfld System.Boolean SuperController::_lockHeightDuringNavigate
+01E2: brtrue.s IL_0207: ldloc.2
+01E4: ldarg.0 
+01E5: ldarg.0 
+01E6: call System.Single SuperController::get_playerHeightAdjust()
+01EB: ldloc.0 
+01EC: ldfld System.Single UnityEngine.Vector4::w
+01F1: ldc.r4 0.5
+01F6: mul 
+01F7: call System.Single UnityEngine.Time::get_unscaledDeltaTime()
+01FC: mul 
+01FD: ldloc.1 
+01FE: mul 
+01FF: add 
+0200: call System.Void SuperController::set_playerHeightAdjust(System.Single)
+0205: ldc.i4.1 
+0206: stloc.2 
+0207: ldloc.2 
+0208: brfalse.s IL_0210: ret
+020A: ldarg.0 
+020B: call System.Void SuperController::AdjustNavigationRigHeight()
+0210: ret 
+=== System.Void SuperController::ProcessFreeMoveNavigation() ===
+0000: ldarg.0 
+0001: ldarg.0 
+0002: ldfld Valve.VR.SteamVR_Action_Vector2 SuperController::freeModeMoveAction
+0007: ldc.i4.1 
+0008: call System.Void SuperController::ProcessControllerNavigation(Valve.VR.SteamVR_Action_Vector2,System.Boolean)
+000D: ldarg.0 
+000E: call System.Boolean SuperController::GetCancel()
+0013: brfalse.s IL_001b: ret
+0015: ldarg.0 
+0016: call System.Void SuperController::SelectModeOff()
+001B: ret 

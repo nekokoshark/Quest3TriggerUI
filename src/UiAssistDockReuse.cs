@@ -294,7 +294,7 @@ namespace Quest3TriggerUI
                 ? rows * FavCellH + (rows - 1) * FavSpacing + FavPad
                 : FavPad;
             _favCells.sizeDelta = new Vector2(FavColW, _favContentH);
-            ApplyDockScroll(true, _favScrollY);
+            ApplyDockScroll(0, _favScrollY);
             ApplyFavoritesDockWidth();
             return true;
         }

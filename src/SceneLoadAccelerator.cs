@@ -182,6 +182,18 @@ namespace Quest3TriggerUI
             "DAZMesh|Init",
             "DAZMesh|DeriveMeshes",
             "DAZMesh|LoadFromBinaryReader",
+            // 场景冷载与换人共用同一条二进制读路径：*FromBinaryFile = FileManager.OpenStream
+            // -> FileEntryStream.Stream -> new BinaryReader(...)，再由 *FromBinaryReader 以
+            // 4 字节为单位读。DAZSkinWrap / DAZSkinWrapStore / MaterialOptions 的 Reader
+            // 变体此前没有挂账，它们的读耗时在日志里完全不可见（见 §14.48）。
+            "DAZMesh|LoadFromBinaryFile",
+            "DAZSkinWrap|LoadFromBinaryFile",
+            "DAZSkinWrap|LoadFromBinaryReader",
+            "DAZSkinWrapStore|LoadFromBinaryFile",
+            "DAZSkinWrapStore|LoadFromBinaryReader",
+            "DAZMorph|LoadDeltasFromBinaryFile",
+            "MaterialOptions|LoadFromBinaryFile",
+            "MaterialOptions|LoadFromBinaryReader",
             "DAZMesh|InitMaterials",
             "DAZClothingItem|InitInstance",
             "DAZClothingItem|RefreshClothingItems",
@@ -230,6 +242,19 @@ namespace Quest3TriggerUI
             "JayJayWon.UIAssist|Update",
             "JayJayWon.BrowserAssist|Update",
             "AUI.AlternateUI|Update",
+            // 第七趟：换人窗口里 35 次 DAZClothingItem::InitInstance 是唯一
+            // 独占整帧的元凶（看门狗 freeze=21.4s，25.7s 窗口只渲染 69 帧）。
+            // 它自己的托管 IL 是空壳（只做 GetComponentInChildren 与赋 gender），
+            // 真正的活全在 DAZDynamic::Load 里：读 .vab 二进制 store、逐组件
+            // 反序列化（网格 / 布料 / 头发）、建材质 UI、恢复 storables。下面把
+            // 这些子步骤全部挂上，用同一份 [slow-call] 口径分账。
+            "MeshVR.DAZDynamic|Load",
+            "MeshVR.DAZDynamic|CreateNewClothSettings",
+            "MeshVR.DAZDynamic|Clear",
+            "MeshVR.PresetManager|RestoreStorables",
+            "MeshVR.DAZImport|CreateMaterialOptionsUI",
+            "GPUTools.Cloth.Scripts.Geometry.Data.ClothGeometryData|LoadFromBinaryReader",
+            "GPUTools.Hair.Scripts.Geometry.Create.RuntimeHairGeometryCreator|LoadFromBinaryReader",
         };
         private static readonly object _bracketLock = new object();
         private static readonly Dictionary<string, BracketStat> _bracketStats =
@@ -987,6 +1012,30 @@ namespace Quest3TriggerUI
             "DAZCharacterSelector|InitClothingItems",
             "DAZCharacterSelector|SyncCustomItems",
             "MeshVR.MemoryOptimizer|OptimizeMemoryUsage",
+            // 换人窗口的 item 构建分账：上面挂上的子步骤也要进始终可用的一档，
+            // 否则它们只在场景加载窗（SceneLoadActive）内才记账，换人不记。
+            "DAZMesh|LoadFromBinaryReader",
+            "DAZMesh|DeriveMeshes",
+            "DAZMesh|InitMaterials",
+            "MeshVR.DAZDynamic|Load",
+            // 场景冷载与换人共用同一条二进制读路径：*FromBinaryFile = FileManager.OpenStream
+            // -> FileEntryStream.Stream -> new BinaryReader(...)，再由 *FromBinaryReader 以
+            // 4 字节为单位读。DAZSkinWrap / DAZSkinWrapStore / MaterialOptions 的 Reader
+            // 变体此前没有挂账，它们的读耗时在日志里完全不可见（见 §14.48）。
+            "DAZMesh|LoadFromBinaryFile",
+            "DAZSkinWrap|LoadFromBinaryFile",
+            "DAZSkinWrap|LoadFromBinaryReader",
+            "DAZSkinWrapStore|LoadFromBinaryFile",
+            "DAZSkinWrapStore|LoadFromBinaryReader",
+            "DAZMorph|LoadDeltasFromBinaryFile",
+            "MaterialOptions|LoadFromBinaryFile",
+            "MaterialOptions|LoadFromBinaryReader",
+            "MeshVR.DAZDynamic|CreateNewClothSettings",
+            "MeshVR.DAZDynamic|Clear",
+            "MeshVR.PresetManager|RestoreStorables",
+            "MeshVR.DAZImport|CreateMaterialOptionsUI",
+            "GPUTools.Cloth.Scripts.Geometry.Data.ClothGeometryData|LoadFromBinaryReader",
+            "GPUTools.Hair.Scripts.Geometry.Create.RuntimeHairGeometryCreator|LoadFromBinaryReader",
         };
         private const float SlowCallMs = 250f;
         private const int SlowCallCap = 300;

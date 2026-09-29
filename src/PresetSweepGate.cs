@@ -17,6 +17,11 @@ namespace Quest3TriggerUI
     {
         internal static ConfigEntry<bool> Enabled;
         internal static ConfigEntry<bool> SkipUnchangedGC;
+        internal static ConfigEntry<bool> GcYieldGate;
+        internal static ConfigEntry<bool> SwapGcToIdle;
+        internal static ConfigEntry<bool> IdleGcAboveLine;
+        internal static ConfigEntry<bool> DeferSweep;
+        internal static ConfigEntry<bool> IdleGcOnExhaust;
         private const BindingFlags All = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         private static readonly FieldInfo Instance = typeof(JSONStorableDynamic).GetField("instance", All);
         private static readonly FieldInfo Manager = typeof(MeshVR.PresetManagerControl).GetField("pm", All);
@@ -39,6 +44,14 @@ namespace Quest3TriggerUI
         private static float _lastSweepTime;
         private static bool _sweepSettleLogged;
         private static int _skipped;
+        private static bool _sweepPending;
+        private static string _sweepPendingReason;
+        private static float _sweepPendingAt, _presetEndedAt;
+        // A requested sweep waits for the preset window plus a short settle.
+        // The bound only stops a permanently busy texture pipeline from
+        // holding the debt forever; it is not a policy on when to sweep.
+        private const float PresetSettleSeconds = 5f;
+        private const float SweepDeferBoundSeconds = 120f;
         private static long _lastGcBytes;
         private static float _lastGcTime;
         private static bool _hasGc;
@@ -51,6 +64,7 @@ namespace Quest3TriggerUI
         private static WeakReference _gcOwner;
         private static float _gcRequestedAt, _gcQuietSince, _gcNextCheck;
         private static long _gcSeenActivity;
+        private static bool _gcYieldStretchLogged;
 
         // Idle growth watchdog (see 问题与证据索引 11.11). Measured: an idle
         // session - nobody touching anything - allocates 0.28-0.34GB/min of
@@ -64,11 +78,21 @@ namespace Quest3TriggerUI
         // either way, but a resident heap has no page-fault storm attached.
         private const long IdleGcGrowthLimit = 1536L * 1024 * 1024;
         private const float IdleGcMinInterval = 60f;
+        // Above IdlePressureLoad the growth band is raised instead of the
+        // collect being refused: the 1.5GiB value produced a measured
+        // 6.6-6.9GB sawtooth (peaks 26.4-26.6GB of a 28.90GB heap) because
+        // the line blocked every attempt until the load happened to dip.
+        private const long IdleGcAboveLineGrowth = 3L * 1024 * 1024 * 1024;
         private static long _idleBytes;
         private static float _idleAt;
         private const uint IdlePressureLoad = 80;
         private const float IdleBlockedLogEvery = 60f;
         private static float _idleBlockedLogged;
+        // Fire above the load line once the managed heap itself is nearly out
+        // of room: 8% of the 26.17GB heap measured on this machine is ~2.1GB,
+        // which lands 30-45s before Boehm's forced collect at 0.24GB free.
+        private const long HeapExhaustFreePercent = 8L;
+        private const long HeapExhaustFreeFloor = 256L * 1024 * 1024;
 
         private static bool IdleGcDue(float now)
         {
@@ -90,8 +114,31 @@ namespace Quest3TriggerUI
             bool ready = gates && Ready();
             uint load = 100;
             ulong availablePhysical = 0UL;
-            bool room = ready && IdleHeadroom(out load, out availablePhysical);
-            if (!room)
+            bool physicalRoom = false;
+            bool room = ready && IdleHeadroom(out load, out availablePhysical, out physicalRoom);
+            // The load line is the preferred trigger, but running out of heap
+            // is not the same event. Measured twice in one idle session:
+            // monoFree fell to 0.24-0.28GB of a 26.17GB heap while this
+            // watchdog logged "blocked ... load=84%" the whole way up, and
+            // Boehm then collected on its own from inside a UI frame
+            // (long-frame freeze=4.2-4.5s). The mark costs the same either
+            // way; the one we pick at a quiet moment is the cheaper of the two.
+            long freeB = -1L;
+            long capB = -1L;
+            bool flagged = !room && ready && physicalRoom;
+            bool exhausted = flagged &&
+                (IdleGcOnExhaust == null || IdleGcOnExhaust.Value) &&
+                HeapNearExhaustion(out freeB, out capB);
+            // Second reason to work above the line: this machine's steady
+            // state IS load=82-88% with the external trimmer off, so the
+            // 1.5GiB growth gate fired long before the line let anything run
+            // (measured sawtooth 19.74 -> 26.6GB, then one 4.4-4.7s mark).
+            // A larger band above the line collects the same garbage at the
+            // same cost, in a 1.5-3GiB window instead of 6.8GB.
+            bool overLine = flagged && !exhausted &&
+                (IdleGcAboveLine == null || IdleGcAboveLine.Value) &&
+                used - _idleBytes >= IdleGcAboveLineGrowth;
+            if (!room && !exhausted && !overLine)
             {
                 // A watchdog that silently never fires is worse than none, so
                 // whichever gate blocks is named, at most once a minute.
@@ -105,6 +152,21 @@ namespace Quest3TriggerUI
                 }
                 return false;
             }
+            if (exhausted)
+            {
+                Log("idle GC above the load line: heap freeMiB=" +
+                    (freeB / (1024 * 1024)) + " of " + (capB / (1024 * 1024)) +
+                    " under " + HeapExhaustFreePercent + "%; collecting now rather " +
+                    "than letting Boehm pick the frame, load=" + load + "%");
+            }
+            else if (overLine)
+            {
+                Log("idle GC above the load line: growthMiB=" +
+                    ((used - _idleBytes) / (1024 * 1024)) + " over the " +
+                    (IdleGcAboveLineGrowth / (1024 * 1024)) + "MiB band, load=" +
+                    load + "% availMiB=" + (availablePhysical / (1024 * 1024)) +
+                    "; collecting at a quiet moment rather than waiting for the line");
+            }
             return true;
         }
 
@@ -114,18 +176,39 @@ namespace Quest3TriggerUI
         // the machine it was written for. Idle collects below the external
         // trimmer's 80% line instead: the freeze is the same ~3s, and a
         // collect that lowers the working set beats waiting for the trimmer.
-        private static bool IdleHeadroom(out uint load, out ulong availablePhysical)
+        private static bool IdleHeadroom(out uint load, out ulong availablePhysical,
+            out bool physicalRoom)
         {
             load = 100;
             availablePhysical = 0UL;
+            physicalRoom = false;
             var s = new MemoryStatus();
             s.length = (uint)Marshal.SizeOf(typeof(MemoryStatus));
             if (!GlobalMemoryStatusEx(ref s)) return false;
             load = s.load;
             availablePhysical = s.availablePhysical;
-            return s.load < IdlePressureLoad &&
-                s.availablePhysical >= 2UL * 1024 * 1024 * 1024 &&
+            // The floor is a real out-of-memory guard and stays in force even
+            // when the escape hatch above the load line opens.
+            physicalRoom = s.availablePhysical >= 2UL * 1024 * 1024 * 1024 &&
                 s.availablePageFile >= 8UL * 1024 * 1024 * 1024;
+            return s.load < IdlePressureLoad && physicalRoom;
+        }
+
+        // Boehm's forced collect picks an arbitrary frame - measured inside
+        // UIAssist.Update, 4.2-4.5s of freeze. Firing while the heap still has
+        // a little room lets that same freeze land at a quiet moment instead.
+        private static bool HeapNearExhaustion(out long freeB, out long capB)
+        {
+            freeB = -1L;
+            capB = -1L;
+            long cap = MonoGcProbe.HeapBytes();
+            long used = MonoGcProbe.UsedBytes();
+            if (cap <= 0L || used <= 0L) return false; // probe unavailable: never guess
+            capB = cap;
+            freeB = cap - used;
+            long threshold = cap / 100L * HeapExhaustFreePercent;
+            if (threshold < HeapExhaustFreeFloor) threshold = HeapExhaustFreeFloor;
+            return freeB < threshold;
         }
 
         private sealed class Ticket
@@ -136,6 +219,7 @@ namespace Quest3TriggerUI
             internal long activity;
             internal long images, loads, deregisters, noops;
             internal long released;
+            internal long managedBegin;
             internal string kind;
             internal System.Diagnostics.Stopwatch clock;
             internal bool completed, success, valid, consumed;
@@ -197,7 +281,7 @@ namespace Quest3TriggerUI
                 _harmony.Patch(typeof(DAZCharacterSelector).GetMethod("set_selectedCharacter", All), prefix: Hook("BeforeCharacter"));
                 _harmony.Patch(typeof(ImageLoaderThreaded).GetMethod("QueueImage", All), prefix: Hook("ImageActivity"));
                 _harmony.Patch(typeof(ImageLoaderThreaded).GetMethod("DeregisterTextureUse", All), finalizer: Hook("AfterDeregister"));
-                Log("installed; appearance/clothing resource-state gate; UUA release debt/600s bound; GC growth 256MiB/120s; async-tail GC settlement; RAM pressure 75%; manual cleanup retained");
+                Log("installed; appearance/clothing resource-state gate; UUA release debt/600s bound, requested sweep deferred out of the preset window; GC growth 256MiB/120s; async-tail GC settlement; RAM pressure 75%; idle GC also fires above the 80% load line once the managed heap is under 8% free; manual cleanup retained");
             }
             catch (Exception e) { Shutdown(); Log("not installed: " + e.Message); }
         }
@@ -323,6 +407,7 @@ namespace Quest3TriggerUI
                 __state.loads = Interlocked.Read(ref _loadEvents);
                 __state.deregisters = Interlocked.Read(ref _deregisterEvents);
                 __state.noops = Interlocked.Read(ref _noopDeregisters);
+                __state.managedBegin = GC.GetTotalMemory(false);
                 __state.before = Capture(sel);
                 __state.valid = __state.before != null;
                 Log("preset candidate: kind=" + __state.kind + " atom=" + atom.uid + " snapshot=" +
@@ -338,6 +423,7 @@ namespace Quest3TriggerUI
             __state.previous = null; // Tickets never keep completed parent transactions alive.
             __state.completed = true;
             __state.success = __result && __exception == null;
+            if (__state.owner != null) _presetEndedAt = Time.realtimeSinceStartup;
             __state.valid &= __state.success;
             // Recheck after all Restore/LateRestore/PostRestore/events, not just
             // geometry. Activity noise (texture queue/deregister, late
@@ -369,6 +455,7 @@ namespace Quest3TriggerUI
                 (Interlocked.Read(ref _loadEvents) - __state.loads) + "/" +
                 (Interlocked.Read(ref _deregisterEvents) - __state.deregisters) + "/" +
                 (Interlocked.Read(ref _noopDeregisters) - __state.noops) +
+                " heapMiB=" + ((GC.GetTotalMemory(false) - __state.managedBegin) / (1024 * 1024)) +
                 " restoreMs=" + __state.clock.ElapsedMilliseconds +
                 " window=[" + (__state.events == null ? "-" : string.Join(";", __state.events.ToArray())) + "]");
             __state.clock.Stop();
@@ -513,6 +600,26 @@ namespace Quest3TriggerUI
                 bool headroom = MemoryHeadroom();
                 reason = GcReason(pending, Time.realtimeSinceStartup, headroom, GC.GetTotalMemory(false));
                 if (reason == null) { Log("skip redundant preset GC: kind=" + pending.ticket.kind); return; }
+                // A full mark inside the click window is the cost the user
+                // still feels: 20 consecutive swaps each paid 4.0s here
+                // (measured 3.9-4.1s, freeing 0.4-0.9GiB) while the 1.5GiB/60s
+                // idle watchdog returns 2.2-3.8GiB for the same 4s.
+                // With headroom, hand the request to the watchdog instead of
+                // paying it between the click and the character appearing.
+                // Memory pressure still collects immediately.
+                if (SwapGcToIdle != null && SwapGcToIdle.Value)
+                {
+                    long swapFreeB = -1L;
+                    long swapCapB = -1L;
+                    if (!SwapGcMustCollect(out swapFreeB, out swapCapB))
+                    {
+                        Log("hand preset GC to the idle watchdog: heap freeMiB=" +
+                            (swapFreeB / (1024 * 1024)) + " of " +
+                            (swapCapB / (1024 * 1024)) +
+                            "; no full mark inside the preset window");
+                        return;
+                    }
+                }
                 // The native coroutine fires while new images are still decoding.
                 // Collecting then leaves their temporary buffers to the next click.
                 // Move that SAME requested GC to the load tail, never add a timer GC.
@@ -525,6 +632,24 @@ namespace Quest3TriggerUI
             }
             catch (Exception e) { reason = "GC verification " + e.GetType().Name; }
             RunGc(reason);
+        }
+
+        // The 75% load line answered the wrong question before an inline
+        // collect. With the external trimmer switched off this session sits
+        // at 82-88% permanently, so the hand-off above never fired and every
+        // swap kept paying the full mark: 20 consecutive swaps measured
+        // 3.9-4.1s of freeze inside the click window to return 0.4-1.2GiB,
+        // while the same 4s at idle returns 1.5-3.8GiB. Only the heap's own
+        // room and the commit backing it decide whether it has to happen
+        // here; the OS load number is reported, not obeyed.
+        private static bool SwapGcMustCollect(out long freeB, out long capB)
+        {
+            if (HeapNearExhaustion(out freeB, out capB)) return true;
+            var s = new MemoryStatus();
+            s.length = (uint)Marshal.SizeOf(typeof(MemoryStatus));
+            if (!GlobalMemoryStatusEx(ref s)) return true; // unknown: keep the old behaviour
+            return s.availablePhysical < 2UL * 1024 * 1024 * 1024 ||
+                s.availablePageFile < 8UL * 1024 * 1024 * 1024;
         }
 
         private static bool CanDeferGc(Pending pending, bool headroom)
@@ -544,6 +669,7 @@ namespace Quest3TriggerUI
             _gcQuietSince = -1f;
             _gcNextCheck = now;
             _gcSeenActivity = Interlocked.Read(ref _activity);
+            _gcYieldStretchLogged = false;
         }
 
         private static string DeferredGcReason(float now, bool ready, bool headroom, long activity)
@@ -558,7 +684,24 @@ namespace Quest3TriggerUI
                 return null;
             }
             if (_gcQuietSince < 0f) _gcQuietSince = now;
-            return now - _gcQuietSince >= 0.25f ? "preset async tail settled" : null;
+            if (now - _gcQuietSince < 0.25f) return null;
+            // The tail is quiet, but the last collect barely paid for itself:
+            // leave this request pending for the 30s bound, the pressure line
+            // or the idle watchdog instead of paying another full mark right
+            // after a swap. Measured yields for the same 3.7s: 31MiB..1.5GiB.
+            if (GcYieldGate != null && GcYieldGate.Value && !GcPaysOff())
+            {
+                if (!_gcYieldStretchLogged)
+                {
+                    _gcYieldStretchLogged = true;
+                    Log("defer preset GC: last collect returned " +
+                        (_lastGcYield / 1048576) + "MiB against a " +
+                        (_lastGcBefore / 1048576) + "MiB heap; waiting for the " +
+                        "30s bound, memory pressure or idle");
+                }
+                return null;
+            }
+            return "preset async tail settled";
         }
 
         internal static void Tick()
@@ -570,6 +713,9 @@ namespace Quest3TriggerUI
             NoteSweepSettled();
             float now = Time.realtimeSinceStartup;
             if (_active != null || now < _gcNextCheck) return;
+            // A submitted sweep owns the frame's mark work; do not stack the
+            // idle GC on top of the same frame.
+            if (_sweepPending && RunDeferredSweep(now)) return;
             if (!_gcPending)
             {
                 // A finished transaction leaves nothing pending, so the
@@ -635,16 +781,53 @@ namespace Quest3TriggerUI
                     Log("skip unchanged preset UUA: kind=" + ticket.kind + " count=" + _skipped + "; GC budget checked separately");
                     return null;
                 }
+                // The mark this call would run is global: its price does not
+                // depend on when it runs, only on whether the user is waiting.
+                // Native fires it from inside the restore, which is where the
+                // frame budget is already spent (measured: 8.68s wall, 6.3s
+                // freeze, inside a 10.2s no-change reload). Queue it instead
+                // and submit at the next quiet moment; the debt stays on the
+                // books until it really runs.
+                if (DeferSweepReason(ticket))
+                {
+                    if (ticket != null) ticket.consumed = true;
+                    if (!_sweepPending)
+                    {
+                        _sweepPending = true;
+                        _sweepPendingReason = reason;
+                        _sweepPendingAt = Time.realtimeSinceStartup;
+                        LoadWindow.NoteDeferred("Sweep");
+                        Log("defer native character sweep until the preset window closes: reason=" + reason);
+                    }
+                    return null;
+                }
             }
             catch (Exception e) { reason = "verification " + e.GetType().Name; }
             if (ticket != null) ticket.consumed = true;
+            return SubmitSweep(reason);
+        }
+
+        // Only a request that came from a preset transaction is moved: a manual
+        // cleanup request carries no ticket and keeps its old behaviour, and so
+        // does an untagged iterator (hot reload).
+        private static bool DeferSweepReason(Ticket ticket)
+        {
+            if (DeferSweep != null && !DeferSweep.Value) return false;
+            if (_sweepPending) return true;
+            if (ticket == null || !ticket.completed || !ticket.success || ticket.owner == null) return false;
+            return LoadWindow.PresetBusy || Time.realtimeSinceStartup - _presetEndedAt < PresetSettleSeconds;
+        }
+
+        // Native UUA is a synchronous full-heap mark, and it is the largest
+        // single item in a swap's wall time. Time the submit so the accounting
+        // stays complete.
+        private static AsyncOperation SubmitSweep(string reason)
+        {
             long released = Interlocked.Read(ref _released);
-            // Native UUA is a synchronous full-heap mark here, and its cost was
-            // the largest unmeasured item in a swap's wall time. Time it so the
-            // accounting is complete.
             var sweepClock = System.Diagnostics.Stopwatch.StartNew();
             var op = Resources.UnloadUnusedAssets();
             sweepClock.Stop();
+            PresetCleanupCoalescer.NoteSweep(op);
             _lastSweep = op;
             _sweepReleased = released;
             _lastSweepTime = Time.realtimeSinceStartup;
@@ -653,6 +836,24 @@ namespace Quest3TriggerUI
             Log("run native character sweep: " + reason + "; releases=" + released + " activity=" + Interlocked.Read(ref _activity) +
                 " sweepSubmitMs=" + sweepClock.ElapsedMilliseconds);
             return op;
+        }
+
+        private static bool RunDeferredSweep(float now)
+        {
+            float age = now - _sweepPendingAt;
+            if (age < SweepDeferBoundSeconds)
+            {
+                if (!Ready()) return false;
+                if (LoadWindow.PresetBusy || now - _presetEndedAt < PresetSettleSeconds) return false;
+                // Never stack two global marks; the settle notice is the proof
+                // the previous one finished.
+                if (_lastSweep != null && !_lastSweep.isDone) return false;
+            }
+            string reason = _sweepPendingReason;
+            _sweepPending = false;
+            _sweepPendingReason = null;
+            SubmitSweep(reason + " (deferred " + (long)(age * 1000f) + "ms)");
+            return true;
         }
 
         private static string Reason(Ticket ticket, float now, bool headroom)
@@ -673,7 +874,13 @@ namespace Quest3TriggerUI
         private static string VerifyTransaction(Ticket ticket, bool headroom)
         {
             if (Enabled != null && !Enabled.Value) return "disabled";
-            if (ticket == null || !ticket.completed || !ticket.valid) return "unverified transaction";
+            // The debt ledger below is the verdict. The begin/end gates are
+            // deliberately noisy (a texture notification or a busy image
+            // pipeline flips them without any resource change), and requiring
+            // them here made this whole method unreachable in the veto case -
+            // it always returned before the release/instance comparison.
+            if (ticket == null || !ticket.completed) return "unverified transaction";
+            if (!ticket.success) return "failed transaction";
             if (!Ready()) return "loading";
             // Release debt is the ledger that matters for UUA; async bookkeeping
             // events alone do not turn a same-state transaction into a real one.
@@ -758,6 +965,10 @@ namespace Quest3TriggerUI
             _gcSeenActivity = 0;
             _idleBytes = 0;
             _idleAt = 0f;
+            _sweepPending = false;
+            _sweepPendingReason = null;
+            _sweepPendingAt = 0f;
+            _presetEndedAt = 0f;
         }
 
         private static void Log(string message)

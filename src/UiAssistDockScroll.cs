@@ -26,6 +26,11 @@ namespace Quest3TriggerUI
         private static RectTransform _pdView;
         private static RectTransform _pdScrollTrack, _pdScrollThumb;
         private static int _pdScrollFrame = -1;
+        private static float _sdScrollY, _sdContentH;
+        private static RectTransform _sdView;
+        private static RectTransform _sdScrollTrack, _sdScrollThumb;
+        private static int _sdScrollFrame = -1;
+        // Dock selectors: 0 clothing favorites, 1 preset dock, 2 scene dock.
 
         // While our scroll owns the stick, VaM scene navigation must not
         // also react to it (same suppression the preset browser uses).
@@ -49,19 +54,19 @@ namespace Quest3TriggerUI
                 top + cellH > scrollY - stride;
         }
 
-        private static void ApplyDockScroll(bool fav, float scrollY)
+        private static void ApplyDockScroll(int dock, float scrollY)
         {
-            if (fav)
+            if (dock == 0)
             {
                 _favScrollY = Mathf.Clamp(scrollY, 0f,
                     DockMaxScroll(_favContentH, FavGridH));
                 if (_favCells != null)
                     _favCells.anchoredPosition = new Vector2(0f, _favScrollY);
-                UpdateDockScrollbar(true);
+                UpdateDockScrollbar(0);
                 PumpVisibleFavVisuals();
                 UpdateFavCellRaycasts();
             }
-            else
+            else if (dock == 1)
             {
                 float clamped = Mathf.Clamp(scrollY, 0f,
                     DockMaxScroll(_pdContentH, PdGridH));
@@ -69,7 +74,7 @@ namespace Quest3TriggerUI
                 _pdScrollY = clamped;
                 if (_pdCells != null)
                     _pdCells.anchoredPosition = new Vector2(0f, _pdScrollY);
-                UpdateDockScrollbar(false);
+                UpdateDockScrollbar(1);
                 PumpVisiblePdVisuals();
                 UpdatePdCellRaycasts();
                 // A scrolled-off cell's 替换/外观 overlay would stay hittable
@@ -78,16 +83,31 @@ namespace Quest3TriggerUI
                     _pdPersonOverlay.activeSelf)
                     _pdPersonOverlay.SetActive(false);
             }
+            else
+            {
+                _sdScrollY = Mathf.Clamp(scrollY, 0f,
+                    DockMaxScroll(_sdContentH, SdGridH));
+                if (_sdCells != null)
+                    _sdCells.anchoredPosition = new Vector2(0f, _sdScrollY);
+                UpdateDockScrollbar(2);
+                PumpVisibleSdVisuals();
+                UpdateSdCellRaycasts();
+            }
         }
 
-        private static void UpdateDockScrollbar(bool fav)
+        private static void UpdateDockScrollbar(int dock)
         {
-            RectTransform track = fav ? _favScrollTrack : _pdScrollTrack;
-            RectTransform thumb = fav ? _favScrollThumb : _pdScrollThumb;
+            RectTransform track = dock == 0 ? _favScrollTrack :
+                dock == 1 ? _pdScrollTrack : _sdScrollTrack;
+            RectTransform thumb = dock == 0 ? _favScrollThumb :
+                dock == 1 ? _pdScrollThumb : _sdScrollThumb;
             if (track == null || thumb == null) return;
-            float viewH = fav ? FavGridH : PdGridH;
-            float contentH = fav ? _favContentH : _pdContentH;
-            float scrollY = fav ? _favScrollY : _pdScrollY;
+            float viewH = dock == 0 ? FavGridH :
+                dock == 1 ? PdGridH : SdGridH;
+            float contentH = dock == 0 ? _favContentH :
+                dock == 1 ? _pdContentH : _sdContentH;
+            float scrollY = dock == 0 ? _favScrollY :
+                dock == 1 ? _pdScrollY : _sdScrollY;
             bool need = contentH > viewH + 0.5f;
             if (track.gameObject.activeSelf != need)
                 track.gameObject.SetActive(need);
@@ -103,34 +123,46 @@ namespace Quest3TriggerUI
         // Per-frame driver, shared by the bar tick (hover scroll) and the
         // drag tick (stick + edge scroll). Deduped per frame: whichever path
         // runs first handles the frame — both resolve drag state the same.
-        private static void TickDockScroll(bool fav)
+        private static void TickDockScroll(int dock)
         {
             int frame = Time.frameCount;
-            if (fav)
+            if (dock == 0)
             {
                 if (_favScrollFrame == frame) return;
                 _favScrollFrame = frame;
             }
-            else
+            else if (dock == 1)
             {
                 if (_pdScrollFrame == frame) return;
                 _pdScrollFrame = frame;
             }
-            RectTransform view = fav ? _favView : _pdView;
-            RectTransform content = fav ? _favCells : _pdCells;
-            RectTransform dock = fav ? _favDock : _pdDock;
-            if (view == null || content == null || dock == null) return;
-            // Both docks share the left-edge slot in merged mode — the
-            // parked one's rect still hit-tests, so it must not scroll.
-            if (!dock.gameObject.activeInHierarchy) return;
-            float viewH = fav ? FavGridH : PdGridH;
-            float contentH = fav ? _favContentH : _pdContentH;
-            float scrollY = fav ? _favScrollY : _pdScrollY;
+            else
+            {
+                if (_sdScrollFrame == frame) return;
+                _sdScrollFrame = frame;
+            }
+            RectTransform view = dock == 0 ? _favView :
+                dock == 1 ? _pdView : _sdView;
+            RectTransform content = dock == 0 ? _favCells :
+                dock == 1 ? _pdCells : _sdCells;
+            RectTransform dockRect = dock == 0 ? _favDock :
+                dock == 1 ? _pdDock : _sdDock;
+            if (view == null || content == null || dockRect == null) return;
+            // Both left docks share one slot in merged mode — the parked
+            // one's rect still hit-tests, so it must not scroll.
+            if (!dockRect.gameObject.activeInHierarchy) return;
+            float viewH = dock == 0 ? FavGridH :
+                dock == 1 ? PdGridH : SdGridH;
+            float contentH = dock == 0 ? _favContentH :
+                dock == 1 ? _pdContentH : _sdContentH;
+            float scrollY = dock == 0 ? _favScrollY :
+                dock == 1 ? _pdScrollY : _sdScrollY;
             float maxScroll = DockMaxScroll(contentH, viewH);
             if (scrollY > maxScroll || scrollY < 0f)
             {
-                ApplyDockScroll(fav, scrollY);
-                scrollY = fav ? _favScrollY : _pdScrollY;
+                ApplyDockScroll(dock, scrollY);
+                scrollY = dock == 0 ? _favScrollY :
+                    dock == 1 ? _pdScrollY : _sdScrollY;
             }
             if (maxScroll <= 0.01f) return;
 
@@ -144,7 +176,7 @@ namespace Quest3TriggerUI
                 // for ANY ray, so without it a distant cursor could land in
                 // an edge zone and phantom-scroll the list.
                 Vector2 lp;
-                bool overDock = PointerOnRect(dock, out lp);
+                bool overDock = PointerOnRect(dockRect, out lp);
                 if (overDock && Mathf.Abs(stick.y) > DockStickDeadzone)
                     delta -= stick.y * DockScrollSpeed * Time.unscaledDeltaTime;
                 Vector2 lv;
@@ -172,7 +204,7 @@ namespace Quest3TriggerUI
                     }
                 }
             }
-            else if (DockPointerRestsOn(dock))
+            else if (DockPointerRestsOn(dockRect))
             {
                 if (Mathf.Abs(stick.y) > DockStickDeadzone)
                     delta -= stick.y * DockScrollSpeed * Time.unscaledDeltaTime;
@@ -182,7 +214,7 @@ namespace Quest3TriggerUI
             }
             if (delta == 0f) return;
             _dockNavDemandAt = Time.unscaledTime;
-            ApplyDockScroll(fav, scrollY + delta);
+            ApplyDockScroll(dock, scrollY + delta);
         }
 
         // Hover test for the non-drag path: look targets track reliably
@@ -248,6 +280,30 @@ namespace Quest3TriggerUI
                     tag.transform.GetSiblingIndex(),
                     PdCellH, _pdScrollY, PdGridH))
                     ApplyPdThumb(tag);
+            }
+        }
+
+        private static void UpdateSdCellRaycasts()
+        {
+            for (int i = 0; i < _sdVisibleCells.Count; i++)
+            {
+                SdSlotTag tag = _sdVisibleCells[i];
+                if (tag == null || tag.Bg == null) continue;
+                bool vis = DockCellVisible(tag.transform.GetSiblingIndex(),
+                    SdCellH, _sdScrollY, SdGridH);
+                if (tag.Bg.raycastTarget != vis) tag.Bg.raycastTarget = vis;
+            }
+        }
+
+        private static void PumpVisibleSdVisuals()
+        {
+            for (int i = 0; i < _sdVisibleCells.Count; i++)
+            {
+                SdSlotTag tag = _sdVisibleCells[i];
+                if (tag != null && DockCellVisible(
+                    tag.transform.GetSiblingIndex(),
+                    SdCellH, _sdScrollY, SdGridH))
+                    ApplySdThumb(tag);
             }
         }
 

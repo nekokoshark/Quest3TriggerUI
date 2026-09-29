@@ -81,6 +81,18 @@ namespace Quest3TriggerUI
             return true;
         }
 
+        // Primary button per hand: right A, left X. TryGetInput's aButton
+        // only covers the right hand.
+        internal static bool TryGetAButtons(out float right, out float left)
+        {
+            right = left = 0f;
+            if (!IsActive)
+                return false;
+            right = InvokeState(_uiInteract, _rightInvokeArgs) ? 1f : 0f;
+            left = InvokeState(_uiInteract, _leftInvokeArgs) ? 1f : 0f;
+            return true;
+        }
+
         // After a SteamVR runtime restart, a digital action can freeze at its
         // last reported state. Dropping our cached handles lets the next poll
         // pick up refreshed action objects if VaM reinitialized its input.

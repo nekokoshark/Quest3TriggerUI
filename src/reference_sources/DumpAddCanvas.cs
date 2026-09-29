@@ -1,0 +1,1 @@
+using System;using Mono.Cecil;class P{static int Main(){var a=AssemblyDefinition.ReadAssembly(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll");var t=a.MainModule.GetType("SuperController");foreach(var m in t.Methods){if(m.Name!="AddCanvas")continue;Console.WriteLine(m);foreach(var i in m.Body.Instructions)Console.WriteLine(i);}return 0;}}

@@ -34,6 +34,12 @@ namespace Quest3TriggerUI
             catch (NotSupportedException) { return 0; }
             catch (ArgumentException) { return 0; }
             catch (OverflowException) { return 0; }
+            // FileManager.OpenStream raises its own types when the path no
+            // longer resolves to a cache entry (a .var removed or replaced
+            // while the game runs). This is a reservation probe: a failed read
+            // means the same thing as the typed cases above - keep the
+            // conservative estimate and say nothing.
+            catch (Exception) { return 0; }
         }
 
         internal static bool TryDimensions(Stream stream, out int width, out int height)

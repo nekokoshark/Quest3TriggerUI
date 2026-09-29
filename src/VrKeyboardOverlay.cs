@@ -42,8 +42,9 @@ namespace Quest3TriggerUI
 		private readonly List<IShortcutBindable> _bindingSelection = new List<IShortcutBindable>();
 		private readonly List<ShortcutBindingTarget> _pendingShortcutKeys =
 			new List<ShortcutBindingTarget>();
-        private readonly Text[] _bindingTexts = new Text[ShortcutGestureBank.GestureCount];
-        private readonly GameObject[] _bindingDeleteButtons = new GameObject[ShortcutGestureBank.GestureCount];
+        private const int BindingRowsPerPage = 8;
+        private readonly Text[] _bindingTexts = new Text[BindingRowsPerPage];
+        private readonly GameObject[] _bindingDeleteButtons = new GameObject[BindingRowsPerPage];
         private readonly Text[] _presetSlotTexts = new Text[ShortcutPresetStore.SlotCount];
         private readonly Image[] _presetSlotImages = new Image[ShortcutPresetStore.SlotCount];
         private List<ShortcutPresetStore.Entry>[] _presetSlots;
@@ -55,6 +56,9 @@ namespace Quest3TriggerUI
         private GameObject _presetPage;
         private Text _flipText;
         private bool _showingPresets;
+        private int _bindingPage;
+        private Text _gestureFlipText;
+        private Text _bindingTitle;
         private Canvas _canvas;
         private Font _font;
         private bool _dragging;
@@ -520,6 +524,11 @@ namespace Quest3TriggerUI
             _shortcutReleaseFrame = -1;
         }
 
+        private TemporaryShortcutGesture GestureForRow(int rowIndex)
+        {
+            return (TemporaryShortcutGesture)(_bindingPage * BindingRowsPerPage + rowIndex);
+        }
+
         private void DeleteBinding(TemporaryShortcutGesture gesture)
         {
             _shortcutBindings.Remove(gesture);
@@ -528,9 +537,9 @@ namespace Quest3TriggerUI
 
         private void RefreshBindingRows()
         {
-            for (int i = 0; i < ShortcutGestureBank.GestureCount; i++)
+            for (int i = 0; i < BindingRowsPerPage; i++)
             {
-                TemporaryShortcutGesture gesture = (TemporaryShortcutGesture)i;
+                TemporaryShortcutGesture gesture = GestureForRow(i);
 				List<ShortcutBindingTarget> targets;
 				bool assigned = _shortcutBindings.TryGetValue(gesture, out targets) && targets.Count > 0;
                 if (_bindingTexts[i] != null)
@@ -539,6 +548,11 @@ namespace Quest3TriggerUI
                 if (_bindingDeleteButtons[i] != null)
                     _bindingDeleteButtons[i].SetActive(assigned);
             }
+            int pages = (ShortcutGestureBank.GestureCount + BindingRowsPerPage - 1) / BindingRowsPerPage;
+            if (_bindingTitle != null)
+                _bindingTitle.text = "当前临时快捷键 " + (_bindingPage + 1) + "/" + pages;
+            if (_gestureFlipText != null)
+                _gestureFlipText.text = "手势翻页 ◀ " + (_bindingPage + 1) + "/" + pages + " ▶";
         }
 
         private void UpdateHelpText()
@@ -810,6 +824,7 @@ namespace Quest3TriggerUI
                         new QuickActionDefinition("optimize-memory.vram", "显存报告",
                             delegate { MemoryProbe.Snapshot("manual"); })
                     }),
+                new QuickActionDefinition("unfade", "清除黑屏", _quickActions.ClearOverlayFades),
                 new QuickActionDefinition("standby", "待机/恢复", ToggleStandby,
                     delegate { return _quickActions.StandbyActive; })
             };
@@ -1127,14 +1142,15 @@ namespace Quest3TriggerUI
             GameObject title = CreateUiObject("Shortcut title", bp);
             RectTransform titleRect = title.GetComponent<RectTransform>();
             SetTopLeft(titleRect, 1850f, 218f, 380f, 38f);
-            AddText(title.transform, "当前临时快捷键", 27, TextAnchor.MiddleCenter,
+            _bindingTitle = AddText(title.transform, "", 27, TextAnchor.MiddleCenter,
                 new Color(0.93f, 0.98f, 1f, 1f), 4f);
 
-            for (int i = 0; i < ShortcutGestureBank.GestureCount; i++)
+            // Eight physical row slots display BindingRowsPerPage gestures at a
+            // time; the gesture-page flip swaps which gesture range they show.
+            for (int i = 0; i < BindingRowsPerPage; i++)
             {
-                TemporaryShortcutGesture gesture = (TemporaryShortcutGesture)i;
                 float y = 264f + i * 84f;
-                GameObject row = CreateUiObject("Shortcut " + gesture, bp);
+                GameObject row = CreateUiObject("Shortcut row " + i, bp);
                 RectTransform rowRect = row.GetComponent<RectTransform>();
                 SetTopLeft(rowRect, 1850f, y, 300f, 76f);
                 Image rowImage = row.AddComponent<Image>();
@@ -1143,18 +1159,23 @@ namespace Quest3TriggerUI
                 _bindingTexts[i] = AddText(row.transform, "", 24,
                     TextAnchor.MiddleLeft, Color.white, 12f);
 
-                TemporaryShortcutGesture captured = gesture;
+                int rowIndex = i;
                 Image delete = CreateActionButton(bp, "×", 2160f, y + 8f, 70f, 60f,
-                    delegate { DeleteBinding(captured); });
+                    delegate { DeleteBinding(GestureForRow(rowIndex)); });
                 _bindingDeleteButtons[i] = delete.gameObject;
             }
 
-            GameObject note = CreateUiObject("Shortcut note", bp);
-            RectTransform noteRect = note.GetComponent<RectTransform>();
-            SetTopLeft(noteRect, 1850f, 944f, 380f, 70f);
-            AddText(note.transform,
-				"临时绑定：先选键/功能，再连按。双击等待0.32秒；三击松手生效。× 删除。",
-                23, TextAnchor.UpperLeft, new Color(0.74f, 0.83f, 0.90f, 1f), 12f);
+            // Independent flip for the gesture rows — the bottom flip still
+            // switches between bindings and preset pages.
+            Image gestureFlip = CreateActionButton(bp, "", 1850f, 944f, 380f, 48f,
+                delegate
+                {
+                    _bindingPage = _bindingPage == 0 ? 1 : 0;
+                    RefreshBindingRows();
+                });
+            gestureFlip.color = new Color(0.11f, 0.38f, 0.48f, 1f);
+            _gestureFlipText = AddText(gestureFlip.transform, "", 26,
+                TextAnchor.MiddleCenter, Color.white, 4f);
 
             // Shared page flip button at the bottom of the column.
             GameObject flip = CreateUiObject("Page flip", parent);

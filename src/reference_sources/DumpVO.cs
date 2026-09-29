@@ -1,0 +1,1 @@
+using System;using Mono.Cecil;class P{static int Main(){var a=AssemblyDefinition.ReadAssembly(@"F:\vam1.22.0.12\VaM_Data\PluginCache\MVRPlugin_hazmhox_vamoverlays_6__Custom_Scripts_VAMOverlays_VAMOverlays_cslist_1a44418d38826eedbaaf250582815984.dll");foreach(var t in a.MainModule.Types){Console.WriteLine("TYPE "+t.Name);}return 0;}}

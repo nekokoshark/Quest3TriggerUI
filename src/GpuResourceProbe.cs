@@ -264,7 +264,7 @@ namespace Quest3TriggerUI
             return ReadProcMem() ? (long)_procMem.PagefileUsage.ToUInt64() : 0;
         }
 
-        private static long TexBytes(Texture t)
+        internal static long TexBytes(Texture t)
         {
             Texture2D t2 = t as Texture2D;
             if (t2 != null)
@@ -278,7 +278,7 @@ namespace Quest3TriggerUI
             return (long)t.width * t.height * 4;
         }
 
-        private static long RtBytes(RenderTexture rt)
+        internal static long RtBytes(RenderTexture rt)
         {
             int aa = rt.antiAliasing > 0 ? rt.antiAliasing : 1;
             int depth = rt.volumeDepth > 0 ? rt.volumeDepth : 1;

@@ -1,0 +1,1 @@
+using System;using Mono.Cecil;class P{static int Main(){var a=AssemblyDefinition.ReadAssembly(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll");foreach(var t in a.MainModule.Types){if(!t.Name.Contains("AlwaysShow")&&!t.Name.Contains("PluginUI"))continue;Console.WriteLine("TYPE "+t.FullName);foreach(var m in t.Methods)Console.WriteLine("  "+m.Name);}return 0;}}

@@ -1,0 +1,1 @@
+using System; using System.IO; using System.Reflection; class I { static int Main(){var a=Assembly.LoadFrom(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll");var t=a.GetType("OVRInput+Button");Console.WriteLine(t);foreach(var n in Enum.GetNames(t))Console.WriteLine(n+"="+Convert.ToInt64(Enum.Parse(t,n)));return 0;}}

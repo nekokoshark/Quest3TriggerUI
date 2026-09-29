@@ -64,7 +64,7 @@ namespace Quest3TriggerUI
         private const int PdhItemStride = 24, PdhItemStatusOfs = 8,
             PdhItemValueOfs = 16;
 
-        private static long GfxDedicatedBytes()
+        internal static long GfxDedicatedBytes()
         {
             IntPtr q = IntPtr.Zero, ctr = IntPtr.Zero, buf = IntPtr.Zero;
             try
@@ -813,6 +813,95 @@ namespace Quest3TriggerUI
         // texture-cache census with refcount buckets: cached textures
         // stay referenced by the dictionary, so UnloadUnusedAssets can
         // never reclaim them — dead-bucket growth is the leak signature.
+        // ---- per-operation attribution (see 问题与证据索引 14.57) ----
+        // Snapshot() reports how big the heap is, never who grew it. Every
+        // value below is either an O(1) dictionary count or one Unity registry
+        // walk over a single object class, and the line prints its own cost,
+        // so consecutive snapshots attribute growth to a category instead of
+        // leaving it to guesswork.
+        private static long _aHeapMiB = -1, _aPoolMiB = -1, _aPoolRet = -1;
+        private static long _aPoolDrop = -1, _aPoolEvict = -1;
+        private static long _aVarPath = -1, _aVarUid = -1, _aPkgByPath = -1;
+        private static long _aMorphDir = -1, _aMorphJson = -1, _aMorphInit = -1;
+        private static long _aMat = -1, _aMesh = -1, _aTex2d = -1, _aRt = -1;
+
+        private static string At(string name, long v, long prev)
+        {
+            if (v < 0) return name + "=?";
+            if (prev < 0) return name + "=" + v;
+            return name + "=" + v + (v >= prev ? "(+" : "(") + (v - prev) + ")";
+        }
+
+        private static long StaticCount(Type t, string field)
+        {
+            try
+            {
+                FieldInfo f = t.GetField(field, BindingFlags.Static |
+                    BindingFlags.Public | BindingFlags.NonPublic);
+                var c = f == null ? null : f.GetValue(null) as
+                    System.Collections.ICollection;
+                return c == null ? -1 : c.Count;
+            }
+            catch { return -1; }
+        }
+
+        private static long UnityCount<T>() where T : UnityEngine.Object
+        {
+            try { return Resources.FindObjectsOfTypeAll<T>().Length; }
+            catch { return -1; }
+        }
+
+        internal static void Attr(string tag)
+        {
+            var clock = new System.Diagnostics.Stopwatch();
+            clock.Start();
+            try
+            {
+                long heap = GC.GetTotalMemory(false) / 1048576;
+                long pool = DecodedBufferPool.PooledBytes / 1048576;
+                long ret = DecodedBufferPool.Returns;
+                long drop = DecodedBufferPool.Drops;
+                long evict = DecodedBufferPool.Evicted;
+                Type fm = typeof(MVR.FileManagement.FileManager);
+                Type mb = typeof(DAZMorphBank);
+                long varPath = StaticCount(fm, "pathToVarFileEntry");
+                long varUid = StaticCount(fm, "uidToVarFileEntry");
+                long pkgByPath = StaticCount(fm, "packagesByPath");
+                long mDir = StaticCount(mb, "_dirEntryCache");
+                long mJson = StaticCount(mb, "_vmiJsonCache");
+                long mInit = StaticCount(mb, "_morphInitCache");
+                long mat = UnityCount<Material>();
+                long mesh = UnityCount<Mesh>();
+                long tex = UnityCount<Texture2D>();
+                long rt = UnityCount<RenderTexture>();
+                var sb = new System.Text.StringBuilder();
+                sb.Append("attr[").Append(tag).Append("] ")
+                  .Append(At("heapMiB", heap, _aHeapMiB)).Append(' ')
+                  .Append(At("poolMiB", pool, _aPoolMiB)).Append(' ')
+                  .Append(At("poolRet", ret, _aPoolRet)).Append(' ')
+                  .Append(At("poolDrop", drop, _aPoolDrop)).Append(' ')
+                  .Append(At("poolEvict", evict, _aPoolEvict)).Append(' ')
+                  .Append(At("varPath", varPath, _aVarPath)).Append(' ')
+                  .Append(At("varUid", varUid, _aVarUid)).Append(' ')
+                  .Append(At("pkgByPath", pkgByPath, _aPkgByPath)).Append(' ')
+                  .Append(At("morphDir", mDir, _aMorphDir)).Append(' ')
+                  .Append(At("morphJson", mJson, _aMorphJson)).Append(' ')
+                  .Append(At("morphInit", mInit, _aMorphInit)).Append(' ')
+                  .Append(At("mat", mat, _aMat)).Append(' ')
+                  .Append(At("mesh", mesh, _aMesh)).Append(' ')
+                  .Append(At("tex2d", tex, _aTex2d)).Append(' ')
+                  .Append(At("rt", rt, _aRt)).Append(' ')
+                  .Append("attrMs=").Append(clock.ElapsedMilliseconds);
+                Log(sb.ToString());
+                _aHeapMiB = heap; _aPoolMiB = pool; _aPoolRet = ret;
+                _aPoolDrop = drop; _aPoolEvict = evict; _aVarPath = varPath;
+                _aVarUid = varUid; _aPkgByPath = pkgByPath; _aMorphDir = mDir;
+                _aMorphJson = mJson; _aMorphInit = mInit; _aMat = mat;
+                _aMesh = mesh; _aTex2d = tex; _aRt = rt;
+            }
+            catch (Exception ex) { Log("attr failed: " + ex.Message); }
+        }
+
         internal static void Snapshot(string tag)
         {
             try
@@ -893,6 +982,7 @@ namespace Quest3TriggerUI
                         : (gfx / 1048576.0).ToString("F0") + "MB",
                     texN, texB / 1073741824.0, live, dead,
                     deadB / 1073741824.0, untracked) + MonoGcProbe.Suffix());
+                Attr(tag);
                 if (top != null && top.Count > 0)
                 {
                     top.Sort(delegate(ObjRow a, ObjRow b)

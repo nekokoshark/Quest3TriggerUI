@@ -233,13 +233,55 @@ namespace Quest3TriggerUI
             OpenPersonTab("Clothing");
         }
 
+        // Story scenes fade the HMD through a VAMOverlays fullscreen quad:
+        // "Fade Out Instant" blacks the view, "Start Fade In" restores it.
+        // If the fade-in never arrives (transition chain stalled), the whole
+        // scene + world-space panels stay black while the HUD still shows.
+        // This action is the manual recovery: fire Start Fade In on every
+        // VAMOverlays storable. Harmless when nothing is faded.
+        internal void ClearOverlayFades()
+        {
+            int fired = 0;
+            if (SuperController.singleton != null)
+            {
+                foreach (Atom atom in SuperController.singleton.GetAtoms())
+                {
+                    if (atom == null) continue;
+                    foreach (string id in atom.GetStorableIDs())
+                    {
+                        if (id == null ||
+                            !id.EndsWith("_VAMOverlaysPlugin.VAMOverlays", StringComparison.Ordinal))
+                            continue;
+                        JSONStorable storable = atom.GetStorableByID(id);
+                        JSONStorableAction fadeIn =
+                            storable == null ? null : storable.GetAction("Start Fade In");
+                        if (fadeIn != null && fadeIn.actionCallback != null)
+                        {
+                            fadeIn.actionCallback();
+                            fired++;
+                        }
+                    }
+                }
+            }
+            LogInfo(fired > 0
+                ? "清屏：已向 " + fired + " 个 VAMOverlays 实例发送 Start Fade In。"
+                : "清屏：场景里没有 VAMOverlays 插件实例。");
+        }
+
         internal void OpenUiAssistClothingEditor()
         {
             UiAssistHudLink.CancelPending();
             Atom target = FindClosestPerson(false);
             if (target == null)
             {
-                LogError("UIAssist clothing editor: no Person atom is in front of the VR view.");
+                // Right after a scene load the VR view can face away from every
+                // Person; the editor only needs a target atom — take the
+                // nearest one instead of failing outright.
+                target = FindClosestPerson(PersonGenderFilter.Any, true);
+            }
+            if (target == null)
+            {
+                LogError("UIAssist clothing editor: no Person atom exists in the scene.");
                 return;
             }
 
@@ -279,9 +321,17 @@ namespace Quest3TriggerUI
                 if (display == null)
                     throw new InvalidOperationException(
                         "UIAssist GridsDisplay instance is not initialized");
+                // aceScrollListGO is set to null by DestroyUI; a live scroll list
+                // means the ACE rows survived the last panel suspend and can be
+                // reused — destroying them forces a GetThumbnail storm per row.
+                bool aceAlive = GetMemberValue(
+                    editor.GetType(), editor, "aceScrollListGO") != null;
                 Type displayType = display.GetType();
-                InvokeMethod(displayType, display, "DestroyUIButtons");
-                InvokeMethod(displayType, display, "CreateUIButtons");
+                if (!aceAlive)
+                {
+                    InvokeMethod(displayType, display, "DestroyUIButtons");
+                    InvokeMethod(displayType, display, "CreateUIButtons");
+                }
                 InvokeMethod(gameControlUi, null, "OnEnable");
             }
             catch (Exception exception)
@@ -3686,6 +3736,11 @@ internal void OpenPersonPreset()
 
         private static Atom FindClosestPerson(PersonGenderFilter genderFilter)
         {
+            return FindClosestPerson(genderFilter, false);
+        }
+
+        private static Atom FindClosestPerson(PersonGenderFilter genderFilter, bool anyDirection)
+        {
             if (SuperController.singleton == null || SuperController.singleton.lookCamera == null)
                 return null;
 
@@ -3709,10 +3764,11 @@ internal void OpenPersonPreset()
                 if (distance <= 0.001f)
                     continue;
                 float forward = Vector3.Dot(view.forward, offset / distance);
-                if (forward <= 0f)
+                if (forward <= 0f && !anyDirection)
                     continue;
 
-                float score = (1f - forward) + distance * 0.0001f;
+                float score = anyDirection ? distance
+                    : (1f - forward) + distance * 0.0001f;
                 if (score >= bestScore)
                     continue;
                 bestScore = score;

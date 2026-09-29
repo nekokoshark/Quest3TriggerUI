@@ -112,8 +112,8 @@ namespace Quest3TriggerUI
                         typeof(UiAssistHudLink).GetMethod("RefreshACETranspiler", Flags));
                     foreach (MethodInfo m in acePlus.GetMethods(Flags | BindingFlags.DeclaredOnly))
                         if (m.Name == "RefreshACE")
-                            _aceProbeHarmony.Patch(m, prefix: gcWatch,
-                                postfix: dedupe, transpiler: transpiler);
+                            try { _aceProbeHarmony.Patch(m, prefix: gcWatch, postfix: dedupe, transpiler: transpiler); }
+                            catch (Exception e) { Log("[ACE] RefreshACE patch failed: " + e.Message); }
 
                     // UpdateACE only ADDS dcis to _atomACEClothingLists and never
                     // removes ones destroyed by person-preset loads. The corpses
@@ -125,21 +125,63 @@ namespace Quest3TriggerUI
                         typeof(UiAssistHudLink).GetMethod("PruneDeadAceItems", Flags));
                     foreach (MethodInfo m in acePlus.GetMethods(Flags | BindingFlags.DeclaredOnly))
                         if (m.Name == "UpdateACE")
-                            _aceProbeHarmony.Patch(m, postfix: prune);
+                            try { _aceProbeHarmony.Patch(m, postfix: prune); }
+                            catch (Exception e) { Log("[ACE] UpdateACE patch failed: " + e.Message); }
 
-                    // RefreshACE per row does _activeClothingDCIs.IndexOf(dci):
-                    // ~N²/2 UnityEngine.Object equality calls per refresh. Count
-                    // Equals/op_Equality invocations during the RefreshACE window.
-                    Type uo = typeof(UnityEngine.Object);
-                    MethodInfo eq = uo.GetMethod("Equals", new Type[] { typeof(object) });
-                    if (eq != null)
-                        _aceProbeHarmony.Patch(eq, postfix: new HarmonyMethod(
-                            typeof(UiAssistHudLink).GetMethod("EqCountPostfix", Flags)));
-                    MethodInfo op = uo.GetMethod("op_Equality",
-                        BindingFlags.Public | BindingFlags.Static);
-                    if (op != null)
-                        _aceProbeHarmony.Patch(op, postfix: new HarmonyMethod(
-                            typeof(UiAssistHudLink).GetMethod("OpCountPostfix", Flags)));
+                    // ACEPlusDisplay.CreateUI clears the static clothingPresets
+                    // cache; the next RefreshACE then pays RefreshClothingPresets
+                    // -> FileManagerSecure enumeration per clothing row (~72k
+                    // object comparisons measured on a 68-item wardrobe) and the
+                    // bill grows with every person loaded into the session.
+                    // UI rebuilds do not invalidate preset lists keyed by live
+                    // clothing items — carry those entries across the clear.
+                    HarmonyMethod pre = new HarmonyMethod(
+                        typeof(UiAssistHudLink).GetMethod("AceCreateUiPrefix", Flags));
+                    HarmonyMethod post = new HarmonyMethod(
+                        typeof(UiAssistHudLink).GetMethod("AceCreateUiPostfix", Flags));
+                    foreach (MethodInfo m in acePlus.GetMethods(Flags | BindingFlags.DeclaredOnly))
+                        if (m.Name == "CreateUI")
+                            try { _aceProbeHarmony.Patch(m, prefix: pre, postfix: post); }
+                            catch (Exception e) { Log("[ACE] CreateUI patch failed: " + e.Message); }
+
+                    // Panel open calls RefreshACE once per clothing row
+                    // (~292 calls / ~1.2s measured). Every call rebuilds the
+                    // same grid; only the last sees the final state. Skip all
+                    // same-frame calls and run ONE invocation at LateUpdate
+                    // carrying the last call's arguments.
+                    HarmonyMethod coalesce = new HarmonyMethod(
+                        typeof(UiAssistHudLink).GetMethod("RefreshAceCoalesce", Flags));
+                    foreach (MethodInfo m in acePlus.GetMethods(Flags | BindingFlags.DeclaredOnly))
+                        if (m.Name == "RefreshACE")
+                            try { _aceProbeHarmony.Patch(m, prefix: coalesce); }
+                            catch (Exception e) { Log("[ACE] coalesce patch failed: " + e.Message); }
+
+                    // The stall is a rare single RefreshACE doing ~75k Unity
+                    // object comparisons (eq=75836/op=125862) while the
+                    // clothing list stays at 70 — the work hides in a callee.
+                    // Count calls to the suspects inside each refresh window.
+                    HarmonyMethod countPost = new HarmonyMethod(
+                        typeof(UiAssistHudLink).GetMethod("AceInnerCallPostfix", Flags));
+                    PatchCount(asm.GetType("JayJayWon.ACEIDPlus"), "RefreshACEItem", countPost);
+                    PatchCount(acePlus, "RefreshClothingPresets", countPost);
+                    PatchCount(acePlus, "AddClothingPresets", countPost);
+                    PatchCount(asm.GetType("JayJayWon.ActiveClothingList"),
+                        "GetDisplayNameWithAvailableBAAlias", countPost);
+                    PatchCount(typeof(DAZDynamicItem), "GetThumbnail", countPost, true);
+                    PatchCount(asm.GetType("JayJayWon.ImageUtils"),
+                        "QueueLoadTexture", countPost, true);
+                    PatchCount(typeof(ImageLoaderThreaded), "QueueImage", countPost, true);
+                    PatchCount(typeof(ImageLoaderThreaded), "QueueThumbnail", countPost, true);
+                    PatchCount(typeof(ImageLoaderThreaded), "GetCachedThumbnail",
+                        countPost, true);
+                    Type fms = typeof(SuperController).Assembly.GetType(
+                        "MVR.FileManagementSecure.FileManagerSecure");
+                    PatchCount(fms, "GetFiles", countPost);
+                    PatchCount(fms, "FileExists", countPost, true);
+                    PatchCount(fms, "DirectoryExists", countPost);
+                    PatchCount(fms, "NormalizePath", countPost);
+                    PatchCount(fms, "IsFileInPackage", countPost);
+                    PatchCount(fms, "GetDirectoryName", countPost);
                 }
             }
             catch (Exception e) { Error(e); }
@@ -150,11 +192,18 @@ namespace Quest3TriggerUI
             foreach (MethodInfo m in type.GetMethods(Flags | BindingFlags.DeclaredOnly))
             {
                 if (m.Name != name || m.ContainsGenericParameters) continue;
-                _aceProbeHarmony.Patch(m,
-                    prefix: new HarmonyMethod(
-                        typeof(UiAssistHudLink).GetMethod("AceProbePrefix", Flags)),
-                    postfix: new HarmonyMethod(
-                        typeof(UiAssistHudLink).GetMethod("AceProbePostfix", Flags)));
+                // A corrupted detour chain on one method (e.g. left behind by a
+                // failed patch in a previous hot-load generation) must not
+                // abort every other timer.
+                try
+                {
+                    _aceProbeHarmony.Patch(m,
+                        prefix: new HarmonyMethod(
+                            typeof(UiAssistHudLink).GetMethod("AceProbePrefix", Flags)),
+                        postfix: new HarmonyMethod(
+                            typeof(UiAssistHudLink).GetMethod("AceProbePostfix", Flags)));
+                }
+                catch (Exception e) { Log("[ACE] timer patch failed: " + type.Name + "." + name + ": " + e.Message); }
             }
         }
 
@@ -201,16 +250,66 @@ namespace Quest3TriggerUI
         private static int _gcAtRefreshStart = -1;
         private static int _gcDiag;
 
-        private static int _eqCalls;
-        private static int _opCalls;
         private static bool _inRefreshACE;
 
         private static void GcWatchPrefix()
         {
             _gcAtRefreshStart = GC.CollectionCount(0);
             _inRefreshACE = true;
-            _eqCalls = 0;
-            _opCalls = 0;
+            _aceInnerCalls.Clear();
+            _aceInnerMs.Clear();
+        }
+
+        private static readonly System.Collections.Generic.Dictionary<string, int>
+            _aceInnerCalls = new System.Collections.Generic.Dictionary<string, int>();
+
+        private static void AceInnerCallPostfix(MethodBase __originalMethod)
+        {
+            if (!_inRefreshACE) return;
+            string k = __originalMethod.DeclaringType.Name + "." + __originalMethod.Name;
+            int n;
+            _aceInnerCalls[k] = _aceInnerCalls.TryGetValue(k, out n) ? n + 1 : 1;
+        }
+
+        private static void PatchCount(Type type, string name, HarmonyMethod post,
+            bool timed = false)
+        {
+            if (type == null) return;
+            foreach (MethodInfo m in type.GetMethods(Flags | BindingFlags.DeclaredOnly))
+                if (m.Name == name && !m.ContainsGenericParameters)
+                    try
+                    {
+                        _aceProbeHarmony.Patch(m, postfix: post);
+                        if (timed)
+                            _aceProbeHarmony.Patch(m,
+                                prefix: new HarmonyMethod(
+                                    typeof(UiAssistHudLink).GetMethod("AceInnerWatchPrefix", Flags)),
+                                postfix: new HarmonyMethod(
+                                    typeof(UiAssistHudLink).GetMethod("AceInnerWatchPostfix", Flags)));
+                    }
+                    catch (Exception e)
+                    {
+                        Log("[ACE] count patch failed: " + type.Name + "." + name +
+                            ": " + e.Message);
+                    }
+        }
+
+        private static readonly System.Collections.Generic.Dictionary<string, long>
+            _aceInnerMs = new System.Collections.Generic.Dictionary<string, long>();
+
+        private static void AceInnerWatchPrefix(out long __state)
+        {
+            __state = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+
+        private static void AceInnerWatchPostfix(MethodBase __originalMethod,
+            long __state)
+        {
+            if (!_inRefreshACE) return;
+            string k = __originalMethod.DeclaringType.Name + "." + __originalMethod.Name;
+            long ms;
+            _aceInnerMs[k] = (_aceInnerMs.TryGetValue(k, out ms) ? ms : 0) +
+                ElapsedMs(__state);
         }
 
         // RefreshACE iterates rows calling _activeClothingDCIs.IndexOf(dci):
@@ -248,15 +347,7 @@ namespace Quest3TriggerUI
             return -1;
         }
 
-        private static void EqCountPostfix()
-        {
-            if (_inRefreshACE) _eqCalls++;
-        }
 
-        private static void OpCountPostfix()
-        {
-            if (_inRefreshACE) _opCalls++;
-        }
 
         private static void DedupeAceScrollbar(object __instance)
         {
@@ -265,11 +356,11 @@ namespace Quest3TriggerUI
                 _inRefreshACE = false;
                 int gcDelta = _gcAtRefreshStart < 0 ? 0 :
                     GC.CollectionCount(0) - _gcAtRefreshStart;
-                if (gcDelta > 0 || _eqCalls > 500 || _gcDiag < 10)
+                if (gcDelta > 0 || _gcDiag < 10)
                 {
                     _gcDiag++;
-                    Log("[ACE] RefreshACE gc=" + gcDelta + " eq=" + _eqCalls +
-                        " op=" + _opCalls);
+                    Log("[ACE] RefreshACE gc=" + gcDelta +
+                        AceListSizes(__instance) + AceInnerSummary());
                 }
                 string stage = "ok";
                 int count = -1;
@@ -312,6 +403,42 @@ namespace Quest3TriggerUI
             catch (Exception e) { Error(e); }
         }
 
+        // Growth evidence for the "slow after several person loads, fast after
+        // editor restart" symptom: count every atom's _activeClothingDCIs plus
+        // the static clothingPresets registry.
+        private static string AceListSizes(object instance)
+        {
+            try
+            {
+                var lists = Read(instance.GetType(), instance, "_atomACEClothingLists")
+                    as System.Collections.IDictionary;
+                int atoms = 0, dcis = 0;
+                if (lists != null)
+                    foreach (object v in lists.Values)
+                    {
+                        atoms++;
+                        var d = Read(v.GetType(), v, "_activeClothingDCIs") as System.Collections.IList;
+                        if (d != null) dcis += d.Count;
+                    }
+                var presets = Read(instance.GetType(), null, "clothingPresets")
+                    as System.Collections.IDictionary;
+                return " lists=" + atoms + " dcis=" + dcis +
+                    " presets=" + (presets == null ? -1 : presets.Count);
+            }
+            catch { return ""; }
+        }
+
+        private static string AceInnerSummary()
+        {
+            if (_aceInnerCalls.Count == 0) return "";
+            var sb = new System.Text.StringBuilder(" inner:");
+            foreach (var kv in _aceInnerCalls)
+                if (kv.Value >= 5) sb.Append(' ').Append(kv.Key).Append('=').Append(kv.Value);
+            foreach (var kv in _aceInnerMs)
+                if (kv.Value >= 5) sb.Append(' ').Append(kv.Key).Append("Ms=").Append(kv.Value);
+            return sb.ToString();
+        }
+
         private static void DedupeRuntimeCalls(System.Collections.IList calls)
         {
             var seen = new System.Collections.Generic.HashSet<string>();
@@ -333,6 +460,62 @@ namespace Quest3TriggerUI
                 _dedupeDiag++;
                 Log("[ACE] dedupe diag stage=list count=" + calls.Count + " distinct-kept");
             }
+        }
+
+        // --- RefreshACE same-frame coalesce ---------------------------------
+
+        private static bool _aceFlushing;
+        private static int _aceCoalesced;
+        // (instance, MethodInfo) pairs; RefreshACE() takes no parameters.
+        private static readonly List<object[]> _acePending = new List<object[]>();
+
+        private static bool RefreshAceCoalesce(object __instance,
+            MethodBase __originalMethod)
+        {
+            if (_aceFlushing) return true;
+            for (int i = 0; i < _acePending.Count; i++)
+            {
+                if (ReferenceEquals(_acePending[i][0], __instance) &&
+                    ReferenceEquals(_acePending[i][1], __originalMethod))
+                {
+                    _aceCoalesced++;
+                    return false;
+                }
+            }
+            _acePending.Add(new object[] { __instance, __originalMethod });
+            _aceCoalesced++;
+            return false;
+        }
+
+        // Runs at LateUpdate: after every Update-path caller has spoken, so
+        // each instance+overload fires once.
+        internal static void FlushAceRefresh()
+        {
+            if (_acePending.Count == 0) return;
+            object[][] pending = _acePending.ToArray();
+            _acePending.Clear();
+            _aceFlushing = true;
+            try
+            {
+                int ran = 0;
+                bool loading = SuperController.singleton != null &&
+                    SuperController.singleton.isLoading;
+                foreach (object[] p in pending)
+                {
+                    // During a scene load the ACE rows these refreshes target
+                    // are being destroyed — RefreshACEGroupGeneral touches a
+                    // dead component and NREs. The rebuilt UI refreshes itself
+                    // after load, so queued calls are dropped, not deferred.
+                    if (loading) continue;
+                    try { ((MethodInfo)p[1]).Invoke(p[0], null); ran++; }
+                    catch (Exception e) { Error(e); }
+                }
+                if (_aceCoalesced > ran)
+                    Log("[ACE] coalesced RefreshACE: " + _aceCoalesced +
+                        " calls -> " + ran + " run(s)");
+                _aceCoalesced = 0;
+            }
+            finally { _aceFlushing = false; }
         }
 
         // --- Dead DCI prune (UpdateACE never removes destroyed items) ------
@@ -382,6 +565,46 @@ namespace Quest3TriggerUI
                 Log("[ACE] pruned " + dead.Count + " destroyed dci(s) from '" +
                     atomName + "' editor list (was " + (dcis.Count + dead.Count) +
                     ", now " + dcis.Count + ")");
+            }
+            catch (Exception e) { Error(e); }
+        }
+
+        private static System.Collections.IDictionary _aceSavedPresets;
+
+        private static void AceCreateUiPrefix(object __instance)
+        {
+            try
+            {
+                var d = Read(__instance.GetType(), null, "clothingPresets")
+                    as System.Collections.IDictionary;
+                _aceSavedPresets = d == null || d.Count == 0
+                    ? null : new System.Collections.Hashtable(d);
+            }
+            catch { _aceSavedPresets = null; }
+        }
+
+        private static void AceCreateUiPostfix(object __instance)
+        {
+            try
+            {
+                var saved = _aceSavedPresets;
+                _aceSavedPresets = null;
+                if (saved == null) return;
+                var d = Read(__instance.GetType(), null, "clothingPresets")
+                    as System.Collections.IDictionary;
+                if (d == null) return;
+                int restored = 0;
+                foreach (System.Collections.DictionaryEntry e in saved)
+                {
+                    object k = e.Key;
+                    if (k == null || (UnityEngine.Object)k == null ||
+                        e.Value == null || d.Contains(k)) continue;
+                    d.Add(k, e.Value);
+                    restored++;
+                }
+                if (restored > 0 || saved.Count > 0)
+                    Log("[ACE] clothingPresets preserved across UI rebuild: " +
+                        restored + "/" + saved.Count);
             }
             catch (Exception e) { Error(e); }
         }

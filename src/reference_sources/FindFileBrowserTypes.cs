@@ -1,0 +1,1 @@
+using System; using System.Reflection; class I { static int Main(){var a=Assembly.LoadFrom(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll"); foreach(var t in a.GetTypes()){if(t.FullName.ToLowerInvariant().Contains("filebrowser"))Console.WriteLine(t.FullName);} return 0; }}

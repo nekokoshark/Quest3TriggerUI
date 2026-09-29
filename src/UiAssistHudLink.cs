@@ -88,13 +88,16 @@ namespace Quest3TriggerUI
                 long t1 = Mark();
                 _changing = true;
                 // Native manual ACE exit selects 'standard' (1, not 0).
-                // Disable grid updates and run the same editor/list cleanup as manual exit.
+                // mode=standard + gridsActivated=false already stops the
+                // per-frame Update->RefreshACE loop; skipping DestroyUIButtons
+                // keeps ACEIDPlus rows (and their clothingItem/thumbnail
+                // bindings) alive so the restore does not repay a GetThumbnail
+                // storm per row (~0.5-1s at 100+ items).
                 // Do not call CloseGrids: its optional auto-unpin changes unrelated UI placement.
                 Write(state.Control, null, "gameControlDisplayMode", state.Standard);
                 long t2 = Mark();
                 Write(state.Control, null, "gridsActivated", false);
                 long t3 = Mark();
-                Call(state.Display.GetType(), state.Display, "DestroyUIButtons");
                 long t4 = Mark();
                 if ((int)Read(state.Control, null, "gameControlDisplayMode") != state.Standard || (bool)Read(state.Control, null, "gridsActivated"))
                     throw new InvalidOperationException("UIAssist did not exit clothing editor mode");
@@ -137,9 +140,10 @@ namespace Quest3TriggerUI
                 long t1 = Mark();
                 Write(state.Control, null, "gridsActivated", true);
                 long t2 = Mark();
-                Call(state.Display.GetType(), state.Display, "DestroyUIButtons");
+                // Buttons were left in place by Suspend — refresh data only;
+                // recreating them would re-null currentDAZClothingItem and
+                // re-trigger the per-row thumbnail path.
                 long t3 = Mark();
-                Call(state.Display.GetType(), state.Display, "CreateUIButtons");
                 long t4 = Mark();
                 Call(state.Editor.GetType(), state.Editor, "RefreshACE");
                 long t5 = Mark();
@@ -172,6 +176,7 @@ namespace Quest3TriggerUI
             TickDockNavSuppression();
             TickPresetDock();
             TickFavoritesBar();
+            TickSceneDock();
             TickBanBar();
             TickLockBar();
             NotePanelDockLayout();
@@ -183,7 +188,7 @@ namespace Quest3TriggerUI
             if (visible) AfterShow(controller); else Suspend(controller);
         }
         internal static void CancelPending() { _pending = null; }
-        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; _presetState = null; CancelPending(); _observed = false;
+        internal static void Reset() { ClearPresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); ReleaseDockNavSuppression(); _presetBrowsing = false; _presetState = null; CancelPending(); _observed = false;
             // Uninstall the ACE instrumentation so a dead payload generation
             // leaves neither active patches nor pinned code behind.
             if (_aceProbeHarmony != null)

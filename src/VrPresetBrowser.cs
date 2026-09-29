@@ -740,15 +740,17 @@ namespace Quest3TriggerUI
             Vector2 stv;
             bool hasIn = OpenVrInputBridge.TryGetInput(
                 out itr, out rgv, out lgv, out abv, out stv);
+            // A/X are shortcut chords, not click sources — only the index
+            // trigger (or the desktop mouse) owns the pointer hold.
             bool held = Input.GetMouseButton(0) ||
-                (hasIn && (itr > 0.55f || abv > 0.5f)) ||
+                (hasIn && itr > 0.55f) ||
                 (Quest3TriggerUIPlugin.Trigger != null &&
                  Quest3TriggerUIPlugin.Trigger.Pressed);
             // A controller trigger owns its own hand's laser — a right
             // press must not grab whatever the left pointer rests on.
             // The desktop mouse fallback has only one pointer, so it may
             // still bind either hand's look target.
-            bool trigHeld = (hasIn && (itr > 0.55f || abv > 0.5f)) ||
+            bool trigHeld = (hasIn && itr > 0.55f) ||
                 (Quest3TriggerUIPlugin.Trigger != null &&
                  Quest3TriggerUIPlugin.Trigger.Pressed);
             // VaM re-activates its HUD children when the panel is grabbed —

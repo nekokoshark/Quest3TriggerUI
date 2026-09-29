@@ -1,0 +1,1 @@
+using System;using Mono.Cecil;class P{static int Main(){var a=AssemblyDefinition.ReadAssembly(@"F:\vam1.22.0.12\VaM_Data\Managed\Assembly-CSharp.dll");var t=a.MainModule.GetType("SuperController");foreach(var p in t.Properties)if(p.Name.ToLower().Contains("camera")||p.Name.ToLower().Contains("controller"))Console.WriteLine("prop "+p.PropertyType.Name+" "+p.Name);return 0;}}

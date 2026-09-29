@@ -1,0 +1,4 @@
+Changed branch/field: machine-wide OpenXR implicit API layer registration.
+Before: original VaM OpenVR launch reached OpenComposite but no headset/session when VD was disconnected.
+After: with Quest 3 connected, OFXR V068 is enumerated and records session plus synthesis_pair/d3d11_publish successful events.
+No VaM (OpenVR).bat contents were changed.

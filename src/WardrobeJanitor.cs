@@ -85,6 +85,7 @@ namespace Quest3TriggerUI
             // requester never registered a use count can't be reclaimed by
             // refcount or UnloadUnusedAssets while the cache roots them.
             TextureOrphanSweeper.Tick();
+            InstanceAssetLedger.Tick();
             GpuResourceProbe.Tick();
             DecodedBufferPool.SweepIdle();
             if (Enabled == null || !Enabled.Value)
@@ -251,13 +252,15 @@ namespace Quest3TriggerUI
                 // UnloadIfInactive self-checks activeInHierarchy/enabled and
                 // is a no-op if the item somehow became active again;
                 // UnloadIfNotEnabled covers the component-disabled zombie.
+                object ledger = InstanceAssetLedger.Capture(item);
                 try
                 {
                     item.UnloadIfInactive();
                     if (item.ready) item.UnloadIfNotEnabled();
                 }
                 catch { }
-                if (!item.ready) unloaded++;
+                if (!item.ready) { unloaded++; InstanceAssetLedger.Queue(ledger); }
+                else InstanceAssetLedger.Discard(ledger);
                 // A done item must not re-queue on its stale timestamp —
                 // that was the old infinite churn.
                 InactiveSince.Remove(item);
@@ -494,6 +497,7 @@ namespace Quest3TriggerUI
                         continue;
                     }
                     if (it.active) { job.active++; continue; }
+                    object ledger = InstanceAssetLedger.Capture(it);
                     try
                     {
                         it.UnloadIfInactive();
@@ -501,6 +505,8 @@ namespace Quest3TriggerUI
                         if (it.ready) job.guarded++; else job.unloaded++;
                     }
                     catch { job.failed++; }
+                    if (it.ready) InstanceAssetLedger.Discard(ledger);
+                    else InstanceAssetLedger.Queue(ledger);
                     budget--;
                 }
                 DAZDynamicItem[] hairs = sel.hairItems;
@@ -518,6 +524,7 @@ namespace Quest3TriggerUI
                         continue;
                     }
                     if (it.active) { job.active++; continue; }
+                    object ledger = InstanceAssetLedger.Capture(it);
                     try
                     {
                         it.UnloadIfInactive();
@@ -525,6 +532,8 @@ namespace Quest3TriggerUI
                         if (it.ready) job.guarded++; else job.unloaded++;
                     }
                     catch { job.failed++; }
+                    if (it.ready) InstanceAssetLedger.Discard(ledger);
+                    else InstanceAssetLedger.Queue(ledger);
                     budget--;
                 }
                 if ((clothes == null || job.ci >= clothes.Length) &&
@@ -689,6 +698,7 @@ namespace Quest3TriggerUI
         internal static void Shutdown()
         {
             TextureOrphanSweeper.Shutdown();
+            InstanceAssetLedger.Shutdown();
             GpuResourceProbe.Shutdown();
             DecodedBufferPool.Clear();
             StaleTextureRequestGuard.Shutdown();

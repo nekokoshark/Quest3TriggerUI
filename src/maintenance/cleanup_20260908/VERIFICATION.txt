@@ -1,0 +1,36 @@
+Changed branch/field: PROJECT_STATE.md adds the project intermediate-file cleanup policy and the 2026-09-08 cleanup record. Filesystem branch moves obsolete staging, rollback copies, probes, compiled test executables, old candidates/patches/verifications, and duplicate VAR work files out of the plugin project while retaining production source, current payload/hot loader, iteration scripts, reusable test source/scripts, and referenced source material.
+MODIFIED_FILE: F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\MODIFIED_FILE.tsv
+DIFF_FILE: F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\DIFF_FILE.txt
+VERIFICATION: F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\VERIFICATION.txt
+ROLLBACK: F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\ROLLBACK.sh
+Original manifest SHA256: 42400E44796580E40B0E909C36751A3289E8D5882D4D419F86253E16450C5E6F
+Original PROJECT_STATE.md SHA256: B8174A506B8EC51FC293AE6A0DFF55A3DD67799DD8F940BA1621E7D2C5998014
+Modified manifest SHA256: BF61A34870D318D86FDD7FBEF715D131FA5EC6BD9958EED65D163FE991803913
+Modified PROJECT_STATE.md SHA256: 07CD8FA2C3AFD23A7C526FEA3F45860DC90FE51F8EFDE56A4D39430A1590A8C5
+Payload SHA256 before/after: 6A79BE11DBC67F8DEFDDD4B4ED693E10E20FEB46A2533D0CB90E8CAD6BC16EC8
+
+BASELINE command: & 'F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\VerifyCleanup.ps1' -Mode Baseline
+Input: ORIGINAL_MANIFEST.tsv recorded before cleanup and DIFF_FILE.txt containing the verified top-level candidate set.
+Literal output: BASELINE CLEANUP RESULT=PASS; candidates=171; files=1079; bytes=308019831; essentialPayload=True; essentialSource=True
+Exit status: 0.
+
+MODIFIED command: & 'F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\maintenance\cleanup_20260908\VerifyCleanup.ps1' -Mode Modified
+Input: cleaned plugin directory, required production-file list, cleanup filename/directory rules, and PROJECT_STATE.md policy marker.
+Literal output: MODIFIED CLEANUP RESULT=PASS; remainingCandidates=0; retainedEssentials=7; removedItems=171; removedFiles=1079; removedBytes=308019831; policyDocumented=True
+Exit status: 0.
+
+ROLLBACK command: & 'C:\Program Files\Git\bin\bash.exe' -lc 'export PATH=/usr/bin:/bin:$PATH; chmod +x /f/vam1.22.0.12/BepInEx/plugins/Quest3TriggerUI/maintenance/cleanup_20260908/ROLLBACK.sh; /f/vam1.22.0.12/BepInEx/plugins/Quest3TriggerUI/maintenance/cleanup_20260908/ROLLBACK.sh --test /c/Users/Administrator/.codex/visualizations/2026/08/27/01a040a0-585c-7313-b018-a54adc4f41f9/cleanup_rollback_test/archive /c/Users/Administrator/.codex/visualizations/2026/08/27/01a040a0-585c-7313-b018-a54adc4f41f9/cleanup_rollback_test/target'
+Input: independent test archive with two representative top-level entries and an empty independent target directory.
+Literal output:
+ROLLBACK PASS: restored 2 top-level intermediate items
+ROLLBACK_EXIT=0
+ROLLBACK_TEST_RESTORED=True
+ROLLBACK_TEST_ARCHIVE_EMPTY=True
+Exit status: 0. Restored behavior/status: both representative entries were restored with their contents to the independent target; the real cleaned project and real external archive were unchanged. The temporary rollback fixture was then removed.
+
+CLEANUP command: verified PowerShell Move-Item transaction from F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI to C:\Users\Administrator\.codex\visualizations\2026\08\27\01a040a0-585c-7313-b018-a54adc4f41f9\Quest3TriggerUI_cleanup_archive_20260908\items.
+Literal output: MOVE RESULT=PASS; moved=170; remainingCandidates=0; archive=C:\Users\Administrator\.codex\visualizations\2026\08\27\01a040a0-585c-7313-b018-a54adc4f41f9\Quest3TriggerUI_cleanup_archive_20260908\items
+Follow-up literal output: MOVE RESULT=PASS; moved=1; remainingExeArtifacts=0
+Exit status: 0 for both moves.
+
+Final behavior/status: 171 obsolete top-level items containing 1079 files and 308019831 bytes are absent from the project and present in the external rollback archive. Current payload and production sources remain. VaM PID 57392 is Responding=True and current payload SHA256 is unchanged. No game restart or payload rebuild was performed.

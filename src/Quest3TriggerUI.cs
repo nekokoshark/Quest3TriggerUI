@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.286";
+        public const string PluginVersion = "4.6.293";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -82,9 +82,6 @@ namespace Quest3TriggerUI
         {
             get { return _sampledRightStick; }
         }
-        private static bool _lastAButton;
-        private static int _aButtonDownFrame = -1;
-        private static int _aButtonUpFrame = -1;
 		internal static bool SliderDragActive { get; private set; }
         internal static AceFavDragSource ClothingDragCandidate;
         internal static bool ClothingDragActive;
@@ -385,7 +382,13 @@ namespace Quest3TriggerUI
                 "One-shot: evict all currently-unreferenced audio clips immediately (ignores grace window), then resets to false.");
             PresetCleanupCoalescer.Enabled = Config.Bind(
                 "TextureLoading", "CoalesceCoveredCleanup", true,
-                "Reuse a native cleanup for supplemental cleanup only if it covers all prior release requests.");
+                "Reuse a recent full sweep for supplemental cleanup instead of paying a second full-heap mark.");
+            PresetCleanupCoalescer.ReuseSeconds = Config.Bind(
+                "TextureLoading", "CoalesceReuseSeconds", 80f,
+                "Max age of a previous full sweep that may still cover the janitor's supplemental cleanup.");
+            PresetCleanupCoalescer.DeferMax = Config.Bind(
+                "TextureLoading", "CoalesceDeferMax", 4,
+                "Max release events a covered sweep may defer before the janitor runs a backstop cleanup.");
             PresetInstanceReuse.Enabled = Config.Bind(
                 "TextureLoading", "ReusePresetInstances", true,
                 "Temporarily retain ready same-base clothing/hair instances across native preset reset; restore all parameters normally.");
@@ -397,6 +400,16 @@ namespace Quest3TriggerUI
                 "Skip verified unchanged appearance/clothing UUA after a completed sweep; preserve actual release debt, pressure, manual cleanup and 120s request-time bound.");
             PresetSweepGate.SkipUnchangedGC = Config.Bind("PresetLoading", "SkipUnchangedPresetGC", true,
                 "Skip verified unchanged preset GC at low growth; settle pending native preset GC after async loading (30s cap), or immediately at 75% RAM pressure. Keep 256MiB/120s GC limits and manual cleanup.");
+            PresetSweepGate.DeferSweep = Config.Bind("PresetLoading", "DeferPresetSweep", true,
+                "A sweep requested from inside a preset restore is submitted at the next quiet moment instead of mid-load (measured 8.68s wall / 6.3s freeze inside a 10.2s no-change reload). Same global mark, same debt, fewer waiting seconds; off restores the old inline submit.");
+            PresetSweepGate.GcYieldGate = Config.Bind("PresetLoading", "DeferLowYieldPresetGC", true,
+                "Also defer the post-swap GC when the previous one barely paid for itself (yield below max(64MiB, 5% of the pre-collect heap)). The tail-settled branch was the one path that collected without rechecking growth, and it fires 0.25s after a swap, i.e. once the character is already on screen: 20 measured swaps each cost 3.6-3.9s for 31MiB..1.5GiB. While deferred the request stays pending for the existing 30s bound, the 75% pressure line and the 1.5GB/60s idle watchdog, so retained garbage is capped at one 30s window (~0.2GB at the documented 0.28-0.34GB/min idle churn). Set false to collect at every settled tail again.");
+            PresetSweepGate.SwapGcToIdle = Config.Bind("PresetLoading", "HandSwapGCToIdle", true,
+                "Do not run the post-sweep preset GC inside the click window. Over 20 consecutive swaps each inline collect cost 3.9-4.1s and froze 4.8-6.9s of frame time to free 0.4-0.9GiB, while the 1.5GiB/60s idle watchdog returns 2.2-3.8GiB for the same 4s. With headroom the request is dropped and the watchdog owns the collection; memory pressure still collects inline and the 30s/120s bounds are unchanged. Set false to collect inline again.");
+            PresetSweepGate.IdleGcAboveLine = Config.Bind("PresetLoading", "IdleGcWhenAboveLoadLine", true,
+                "Above the 80% load line raise the idle watchdog's growth band to 3GiB instead of refusing the collect. Measured here: the session's steady state is load=82-88% with the external trimmer off, the 1.5GiB gate fired every cycle, and the load line refused every attempt until the heap sawtoothed 19.74 -> 26.6GB of 28.90GB and one 4.4-4.7s mark landed wherever Boehm picked it. The physical floor (2GB available RAM, 8GB page file) and the 60s minimum interval still apply. Set false to keep the 80% line absolute.");
+            PresetSweepGate.IdleGcOnExhaust = Config.Bind("PresetLoading", "IdleGcOnHeapExhaust", true,
+                "Also let the idle watchdog collect while RAM load sits above its 80% line, once the managed heap itself is nearly out of room (free below 8% of capacity, floor 256MiB). Measured twice in one idle session: the watchdog logged 'idle GC blocked ... load=84%' for the whole climb, monoFree fell to 0.24-0.28GB of 26.17GB, and Boehm then collected on its own from inside a UI frame at 4.2-4.5s of freeze. Same mark either way, cheaper frame. The hardware floor (2GB available RAM, 8GB page file) still applies. Set false to keep the load line absolute.");
             BumpNormalRowConverter.Enabled = Config.Bind(
                 "TextureLoading", "BumpNormalThreeRows", true,
                 "Use three scratch rows for native-equivalent bump-to-normal conversion; preserve output format and resolution.");
@@ -419,7 +432,9 @@ namespace Quest3TriggerUI
             TextureCacheBc7Convert.DiagnoseLayout = Config.Bind("TextureLoading", "DiagnoseBc7CacheLayout", true,
                 "One-off startup probe that asks Unity for the storage size of BC7 chains on non multiple-of-four dimensions and logs it. Set false once that layout question is settled.");
             TextureCacheBc7Convert.IdleSeconds = Config.Bind("TextureLoading", "Bc7IdleSeconds", 180,
-                "Seconds without any input before a background re-encode may start. 0 disables the in-session path so conversion only happens after the game exits.");
+                "Seconds without any input before a background re-encode may start when Bc7Immediate is off. 0 disables the in-session path so conversion only happens after the game exits.");
+            TextureCacheBc7Convert.Immediate = Config.Bind("TextureLoading", "Bc7Immediate", true,
+                "Re-encode each cache entry as soon as its load window closes instead of waiting for Bc7IdleSeconds without input. Encoding stays on the background worker and the swap still needs the window clear, so a first load never waits; immediate mode also swaps while the texture is still resident, which is when the swap can actually land.");
             TextureCacheBc7Convert.ConvertOnExit = Config.Bind("TextureLoading", "Bc7ConvertOnExit", true,
                 "Hand the entries collected this session to a hidden helper that converts them one at a time after the game has exited.");
             TextureDecodeBudget.Enabled = Config.Bind(
@@ -482,6 +497,18 @@ namespace Quest3TriggerUI
             WardrobeJanitor.PurgeMorphDeltas = Config.Bind(
                 "Wardrobe", "PurgeMorphDeltas", true,
                 "The post-load purge also calls UnloadRuntimeMorphDeltas (the same call VaM's optimize-memory makes) to drop the previous preset's runtime morph deltas.");
+            InstanceAssetLedger.Enabled = Config.Bind(
+                "Wardrobe", "InstanceAssetLedger", true,
+                "Record the materials/meshes a clothing or hair instance referenced before the janitor destroys it, so the objects it leaves behind can be released without a full-heap UUA mark. Registration only reads the shared* accessors; it never instantiates and never destroys.");
+            InstanceAssetLedger.DestroyMaterials = Config.Bind(
+                "Wardrobe", "InstanceAssetDestroyMaterials", false,
+                "Release the ledger's material candidates that no live renderer, graphic or skinned mesh references. Only Unity-named \"(Clone)\" runtime instances qualify; package assets are counted, never touched. Off by default: read the asset-ledger log line for one swap first.");
+            InstanceAssetLedger.DestroyMeshes = Config.Bind(
+                "Wardrobe", "InstanceAssetDestroyMeshes", false,
+                "Release unreferenced meshes from the ledger as well. Off by default and not recommended until the log shows what the mesh candidates are: Destroy() on a mesh that came from a package is how a character loses hair or turns pink.");
+            InstanceAssetLedger.SettleSeconds = Config.Bind(
+                "Wardrobe", "InstanceAssetSettleSeconds", 2f,
+                "Seconds between an instance unload and the liveness census for its objects, so the native teardown and image tail have finished first.");
             _memSnapshotEntry = Config.Bind(
                 "Diagnostics", "MemorySnapshot", false,
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
@@ -507,6 +534,25 @@ namespace Quest3TriggerUI
             CharacterLoadTrace.Enabled = Config.Bind("Diagnostics", "TraceCharacterLoads", true,
                 "Write one Quest3TriggerUI.charactertrace_<stamp>.tsv window per person/appearance preset load: every phase the plugin and the loader log, plus hitches and memory, keyed by request id.");
             CharacterLoadTrace.Install();
+            ItemBuildProbe.Enabled = Config.Bind("Diagnostics", "TraceItemBuilds", true,
+                "One [item-build] line per clothing/hair item whose DAZDynamic::Load passes 100ms: package:store + wall clock. Attribution only; no behaviour change.");
+            ItemBuildProbe.Install();
+            StreamReadAccel.Enabled = Config.Bind("FileLoading", "AccelerateFileStreamReads", true,
+                "Wrap file entry streams in a 64 KiB buffer: zip entry streams out of .var packages and opened FileStreams. VaM's binary loaders (mesh, cloth geometry, hair, morph) ask for a few bytes per call straight into SharpZipLib's unbuffered PartialInputStream, which seeks the shared package FileStream on every call - 金瓶儿's six .vab (11.4 MiB) cost 8.4s, i.e. 1.43 MB/s. Byte content and order are unchanged; only the fetching is batched.");
+            StreamReadAccel.ProbeOnce = Config.Bind("Diagnostics", "StreamReadProbeOnce", true,
+                "One-shot: on the next DAZDynamic::Load, time 4-byte reads vs 64 KiB reads vs buffered 4-byte reads on that item's .vab and log one [stream-accel] probe line, then reset this to false. Measurement only.");
+            StreamReadAccel.Install();
+            UnloadCoverageProbe.Once = Config.Bind("Diagnostics", "UnloadCoverageProbeOnce", false,
+                "One-shot coverage probe: on the next UnloadInstance, capture the dying subtree\'s materials/meshes and count how many are exclusively owned by it (safe to unload) vs shared with other live renderers (pink if unloaded). Logs one [unload-coverage] line then resets to false. Measurement only; no behaviour change.");
+            UnloadCoverageProbe.Install();
+            UuaTypeCensus.Enabled = Config.Bind("Diagnostics", "UuaTypeCensus", true,
+                "Measure what each Resources.UnloadUnusedAssets sweep actually reclaims, by class: one census of Material/Mesh/Texture2D/RenderTexture counts and estimated bytes plus the Unity allocator, graphics-driver and mono totals immediately before the sweep, one right after its AsyncOperation reports done, then the delta. UUA's price is the full-heap mark (8-21s here, unloaded=0..5), so this is the number that decides whether the swap path can stop calling it. Measurement only, but the two censuses cost about 0.3-0.5s per sweep.");
+            UuaTypeCensus.Heavy = Config.Bind("Diagnostics", "UuaTypeCensusHeavy", false,
+                "Also enumerate GameObject and Component in the census. SceneOrphanSweep measured those legs at 4.7s/16.1s including per-object analysis; a bare count may be far cheaper, and every [uua-census] line reports censusMs so the real cost shows up. Off by default because it lands on the sweep path.");
+            UuaGate.Enabled = Config.Bind("Diagnostics", "UuaGate", true,
+                "Demote the native sweep the preset path submits after a swap settles. Measured over four real swaps (character x2, appearance, clothing): 8.57-9.12s of main-thread stall for 0-16 MiB of CPU allocation, 0 MiB of VRAM, 3-6 materials, 0-3 textures totalling <=1 MiB and no render targets, while the managed GC in the same swap frees 2.5-3.0GB in ~3.7s. Only a sweep whose caller chain names PresetSweepGate.SubmitSweep is skipped, and only after a real sweep has run once in this session (its completed operation is what gets handed back); standby, scene load, janitor cleanup and unrecognised callers keep their sweep. On by default (the enabled path): this changes behaviour on the swap path; set false to hand every sweep back to the engine.");
+            UuaGate.Report();
+            UuaTypeCensus.Install();
             LongFrameWatch.Install();
             TextureDecodeBudget.ColdEstimate = ColdTextureHeader.Estimate;
             GenBridge.AdoptPreviousGeneration();
@@ -956,6 +1002,8 @@ namespace Quest3TriggerUI
             GenBridge.Tick();
             LoadAttributionProbe.Mark(5);
             PresetSweepGate.Tick();
+            UnloadCoverageProbe.Tick();
+            UuaTypeCensus.Tick();
             SceneLoadAccelerator.RetryPendingBrackets();
             SceneOrphanSweep.Tick();
             TextureCacheBc7Convert.Tick();
@@ -1090,7 +1138,9 @@ namespace Quest3TriggerUI
                 bool snap = text.Contains("MemorySnapshot = true");
                 bool eye = text.Contains("EyeMaterialSnapshot = true");
                 bool evict = text.Contains("AudioCacheEvictNow = true");
-                if (!snap && !evict && !eye)
+                bool ucov = text.Contains("UnloadCoverageProbeOnce = true");
+                bool uip = text.Contains("UiRaycastCensusOnce = true");
+                if (!snap && !evict && !eye && !ucov && !uip)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -1100,6 +1150,12 @@ namespace Quest3TriggerUI
                 text = text.Replace(
                     "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
                 text = text.Replace("EyeMaterialSnapshot = true", "EyeMaterialSnapshot = false");
+                text = text.Replace(
+                    "UnloadCoverageProbeOnce = true",
+                    "UnloadCoverageProbeOnce = false");
+                text = text.Replace(
+                    "UiRaycastCensusOnce = true",
+                    "UiRaycastCensusOnce = false");
                 // GetBytes re-emits the BOM because the decoded string
                 // still carries the \uFEFF character.
                 System.IO.File.WriteAllBytes(
@@ -1109,6 +1165,8 @@ namespace Quest3TriggerUI
                 if (snap) MemoryProbe.Dump();
                 if (eye) CharacterMaterialProbe.Dump();
                 if (evict) AudioCacheJanitor.SweepNow();
+                if (ucov) UnloadCoverageProbe.Arm();
+                if (uip) UiRaycastProbe.Dump();
             }
             catch (Exception ex)
             {
@@ -1120,6 +1178,7 @@ namespace Quest3TriggerUI
         private void LateUpdate()
         {
             UiAssistHudLink.ApplyPanelPresentation();
+            UiAssistHudLink.FlushAceRefresh();
             if (_keyboard != null)
             {
                 _keyboard.LateTick();
@@ -1337,6 +1396,7 @@ namespace Quest3TriggerUI
             GpuResourceProbe.Shutdown();
             BumpNormalRowConverter.Shutdown();
             PresetCleanupCoalescer.Shutdown();
+            UuaTypeCensus.Shutdown();
             PresetInstanceReuse.Shutdown();
             StaleTextureRequestGuard.Shutdown();
             VrPresetBrowser.Shutdown();
@@ -1370,9 +1430,6 @@ namespace Quest3TriggerUI
             RecenterChord = null;
             ShortcutGestures = null;
             _inputSampleFrame = -1;
-            _lastAButton = false;
-            _aButtonDownFrame = -1;
-            _aButtonUpFrame = -1;
 			SliderDragActive = false;
             ClothingDragActive = false;
             ClothingDragCandidate = null;
@@ -1450,6 +1507,7 @@ namespace Quest3TriggerUI
             float gripValue;
             float leftGripValue;
             float aValue;
+            float leftAValue = 0f;
             Vector2 rightStick;
             if (!OpenVrInputBridge.TryGetInput(
                 out indexValue, out gripValue, out leftGripValue, out aValue,
@@ -1461,15 +1519,23 @@ namespace Quest3TriggerUI
                     OVRInput.Axis1D.SecondaryHandTrigger, OVRInput.Controller.Touch);
                 leftGripValue = OVRInput.Get(
                     OVRInput.Axis1D.PrimaryHandTrigger, OVRInput.Controller.Touch);
+                // Button.One is A on the right touch and X on the left —
+                // split them so each hand can carry its own chords.
                 aValue = OVRInput.Get(
-                    OVRInput.Button.One, OVRInput.Controller.Touch) ? 1f : 0f;
+                    OVRInput.Button.One, OVRInput.Controller.RTouch) ? 1f : 0f;
+                leftAValue = OVRInput.Get(
+                    OVRInput.Button.One, OVRInput.Controller.LTouch) ? 1f : 0f;
 				leftIndexValue = OVRInput.Get(
 					OVRInput.Axis1D.PrimaryIndexTrigger, OVRInput.Controller.Touch);
                 rightStick = OVRInput.Get(
                     OVRInput.Axis2D.SecondaryThumbstick, OVRInput.Controller.Touch);
             }
-			else if (!OpenVrInputBridge.TryGetLeftIndexTrigger(out leftIndexValue))
-				leftIndexValue = 0f;
+			else
+            {
+                if (!OpenVrInputBridge.TryGetLeftIndexTrigger(out leftIndexValue))
+				    leftIndexValue = 0f;
+                OpenVrInputBridge.TryGetAButtons(out aValue, out leftAValue);
+            }
             _sampledRightStick = rightStick;
             float sampleDt = _lastSampleTime > 0f ?
                 Time.unscaledTime - _lastSampleTime : 0f;
@@ -1539,10 +1605,6 @@ namespace Quest3TriggerUI
                     " idx=" + indexValue.ToString("F2"));
             KeyboardChord.Advance(frame, Time.unscaledTime, indexValue, gripValue);
             RecenterChord.Advance(frame, Time.unscaledTime, leftGripValue, gripValue);
-            bool aPressed = aValue >= 0.5f;
-            _aButtonDownFrame = ! _lastAButton && aPressed ? frame : -1;
-            _aButtonUpFrame = _lastAButton && !aPressed ? frame : -1;
-            _lastAButton = aPressed;
 
             UiAssistHudLink.UpdatePanelOrbitInput(RightGripTrigger.Pressed, rightStick,
                 !InputRuntimeActive || KeyboardVisible || RadialMenuVisible || SliderDragActive ||
@@ -1550,20 +1612,11 @@ namespace Quest3TriggerUI
                 (KeyboardChord != null && KeyboardChord.Active));
             ShortcutGestures.Advance(frame, Time.unscaledTime,
                 leftIndexValue, leftGripValue, indexValue, gripValue,
+                aValue, leftAValue,
                 SliderDragActive || ClothingDragActive || RadialMenuVisible || PinnedTilesCapturingGrip || GripPitchCapturing || UiAssistHudLink.PanelOrbitCapturing);
 
             if (Instance != null)
                 Instance.RefreshPitchInputMode();
-        }
-
-        internal static bool IndexAButtonDown()
-        {
-            return _aButtonDownFrame == Time.frameCount;
-        }
-
-        internal static bool IndexAButtonUp()
-        {
-            return _aButtonUpFrame == Time.frameCount;
         }
 
 internal static bool SuppressRightInput()
@@ -1652,7 +1705,8 @@ internal static bool SuppressRightInput()
                               Quest3TriggerUIPlugin.Trigger.TapFrame == frame;
             if (triggerTap)
                 SyntheticRightUiClick.Begin(frame);
-            __result = triggerTap || Quest3TriggerUIPlugin.IndexAButtonDown();
+            // A/X are gesture chords now, not click sources.
+            __result = triggerTap;
             return false;
         }
     }
@@ -1687,8 +1741,7 @@ internal static bool SuppressRightInput()
                 return false;
             }
 
-            __result = SyntheticRightUiClick.ConsumeUp(frame) ||
-                       Quest3TriggerUIPlugin.IndexAButtonUp();
+            __result = SyntheticRightUiClick.ConsumeUp(frame);
             return false;
         }
     }

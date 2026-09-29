@@ -11,8 +11,9 @@ namespace Quest3TriggerUI
 
         private static void ToggleDockDeleteMode()
         {
-            // While the save dialog owns dock clicks, deletion stays off.
-            if (!_dockDeleteMode && _pdSaveBrowsing) return;
+            // While a save session owns dock clicks, deletion stays off.
+            if (!_dockDeleteMode && (_pdSaveBrowsing || _sdSaveBrowsing))
+                return;
             _dockDeleteMode = !_dockDeleteMode;
             if (_pdPersonOverlay != null) _pdPersonOverlay.SetActive(false);
             CancelDockRename();
@@ -38,6 +39,13 @@ namespace Quest3TriggerUI
                     : new Color(0.28f, 0.15f, 0.15f, 1f);
             if (_favDeleteLabel != null)
                 _favDeleteLabel.text = _dockDeleteMode ? "结束删除" : "删 除";
+            // The scene dock's strip paints the same shared mode.
+            if (_sdDeleteButton != null)
+                _sdDeleteButton.color = _dockDeleteMode
+                    ? new Color(0.72f, 0.12f, 0.10f, 1f)
+                    : new Color(0.28f, 0.15f, 0.15f, 1f);
+            if (_sdDeleteLabel != null)
+                _sdDeleteLabel.text = _dockDeleteMode ? "结束删除" : "删 除";
         }
 
         private static bool DeleteFavoriteOnClick(string uid)

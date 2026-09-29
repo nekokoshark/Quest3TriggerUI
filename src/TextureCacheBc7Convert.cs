@@ -26,6 +26,7 @@ namespace Quest3TriggerUI
         internal static ConfigEntry<string> ToolPath;
         internal static ConfigEntry<bool> DiagnoseLayout;
         internal static ConfigEntry<int> IdleSeconds;
+        internal static ConfigEntry<bool> Immediate;
         internal static ConfigEntry<bool> ConvertOnExit;
 
         private const string TempSuffix = ".bc7new";
@@ -37,6 +38,11 @@ namespace Quest3TriggerUI
         private const int MaxQueue = 2048;
         private const double JobTimeoutSeconds = 180.0;
         private const double StartSpacingSeconds = 15.0;
+        // Immediate mode drains the queue instead of waiting for a long idle
+        // window, so the spacing only has to keep the worker from monopolising
+        // a core back to back. Encoding still runs below normal priority and
+        // the swap still needs the load window to be clear.
+        private const double ImmediateSpacingSeconds = 1.0;
         private const int DdsHeader = 148;
 
         private static readonly object Sync = new object();
@@ -184,7 +190,7 @@ namespace Quest3TriggerUI
             if (!Active() || Tool() == null) return;
             EnsureWorker();
             SampleActivity();
-            _allowEncode = Window() && IdleEnough() && !WardrobeJanitor.ImagesBusy();
+            _allowEncode = Window() && (ImmediateOn() || IdleEnough()) && !WardrobeJanitor.ImagesBusy();
             var job = _ready;
             if (job == null) return;
             if (!Window()) return;
@@ -253,7 +259,7 @@ namespace Quest3TriggerUI
                     if (job != null) _encoding = job;
                 }
                 if (job == null) { Thread.Sleep(250); continue; }
-                _nextStart = Now() + (long)(Stopwatch.Frequency * StartSpacingSeconds);
+                _nextStart = Now() + (long)(Stopwatch.Frequency * Spacing());
                 bool ok = false;
                 try { ok = Encode(job); }
                 catch (Exception e) { Log("encode failed " + Name(job.data) + ": " + e.Message); }
@@ -593,6 +599,20 @@ namespace Quest3TriggerUI
             }
             catch { }
             if (active) _lastActivity = Now();
+        }
+
+        // Convert as soon as the load window closes rather than after a long
+        // idle stretch: the texture this entry belongs to is still resident
+        // right after its load, so the swap is far more likely to land, and
+        // the encode is on the background worker either way.
+        private static bool ImmediateOn()
+        {
+            return Immediate == null || Immediate.Value;
+        }
+
+        private static double Spacing()
+        {
+            return ImmediateOn() ? ImmediateSpacingSeconds : StartSpacingSeconds;
         }
 
         private static bool IdleEnough()
