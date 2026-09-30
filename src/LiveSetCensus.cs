@@ -74,6 +74,15 @@ namespace Quest3TriggerUI
         private static StreamWriter _w;
         private static string _path;
         private static int _budgetSeconds;
+        // Bookkeeping is ~10B/object in the visited set alone plus a queue slot
+        // each. The 900s run (maxObjects=80M) exhausted memory during the
+        // report phase and lost the whole run, because the report was buffered
+        // until the end. Growth is now capped relative to the start and the
+        // running totals are flushed once a minute.
+        private static long _startUsedMiB;
+        private static long _lastPartialMs;
+        private const int PartialEveryMs = 60000;
+        private const long GrowthCeilingMiB = 5120L;
         private static readonly Stopwatch _clock = new Stopwatch();
         private static readonly Stopwatch _slice = new Stopwatch();
         private static List<Row> _holderRows;
@@ -85,6 +94,13 @@ namespace Quest3TriggerUI
         private static HashSet<Type> _seededTypes;
         private static int _round;
         private static int _maxRounds = MaxRoundsAllowed;
+
+        // Type-root coverage. The residual (monoUsed minus counted) can only
+        // come from objects no seeded root reaches, so how many types the walk
+        // actually seeded - and how many it refused - is part of the verdict,
+        // not a detail. See ExpandStatics.
+        private static int _skipNull, _skipGeneric, _skipAlready, _skipRuntime;
+
         private static List<string> _attrNames;
         private static readonly Dictionary<Type, int> _unityAttrByType =
             new Dictionary<Type, int>();
@@ -193,6 +209,7 @@ namespace Quest3TriggerUI
             _seededTypes = new HashSet<Type>();
             _round = 0;
             _holderRows = new List<Row>();
+            _skipNull = _skipGeneric = _skipAlready = _skipRuntime = 0;
             _seedRoots = new List<Seed>();
             _seedIndex = 0;
             _liveIndex = 0;
@@ -200,6 +217,8 @@ namespace Quest3TriggerUI
             _attrNames = new List<string>();
             _unityAttrByType.Clear();
             _maxRounds = expand ? MaxRoundsAllowed : 0;
+            _startUsedMiB = UsedMiB();
+            _lastPartialMs = 0L;
             _live = null;
             _w.WriteLine("LiveSetCensus " + DateTime.Now.ToString("o") +
                 " budget=" + seconds + "s maxObjects=" + maxObjects +
@@ -269,6 +288,7 @@ namespace Quest3TriggerUI
 
         private static void Step()
         {
+            try { PartialTick(); } catch { }
             _slice.Reset();
             _slice.Start();
             switch (_stage)
@@ -372,12 +392,118 @@ namespace Quest3TriggerUI
             }
         }
 
+        private static long UsedMiB()
+        {
+            try { return MonoGcProbe.UsedBytes() / 1048576L; }
+            catch { return 0L; }
+        }
+
+        // Runs at most once a minute while a walk stage is active. Two jobs:
+        // leave a usable report behind if the run dies later, and stop the
+        // walk through the normal end-of-run path before it can exhaust
+        // memory.
+        private static void PartialTick()
+        {
+            if (_walk == null || _w == null) return;
+            if (_stage == Stage.Done || _stage == Stage.Idle) return;
+            long ms = _clock.ElapsedMilliseconds;
+            if (ms - _lastPartialMs < PartialEveryMs) return;
+            _lastPartialMs = ms;
+            long usedMiB = UsedMiB();
+            DumpPartial("tick", usedMiB);
+            if (_walk.Stop == null && _startUsedMiB > 0L && usedMiB > 0L &&
+                usedMiB - _startUsedMiB > GrowthCeilingMiB)
+            {
+                _walk.Stop = "census growth ceiling +" +
+                    (usedMiB - _startUsedMiB) + "MiB";
+                DumpPartial("ceiling", usedMiB);
+            }
+        }
+
+        private static void DumpPartial(string tag, long usedMiB)
+        {
+            try
+            {
+                if (_w == null || _walk == null) return;
+                _w.WriteLine("  partial[" + tag + "] t=" +
+                    (_clock.ElapsedMilliseconds / 1000) + "s visited=" +
+                    _walk.Objects + " counted=" +
+                    (_walk.Total / 1073741824.0).ToString("F2") + "GB queued=" +
+                    _walk.QObj.Count + " monoUsed=" +
+                    (usedMiB / 1024.0).ToString("F2") + "GB stop=" +
+                    (_walk.Stop == null ? "running" : _walk.Stop));
+                _w.WriteLine("      top:" + TopTypes(8));
+                _w.WriteLine("      holders:" + TopHolders(6));
+                _w.Flush();
+            }
+            catch { }
+        }
+
+        // Top-N by insertion, without allocating or sorting the whole table:
+        // this runs on the main thread while the game is live.
+        private static string TopTypes(int n)
+        {
+            string[] names = new string[n];
+            long[] vals = new long[n];
+            foreach (KeyValuePair<string, long> kv in _walk.TypeBytes)
+            {
+                long v = kv.Value;
+                int at = -1;
+                for (int i = 0; i < n; i++)
+                    if (v > vals[i]) { at = i; break; }
+                if (at < 0) continue;
+                for (int j = n - 1; j > at; j--)
+                { names[j] = names[j - 1]; vals[j] = vals[j - 1]; }
+                names[at] = kv.Key;
+                vals[at] = v;
+            }
+            var sb = new System.Text.StringBuilder(192);
+            for (int i = 0; i < n; i++)
+            {
+                if (names[i] == null) break;
+                sb.Append(' ').Append(names[i]).Append('=')
+                  .Append(vals[i] / 1048576L).Append("MB");
+            }
+            return sb.ToString();
+        }
+
+        private static string TopHolders(int n)
+        {
+            int[] ids = new int[n];
+            long[] vals = new long[n];
+            for (int i = 0; i < n; i++) ids[i] = -1;
+            foreach (KeyValuePair<int, long> kv in _walk.AttrBytes)
+            {
+                long v = kv.Value;
+                int at = -1;
+                for (int i = 0; i < n; i++)
+                    if (v > vals[i]) { at = i; break; }
+                if (at < 0) continue;
+                for (int j = n - 1; j > at; j--)
+                { ids[j] = ids[j - 1]; vals[j] = vals[j - 1]; }
+                ids[at] = kv.Key;
+                vals[at] = v;
+            }
+            var sb = new System.Text.StringBuilder(192);
+            for (int i = 0; i < n; i++)
+            {
+                if (ids[i] < 0) break;
+                string nm = "?";
+                if (_attrNames != null && ids[i] < _attrNames.Count)
+                    nm = _attrNames[ids[i]];
+                sb.Append(' ').Append(nm).Append('=')
+                  .Append(vals[i] / 1048576L).Append("MB");
+            }
+            return sb.ToString();
+        }
+
         private static void Abort(string reason)
         {
             try
             {
                 if (_w != null)
                 {
+                    try { DumpPartial("abort", UsedMiB()); } catch { }
                     _w.WriteLine("ABORTED: " + reason);
                     _w.Flush();
                     _w.Close();
@@ -646,6 +772,18 @@ namespace Quest3TriggerUI
             Type ct = o.GetType();
                 TypeMeta meta = MetaOf(ct);
                 int attr = UnityAttr(ct);
+                // The via label is interned once per (type, field) and the id
+                // is reused for every object: the old code built a fresh
+                // "I:Type.Field" string per edge, which at millions of edges
+                // was the census's largest single allocation.
+                if (meta.UnityViaIds == null)
+                {
+                    int[] ids = new int[meta.Fields.Length];
+                    for (int k = 0; k < ids.Length; k++)
+                        ids[k] = _walk.Intern("I:" + ct.Name + "." +
+                            meta.Fields[k].Name);
+                    meta.UnityViaIds = ids;
+                }
             for (int fi = 0; fi < meta.Fields.Length; fi++)
             {
                 Type ft;
@@ -658,7 +796,7 @@ namespace Quest3TriggerUI
                 try { fv = meta.Fields[fi].GetValue(o); }
                 catch { continue; }
                 if (fv == null) continue;
-                    _walk.Add(fv, "I:" + ct.Name + "." + meta.Fields[fi].Name, attr);
+                    _walk.Add(fv, meta.UnityViaIds[fi], attr);
             }
         }
 
@@ -671,6 +809,7 @@ namespace Quest3TriggerUI
             internal int Size;
             internal FieldInfo[] Fields;
             internal string[] Labels;
+            internal int[] UnityViaIds;
         }
 
         private static int SizeOfType(Type t, int guard)
@@ -907,12 +1046,20 @@ namespace Quest3TriggerUI
             for (int i = 0; i < types.Count && added < ExpandTypesPerRound; i++)
             {
                 Type t = types[i];
-                if (t == null || !t.IsClass || t.IsNested ||
-                    t.IsGenericTypeDefinition) continue;
-                if (_seededTypes.Contains(t)) continue;
+                // Observed means the game already holds an instance, so the
+                // type is initialised and its statics are safe to read - the
+                // 11.10 rule is about *uninitialised* types, and the old
+                // "class and not nested" filter was only inherited from it.
+                // Measured 2026-09-30: nested types and value types were the
+                // two categories left unseeded, i.e. a root hole of unknown
+                // size in exactly the run that has to explain the residual.
+                if (t == null) { _skipNull++; continue; }
+                if (t.IsGenericTypeDefinition) { _skipGeneric++; continue; }
+                if (_seededTypes.Contains(t)) { _skipAlready++; continue; }
                 string an;
-                try { an = t.Assembly.GetName().Name; } catch { continue; }
-                if (an == null || RuntimeAssembly(an)) continue;
+                try { an = t.Assembly.GetName().Name; }
+                catch { _skipNull++; continue; }
+                if (an == null || RuntimeAssembly(an)) { _skipRuntime++; continue; }
                 SeedType("obs." + t.Name, t);
                 added++;
             }
@@ -950,7 +1097,7 @@ namespace Quest3TriggerUI
             internal long Bytes;
             internal string Type;
             internal long Length;
-            internal string Via;
+            internal int Via;
         }
 
         private sealed class Walker
@@ -963,13 +1110,16 @@ namespace Quest3TriggerUI
                 new Dictionary<string, long>();
             internal readonly Dictionary<string, int> TypeCount =
                 new Dictionary<string, int>();
-            internal readonly Dictionary<string, long> ViaBytes =
-                new Dictionary<string, long>();
-            internal readonly Dictionary<string, int> ViaCount =
-                new Dictionary<string, int>();
+            internal readonly Dictionary<int, long> ViaBytes =
+                new Dictionary<int, long>();
+            internal readonly Dictionary<int, int> ViaCount =
+                new Dictionary<int, int>();
+            internal readonly Dictionary<string, int> ViaIds =
+                new Dictionary<string, int>(StringComparer.Ordinal);
+            internal readonly List<string> ViaNames = new List<string>();
             internal readonly List<BigRow> Big = new List<BigRow>();
             internal readonly Queue<object> QObj = new Queue<object>();
-                internal readonly Queue<string> QVia = new Queue<string>();
+                internal readonly Queue<int> QVia = new Queue<int>();
                 // Attribution travels with the entry, not with the object: whoever
                 // enqueued an object first owns it, so seeding order (named roots
                 // before the Unity shell) decides the ownership of shared data.
@@ -998,7 +1148,29 @@ namespace Quest3TriggerUI
                 return false;
             }
 
-                internal void Add(object val, string via, int attr)
+            internal int Intern(string via)
+            {
+                if (via == null) return -1;
+                int id;
+                if (ViaIds.TryGetValue(via, out id)) return id;
+                id = ViaNames.Count;
+                ViaNames.Add(via);
+                ViaIds[via] = id;
+                return id;
+            }
+
+            internal string ViaName(int id)
+            {
+                if (id < 0 || id >= ViaNames.Count) return "?";
+                return ViaNames[id];
+            }
+
+            internal void Add(object val, string via, int attr)
+            {
+                Add(val, Intern(via), attr);
+            }
+
+            internal void Add(object val, int via, int attr)
             {
                 if (val == null) return;
                 QObj.Enqueue(val);
@@ -1009,13 +1181,13 @@ namespace Quest3TriggerUI
             internal bool PopOne()
             {
                 object val = QObj.Dequeue();
-                    string via = QVia.Dequeue();
+                    int via = QVia.Dequeue();
                     int attr = QAttr.Dequeue();
                     Pop(val, via, attr);
                 return QObj.Count > 0;
             }
 
-                private void Pop(object val, string via, int attr)
+                private void Pop(object val, int via, int attr)
             {
                 if (val == null) return;
                 Type t = val.GetType();
@@ -1046,7 +1218,7 @@ namespace Quest3TriggerUI
                     AttrCount.TryGetValue(attr, out ac);
                     AttrCount[attr] = ac + 1;
 
-                if (bytes >= BigObjectBytes && via != null)
+                if (bytes >= BigObjectBytes && via >= 0)
                 {
                     long vb;
                     ViaBytes.TryGetValue(via, out vb);
@@ -1148,12 +1320,22 @@ namespace Quest3TriggerUI
         {
             if (_w == null) return;
             Head("END");
-            WriteHolderRows();
-            if (_audioLine != null) _w.WriteLine(_audioLine);
+            // The verdict goes out first, and every section is flushed as it
+            // is written: the 900s run died in this method with the whole
+            // report still sitting in the writer's buffer.
             double monoUsed = MonoGcProbe.UsedBytes() / 1073741824.0;
             _w.WriteLine("walk: unityObjects=" + (_live == null ? 0 : _live.Length) +
                 " unitySeeded=" + _liveIndex + " queued=" + _walk.QObj.Count +
                 " rounds=" + _round + " maxObjects=" + _walk.MaxObjects);
+            _w.WriteLine("root coverage: observedTypes=" +
+                (_walk.Observed == null ? 0 : _walk.Observed.Count) +
+                " seededTypes=" +
+                (_seededTypes == null ? 0 : _seededTypes.Count) +
+                " expandRounds=" + _round +
+                " skippedGenericDef=" + _skipGeneric +
+                " skippedRuntimeAsm=" + _skipRuntime +
+                " skippedAlreadySeeded=" + _skipAlready +
+                " skippedNull=" + _skipNull);
             _w.WriteLine(string.Format(
                 "COVERAGE visited={0} objects counted={1:F2}GB monoUsed={2:F2}GB ratio={3:F1}% stop={4} elapsed={5}s",
                 _walk.Objects, _walk.Total / 1073741824.0, monoUsed,
@@ -1161,6 +1343,17 @@ namespace Quest3TriggerUI
                     ? _walk.Total / 1073741824.0 / monoUsed * 100.0 : 0.0,
                 _walk.Stop == null ? "complete" : _walk.Stop,
                 _clock.ElapsedMilliseconds / 1000));
+            {
+                double countedGb = _walk.Total / 1073741824.0;
+                double gapGb = monoUsed - countedGb;
+                _w.WriteLine(string.Format(
+                    "gap: monoUsed-counted={0:F2}GB ({1:F1}% of monoUsed) - native GCHandles, thread stacks, JIT constants and BCL internals are not enumerable from managed code",
+                    gapGb, monoUsed > 0 ? gapGb / monoUsed * 100.0 : 0.0));
+            }
+            _w.Flush();
+            WriteHolderRows();
+            if (_audioLine != null) _w.WriteLine(_audioLine);
+            _w.Flush();
 
             _w.WriteLine("--- estimated bytes by type (top 40) ---");
             var typeRows = new List<KeyValuePair<string, long>>(_walk.TypeBytes);
@@ -1171,6 +1364,7 @@ namespace Quest3TriggerUI
                 _w.WriteLine(string.Format("  {0,10:F2}GB  n={1,-9} {2}",
                     typeRows[i].Value / 1073741824.0,
                     _walk.TypeCount[typeRows[i].Key], typeRows[i].Key));
+            _w.Flush();
 
             _w.WriteLine("--- largest single objects (>=1MB) ---");
             _walk.Big.Sort(delegate(BigRow x, BigRow y)
@@ -1180,18 +1374,21 @@ namespace Quest3TriggerUI
                     _walk.Big[i].Bytes / 1048576.0, _walk.Big[i].Type,
                     _walk.Big[i].Length > 0
                         ? "[len=" + _walk.Big[i].Length + "]" : "",
-                    _walk.Big[i].Via));
+                    _walk.ViaName(_walk.Big[i].Via)));
 
+            _w.Flush();
             _w.WriteLine("--- big-object totals by holder field (>=1MB objects only) ---");
-            var viaRows = new List<KeyValuePair<string, long>>(_walk.ViaBytes);
-            viaRows.Sort(delegate(KeyValuePair<string, long> x,
-                                  KeyValuePair<string, long> y)
+            var viaRows = new List<KeyValuePair<int, long>>(_walk.ViaBytes);
+            viaRows.Sort(delegate(KeyValuePair<int, long> x,
+                                  KeyValuePair<int, long> y)
                 { return y.Value.CompareTo(x.Value); });
             for (int i = 0; i < Math.Min(40, viaRows.Count); i++)
                 _w.WriteLine(string.Format("  {0,10:F1}MB  x{1,-6} {2}",
                     viaRows[i].Value / 1048576.0,
-                    _walk.ViaCount[viaRows[i].Key], viaRows[i].Key));
+                    _walk.ViaCount[viaRows[i].Key],
+                    _walk.ViaName(viaRows[i].Key)));
 
+            _w.Flush();
             _w.WriteLine("--- counted bytes by root attribution (top 40) ---");
             var attrRows = new List<KeyValuePair<int, long>>(_walk.AttrBytes);
             attrRows.Sort(delegate(KeyValuePair<int, long> x,

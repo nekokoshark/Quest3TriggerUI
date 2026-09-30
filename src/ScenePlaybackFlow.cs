@@ -1134,6 +1134,22 @@ namespace Quest3TriggerUI
             var groups = new Dictionary<string, NumberedPlayback>();
             JSONArray atoms = scene == null ? null : scene["atoms"] as JSONArray;
             if (atoms == null) return new List<NumberedPlayback>();
+            // Trigger-forwarding map: a chain action calling "Trigger"/
+            // "OnTrigger" on another storable defers the real work to that
+            // storable's own trigger block (VAMStoryActions menus →
+            // MacGruber.Delay → "Play Segment X"). Needed to resolve which
+            // segment a forwarding button ultimately plays.
+            var storById = new Dictionary<string, JSONNode>(StringComparer.Ordinal);
+            foreach (JSONNode a2 in atoms.Childs)
+            {
+                JSONArray ss = a2["storables"] as JSONArray;
+                if (ss == null) continue;
+                foreach (JSONNode s in ss.Childs)
+                {
+                    string aid = a2["id"], sid = s["id"];
+                    if (aid != null && sid != null) storById[aid + "\n" + sid] = s;
+                }
+            }
             foreach (JSONNode atom in ButtonEntries(atoms))
             {
                 if ((string)atom["type"] != "UIButton") continue;
@@ -1148,37 +1164,8 @@ namespace Quest3TriggerUI
                     var targets = new List<string>();
                     string segment = null, directSegment = null;
                     bool mismatch = false;
-                    foreach (JSONNode action in actions.Childs)
-                    {
-                        string receiver = action["receiver"];
-                        if (receiver == null || !receiver.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal)) continue;
-                        string name = action["receiverTargetName"];
-                        // Non-segment Timeline calls (Stop And Reset, Paused…)
-                        // ride along in the same button chain — they don't
-                        // make the stage ambiguous; only a second different
-                        // segment name does.
-                        if (name == null || !name.StartsWith("Play Segment ", StringComparison.Ordinal)) continue;
-                        string seg = name.Substring(13);
-                        // A literal "Segment N" is a real segment name — a chain
-                        // whose only segment call is "Play Segment Segment 2"
-                        // is still a stage button (VAMStoryAction menus do this).
-                        // When the chain also carries a named segment, the named
-                        // one wins and the Segment-N call rides along.
-                        if (DirectSegment.Match(name).Success)
-                        {
-                            if (directSegment != null && directSegment != seg) { mismatch = true; break; }
-                            directSegment = seg;
-                        }
-                        else
-                        {
-                            if (segment != null && segment != seg) { mismatch = true; break; }
-                            segment = seg;
-                        }
-                        string targetAtom = action["receiverAtom"];
-                        if (string.IsNullOrEmpty(targetAtom)) targetAtom = atom["id"];
-                        string target = targetAtom + "\n" + receiver;
-                        if (!targets.Contains(target)) targets.Add(target);
-                    }
+                    HarvestSegmentCalls(actions, atom["id"], storById, 0,
+                        targets, ref segment, ref directSegment, ref mismatch);
                     string finalSegment = segment ?? directSegment;
                     if (mismatch || finalSegment == null || targets.Count == 0) continue;
                     targets.Sort(StringComparer.Ordinal);
@@ -1219,6 +1206,67 @@ namespace Quest3TriggerUI
             foreach (NumberedPlayback group in groups.Values)
                 if (group.Stages.Count >= 2) result.Add(group);
             return result;
+        }
+
+        // Harvest "Play Segment <name>" calls from a button chain, following
+        // one hop of trigger forwarding: a chain action that calls "Trigger"/
+        // "OnTrigger" on another storable defers the real work to that
+        // storable's own trigger block (VAMStoryActions menus → MacGruber.
+        // Delay → "Play Segment X"). Non-segment Timeline calls ride along;
+        // only a second different segment name marks the chain ambiguous.
+        private static void HarvestSegmentCalls(JSONArray actions,
+            string ownerAtomId, Dictionary<string, JSONNode> storables,
+            int depth, List<string> targets,
+            ref string segment, ref string directSegment, ref bool mismatch)
+        {
+            if (actions == null || mismatch) return;
+            foreach (JSONNode action in actions.Childs)
+            {
+                string receiver = action["receiver"];
+                if (receiver == null) continue;
+                string name = action["receiverTargetName"];
+                if (receiver.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal))
+                {
+                    if (name == null || !name.StartsWith("Play Segment ", StringComparison.Ordinal)) continue;
+                    string seg = name.Substring(13);
+                    // A literal "Segment N" is a real segment name — a chain
+                    // whose only segment call is "Play Segment Segment 2"
+                    // is still a stage button (VAMStoryAction menus do this).
+                    // When the chain also carries a named segment, the named
+                    // one wins and the Segment-N call rides along.
+                    if (DirectSegment.Match(name).Success)
+                    {
+                        if (directSegment != null && directSegment != seg) { mismatch = true; return; }
+                        directSegment = seg;
+                    }
+                    else
+                    {
+                        if (segment != null && segment != seg) { mismatch = true; return; }
+                        segment = seg;
+                    }
+                    string targetAtom = action["receiverAtom"];
+                    if (string.IsNullOrEmpty(targetAtom)) targetAtom = ownerAtomId;
+                    string target = targetAtom + "\n" + receiver;
+                    if (!targets.Contains(target)) targets.Add(target);
+                    continue;
+                }
+                if (depth > 0 || (name != "Trigger" && name != "OnTrigger")) continue;
+                string fwdAtom = action["receiverAtom"];
+                if (string.IsNullOrEmpty(fwdAtom)) fwdAtom = ownerAtomId;
+                JSONNode st;
+                if (storables == null ||
+                    !storables.TryGetValue(fwdAtom + "\n" + receiver, out st) ||
+                    st.AsObject == null) continue;
+                foreach (string key in new List<string>(st.AsObject.Keys))
+                {
+                    JSONNode node = st[key];
+                    JSONArray inner = node == null ? null : node["startActions"] as JSONArray;
+                    if (inner == null) continue;
+                    HarvestSegmentCalls(inner, fwdAtom, storables, depth + 1,
+                        targets, ref segment, ref directSegment, ref mismatch);
+                    if (mismatch) return;
+                }
+            }
         }
 
         // A scene can serialize one Timeline as a numbered family and as named

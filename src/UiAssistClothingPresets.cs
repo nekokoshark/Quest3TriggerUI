@@ -46,13 +46,13 @@ namespace Quest3TriggerUI
                 _presetBrowsing = false;
                 _presetState = null;
             }
-            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+            if (sc.isLoading || !sc.MainHUDVisible) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); if (!PreserveSceneDockForBa()) ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
             try
             {
                 Snapshot state = FindEditor(sc);
-                if (state == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (state == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); if (!PreserveSceneDockForBa()) ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 GameObject list = Read(state.Editor.GetType(), state.Editor, "aceScrollListGO") as GameObject;
-                if (list == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
+                if (list == null) { if (!_pdPicking) HidePresetDock(); ClearFavoritesBar(); if (!PreserveSceneDockForBa()) ClearSceneDock(); ClearBanBar(); ClearLockBar(); ClearPresetButtons(); return; }
                 bool fresh = !(_presetList == list &&
                     ReferenceEquals(_presetEditor, state.Editor) &&
                     _editorVisibilityButton != null);

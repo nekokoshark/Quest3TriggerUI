@@ -995,6 +995,7 @@ namespace Quest3TriggerUI
                                 .ToString("F0")).Append("MB; ");
                     Log("snap[" + tag + "] top: " + sb);
                 }
+                MemoryRetentionReport.SnapshotHook(tag);
             }
             catch (Exception ex)
             {

@@ -306,5 +306,100 @@ namespace Quest3TriggerUI
             Log("pd reorder " + from + "->" + dst + " " + source.PresetPath);
             return true;
         }
+
+        // ---------- left scene dock (mirrors the other two) ----------
+
+        private static List<string[]> _sdDragList;
+        private static string _sdDragPath;
+        private static int _sdDropIndex = -1;
+        private static bool _sdPtrLogged;
+
+        private static void BeginSdReorder(AceFavDragSource source)
+        {
+            ClearSdReorder();
+            if (!source.FromSceneDock ||
+                string.IsNullOrEmpty(source.ScenePath)) return;
+            _sdDragList = VisibleSdFavorites;
+            _sdDragPath = source.ScenePath;
+            _sdPtrLogged = false;
+            Log("sd drag begin " + source.ScenePath);
+        }
+
+        private static void ClearSdReorder()
+        {
+            if (_sdDropIndex >= 0) _sdPreviewDirty = true;
+            _sdDragList = null;
+            _sdDragPath = null;
+            _sdDropIndex = -1;
+        }
+
+        private static List<string[]> SdDisplayOrder()
+        {
+            List<string[]> items = VisibleSdFavorites;
+            if (!ReferenceEquals(items, _sdDragList) || _sdDropIndex < 0)
+                return items;
+            int from = FindSdIndex(items, _sdDragPath);
+            if (from < 0) return items;
+            var display = new List<string[]>(items);
+            string[] entry = display[from];
+            display.RemoveAt(from);
+            int dst = _sdDropIndex - (from < _sdDropIndex ? 1 : 0);
+            display.Insert(Mathf.Clamp(dst, 0, display.Count), entry);
+            return display;
+        }
+
+        private static int SdDropIndex()
+        {
+            List<string[]> items = VisibleSdFavorites;
+            if (!ReferenceEquals(items, _sdDragList) || items.Count == 0)
+                return -1;
+            Vector2 p;
+            if (!DockPointerLocal(_sdCells, out p)) return -1;
+            return GridInsertIndex(p, _sdCells, items.Count);
+        }
+
+        private static void TickSdReorder()
+        {
+            if (_sdDragList == null) return;
+            Vector2 point;
+            int index = -1;
+            // Over the tag strip the drop files into that tag group —
+            // no reorder preview (mirrors the favorites/preset docks).
+            if (!PointerOnRect(_sdTagStrip, out point) &&
+                PointerOnRect(_sdDock, out point))
+                index = SdDropIndex();
+            if (!_sdPtrLogged)
+            {
+                _sdPtrLogged = true;
+                Vector3 cp;
+                Log("sd ptr cursor=" +
+                    (DragCursorWorld(out cp) ? cp.ToString("F3") : "none") +
+                    " idx=" + index);
+            }
+            if (index != _sdDropIndex)
+            {
+                _sdDropIndex = index;
+                _sdPreviewDirty = true;
+            }
+        }
+
+        private static bool CommitSdReorder(AceFavDragSource source)
+        {
+            List<string[]> items = VisibleSdFavorites;
+            if (!ReferenceEquals(items, _sdDragList) ||
+                string.IsNullOrEmpty(source.ScenePath)) return false;
+            int from = FindSdIndex(items, source.ScenePath);
+            int to = SdDropIndex();
+            if (to < 0 || from < 0) return false;
+            int dst = to - (from < to ? 1 : 0);
+            if (dst == from) return false;
+            string[] entry = items[from];
+            items.RemoveAt(from);
+            items.Insert(Mathf.Clamp(dst, 0, items.Count), entry);
+            SaveSdStores();
+            _sdPreviewDirty = true;
+            Log("sd reorder " + from + "->" + dst + " " + source.ScenePath);
+            return true;
+        }
     }
 }

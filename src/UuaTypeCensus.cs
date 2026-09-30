@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using BepInEx.Configuration;
 using HarmonyLib;
@@ -63,6 +64,11 @@ namespace Quest3TriggerUI
         private static float _lastAt = -1f;
         private static string _who = "-";
         private static string _chain = "";
+        // Identity maps for the reconciliation below: filled by Read() in the
+        // same loops it already walks, kept only for the duration of one sweep.
+        private static Dictionary<int, InstanceAssetLedger.AssetRef> _ids;
+        private static Dictionary<int, InstanceAssetLedger.AssetRef> _beforeIds;
+        private static Dictionary<int, InstanceAssetLedger.AssetRef> _afterIds;
 
         internal static void Install()
         {
@@ -93,18 +99,24 @@ namespace Quest3TriggerUI
             // delta into two sweeps minus one census; count it and keep the
             // first pair clean.
             if (_pending) { _skipped++; return true; }
-            float now = Time.realtimeSinceStartup;
-            if (_lastAt >= 0f && now - _lastAt < MinIntervalSeconds) { _skipped++; return true; }
-            _lastAt = now;
             Classify();
-            // Consulted before the census so a sweep the gate demotes costs
-            // nothing at all: no census pair, no VRAM read, no stall.
+            // The gate is consulted before the census interval, and a demoted
+            // sweep no longer stamps _lastAt: the gate is about whether the
+            // engine may spend a full mark at all, while the interval only
+            // decides whether this call earns a clean measurement pair. In the
+            // other order a demoted preset sweep armed the six-second window
+            // and the janitor's sweep two seconds later slipped through
+            // unmeasured and un-demoted.
             if (UuaGate.ShouldSkip(_who, _chain))
             {
                 __result = UuaGate.OnSkipped(_who);
                 return false;
             }
+            float now = Time.realtimeSinceStartup;
+            if (_lastAt >= 0f && now - _lastAt < MinIntervalSeconds) { _skipped++; return true; }
+            _lastAt = now;
             _before = Read();
+            _beforeIds = _ids;
             _callAt = Time.realtimeSinceStartup;
             _callFrame = Time.frameCount;
             _op = null;
@@ -130,7 +142,7 @@ namespace Quest3TriggerUI
             _pending = false;
             _calls++;
             Reading after;
-            try { after = Read(); }
+            try { after = Read(); _afterIds = _ids; }
             catch (Exception e)
             {
                 Log("call#" + _calls + " after census failed: " + e.Message);
@@ -159,6 +171,12 @@ namespace Quest3TriggerUI
                     ? " go=" + _before.Go + "->" + after.Go + "(" + (after.Go - _before.Go) + ")" +
                       " comp=" + _before.Cmp + "->" + after.Cmp + "(" + (after.Cmp - _before.Cmp) + ")"
                     : " go/comp=off"));
+            // What the sweep actually took, by identity, and how much of it the
+            // shadow ledger had already seen leave the scene with a dying item.
+            try { InstanceAssetLedger.NoteSweepDiff(_beforeIds, _afterIds); }
+            catch (Exception e) { Log("reconcile failed: " + e.Message); }
+            _beforeIds = null;
+            _afterIds = null;
         }
 
         internal static void Shutdown()
@@ -191,8 +209,20 @@ namespace Quest3TriggerUI
             try { r.Vram = MemoryProbe.GfxDedicatedBytes(); }
             catch { r.Vram = -1; }
 
+            var ids = new Dictionary<int, InstanceAssetLedger.AssetRef>(4096);
+            _ids = ids;
             Material[] mats = Resources.FindObjectsOfTypeAll<Material>();
             r.Mat = mats == null ? 0 : mats.Length;
+            if (mats != null)
+                for (int i = 0; i < mats.Length; i++)
+                {
+                    Material material = mats[i];
+                    if (material == null) continue;
+                    // This build's Profiler.GetRuntimeMemorySizeLong returns 0
+                    // (see the header), so a material carries no byte estimate.
+                    ids[material.GetInstanceID()] = Ref(material.GetInstanceID(),
+                        material.name, 0L, 0);
+                }
 
             Mesh[] meshes = Resources.FindObjectsOfTypeAll<Mesh>();
             if (meshes != null)
@@ -202,8 +232,14 @@ namespace Quest3TriggerUI
                 {
                     Mesh mesh = meshes[i];
                     if (mesh == null) continue;
-                    try { r.MeshV += mesh.vertexCount; }
-                    catch { }
+                    int verts = 0;
+                    try { verts = mesh.vertexCount; } catch { }
+                    r.MeshV += verts;
+                    // Geometry-derived, like every other byte column here: 28B
+                    // is the position-normal-uv scale of one vertex, so this is
+                    // a ranking estimate, not an allocation size.
+                    ids[mesh.GetInstanceID()] = Ref(mesh.GetInstanceID(),
+                        mesh.name, verts * 28L, 1);
                 }
             }
 
@@ -214,8 +250,12 @@ namespace Quest3TriggerUI
                 for (int i = 0; i < textures.Length; i++)
                 {
                     if (textures[i] == null) continue;
-                    try { r.TexB += GpuResourceProbe.TexBytes(textures[i]); }
+                    long texB = 0L;
+                    try { texB = GpuResourceProbe.TexBytes(textures[i]); }
                     catch { }
+                    r.TexB += texB;
+                    ids[textures[i].GetInstanceID()] = Ref(
+                        textures[i].GetInstanceID(), textures[i].name, texB, 2);
                 }
             }
 
@@ -226,8 +266,12 @@ namespace Quest3TriggerUI
                 for (int i = 0; i < targets.Length; i++)
                 {
                     if (targets[i] == null) continue;
-                    try { r.RtB += GpuResourceProbe.RtBytes(targets[i]); }
+                    long rtB = 0L;
+                    try { rtB = GpuResourceProbe.RtBytes(targets[i]); }
                     catch { }
+                    r.RtB += rtB;
+                    ids[targets[i].GetInstanceID()] = Ref(
+                        targets[i].GetInstanceID(), targets[i].name, rtB, 3);
                 }
             }
 
@@ -241,6 +285,17 @@ namespace Quest3TriggerUI
 
             r.Ms = sw.ElapsedMilliseconds;
             return r;
+        }
+
+        private static InstanceAssetLedger.AssetRef Ref(int id, string name,
+            long bytes, int kind)
+        {
+            var a = new InstanceAssetLedger.AssetRef();
+            a.Id = id;
+            a.Name = name == null ? "?" : name;
+            a.Bytes = bytes;
+            a.Kind = kind;
+            return a;
         }
 
         // Who issued this sweep? PresetSweepGate exposes no in-window state

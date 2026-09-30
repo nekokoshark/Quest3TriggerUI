@@ -114,6 +114,12 @@ namespace Quest3TriggerUI
 
             int texN = 0, rtN = 0;
             long texBytes = 0, rtBytes = 0;
+            // Our own panel thumbnails deliberately share one name and size
+            // (Q3PdThumb|512x512), so the dup census below cannot tell "one
+            // per slot" from "the same texture blown up N times". Counting
+            // them apart keeps the dup line honest about real leaks.
+            long uiThumbN = 0, uiThumbBytes = 0;
+            var uiThumbMap = new Dictionary<string, int>();
             // Duplicate-name census: reloading the same scene should reuse or
             // replace textures, so identical (name,size) pairs stacking up is
             // the reload-leak signature. Key includes dimensions+format so
@@ -128,6 +134,16 @@ namespace Quest3TriggerUI
                 texN++;
                 long tb = TexBytes(t);
                 texBytes += tb;
+                if (t.name != null && t.name.Length > 5 &&
+                    t.name.StartsWith("Q3", StringComparison.Ordinal) &&
+                    t.name.EndsWith("Thumb", StringComparison.Ordinal))
+                {
+                    uiThumbN++;
+                    uiThumbBytes += tb;
+                    string uk = t.name + "|" + t.width + "x" + t.height;
+                    int un;
+                    uiThumbMap[uk] = uiThumbMap.TryGetValue(uk, out un) ? un + 1 : 1;
+                }
                 string key = t.name + "|" + t.width + "x" + t.height;
                 int n;
                 dupMap[key] = dupMap.TryGetValue(key, out n) ? n + 1 : 1;
@@ -147,7 +163,7 @@ namespace Quest3TriggerUI
                 if (eb > dupTopBytes)
                 {
                     dupTopBytes = eb;
-                    dupTop = " \"" + kv.Key.Split('|')[0] + "\"x" + kv.Value;
+                    dupTop = " \"" + kv.Key + "\"x" + kv.Value;
                 }
             }
 
@@ -194,6 +210,23 @@ namespace Quest3TriggerUI
             }
             goN = Resources.FindObjectsOfTypeAll<GameObject>().Length;
 
+            // Top three of our own thumbnail populations: the cap on decoded
+            // dock thumbs is only provable from the size in the name, and the
+            // dup line below reports the largest group overall, which after
+            // the cap is the browser's.
+            string uiTop = "";
+            for (int rank = 0; rank < 3; rank++)
+            {
+                string bestKey = null;
+                int bestN = 0;
+                foreach (KeyValuePair<string, int> kv in uiThumbMap)
+                {
+                    if (kv.Value > bestN) { bestN = kv.Value; bestKey = kv.Key; }
+                }
+                if (bestKey == null || bestN < 2) break;
+                uiThumbMap.Remove(bestKey);
+                uiTop += " " + bestKey + "x" + bestN;
+            }
             WardrobeJanitor.Log("gpu census tex=" + texN + "/" + (texBytes / 1048576) +
                 "MiB rt=" + rtN + "/" + (rtBytes / 1048576) +
                 "MiB cbuf=" + bufLive + "/" + (bufBytes / 1048576) +
@@ -202,6 +235,7 @@ namespace Quest3TriggerUI
                 " mat=" + matN + "/" + matDupG + "g/+" + matDupX + matDupTop +
                 " audio=" + audioN + "/" + audioSec + "s" +
                 " dupTex=" + dupGroups + "g/+" + dupExtra + "/" + (dupExtraBytes / 1048576) + "MiB" + dupTop +
+                " uiThumb=" + uiThumbN + "/" + (uiThumbBytes / 1048576) + "MiB" + uiTop +
                 " go=" + goN + " managedMiB=" + (GC.GetTotalMemory(false) / 1048576) +
                 " rssMiB=" + (ProcWorkingSet() / 1048576) +
                 " commitMiB=" + (ProcPrivateBytes() / 1048576));

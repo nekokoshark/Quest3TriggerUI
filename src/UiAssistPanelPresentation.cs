@@ -81,6 +81,9 @@ namespace Quest3TriggerUI
         private static void ToggleEditorVisibility()
         {
             if (!PanelAvailable()) return;
+            // A manual toggle is the user taking over — scene mode's
+            // auto-hide must not restore or re-hide behind their back.
+            _sdAutoHidEditor = false;
             if (!_panelHidden && _panelGroup != null)
             {
                 _panelAlpha = _panelGroup.alpha;

@@ -80,6 +80,7 @@ namespace Quest3TriggerUI
                 ? Mathf.Max(1, MaxPerFrame.Value) : 2;
             // The preset-load purge lane is independent of AutoUnload —
             // it has its own switch and batches post-preset cleanup.
+            DrainClothingExits(ref budget);
             DrainPurge(ref budget);
             // Orphaned textureCache entries — cached textures whose
             // requester never registered a use count can't be reclaimed by
@@ -323,6 +324,7 @@ namespace Quest3TriggerUI
                 }
                 if (generation != _runtimeGeneration) yield break;
                 MemoryProbe.Snapshot("preset-cleanup-before");
+                MemoryRetentionReport.Request("janitor-before");
                 float started = Time.realtimeSinceStartup;
                 _uuaRequested = false;
                 AsyncOperation operation = PresetCleanupCoalescer.UnloadForJanitor();
@@ -380,6 +382,7 @@ namespace Quest3TriggerUI
             internal bool morph;
             internal long id;
             internal bool superseded;
+            internal List<DAZClothingItem> wornClothing;
         }
         private static long _transactionId;
         private static readonly Dictionary<Atom, Transaction> ActiveTransactions = new Dictionary<Atom, Transaction>();
@@ -406,6 +409,12 @@ namespace Quest3TriggerUI
         private static void CancelTransaction(Atom atom)
         {
             _purgeAt.Remove(atom);
+            for (int i = ClothingExits.Count - 1; i >= 0; i--)
+                if (ClothingExits[i].atom == atom)
+                {
+                    if (ClothingExits[i].unloaded > 0) KickUnusedAssets();
+                    ClothingExits.RemoveAt(i);
+                }
             _purgeRetries.Remove(atom);
             for (int i = _purgeJobs.Count - 1; i >= 0; i--)
                 if (_purgeJobs[i].atom == atom) _purgeJobs.RemoveAt(i);
@@ -417,6 +426,103 @@ namespace Quest3TriggerUI
                 (PurgeDelaySeconds != null ? Mathf.Max(0f, PurgeDelaySeconds.Value) : 5f);
             _purgeAt[transaction.atom] = transaction;
             Log("transaction " + transaction.id + " queued; waits for image/character restore tail");
+        }
+
+        // Transaction-sized fast lane. It changes no activation decisions:
+        // only clothes that native restore actually deactivated are candidates.
+        // No new ownership ledger and no global asset enumeration are needed.
+        private sealed class ClothingExitJob
+        {
+            internal Atom atom;
+            internal DAZCharacterSelector selector;
+            internal List<DAZClothingItem> items;
+            internal int index, unloaded, retained, failed;
+            internal long transaction;
+            internal float expires;
+        }
+        private static readonly List<ClothingExitJob> ClothingExits =
+            new List<ClothingExitJob>();
+
+        private static void QueueClothingExits(Transaction transaction)
+        {
+            List<DAZClothingItem> worn = transaction.wornClothing;
+            if (worn == null) return;
+            transaction.wornClothing = null;
+            var selector = transaction.atom.GetStorableByID("geometry") as DAZCharacterSelector;
+            if (selector == null) return;
+            var exited = new List<DAZClothingItem>();
+            int kept = 0, locked = 0;
+            foreach (var item in worn)
+            {
+                if (item == null) continue;
+                if (item.active) { kept++; continue; }
+                if (item.locked) { locked++; continue; }
+                if (item.ready) exited.Add(item);
+            }
+            Log("clothing-exit tx=" + transaction.id + " before=" + worn.Count +
+                " kept=" + kept + " locked=" + locked + " residentExited=" + exited.Count);
+            if (exited.Count == 0) return;
+            ClothingExits.Add(new ClothingExitJob { atom = transaction.atom,
+                selector = selector, items = exited, transaction = transaction.id,
+                expires = Time.unscaledTime + 60f });
+        }
+
+        private static void DrainClothingExits(ref int budget)
+        {
+            if (PurgeOnLoad != null && !PurgeOnLoad.Value)
+            { ClothingExits.Clear(); return; }
+            // Keep the established image-tail guard: readiness alone does not
+            // prove an image request has finished using an old material.
+            bool imagesBusy = ImagesBusy();
+            float now = Time.unscaledTime;
+            int checks = MaxPopsPerFrame;
+            for (int j = ClothingExits.Count - 1; j >= 0; j--)
+            {
+                ClothingExitJob job = ClothingExits[j];
+                if (job.atom == null || job.selector == null ||
+                    !job.atom.gameObject.activeInHierarchy || now >= job.expires)
+                {
+                    // The regular purge already covers the same owner; drop
+                    // our short-lived references even if the tail never settles.
+                    if (job.unloaded > 0) KickUnusedAssets();
+                    Log("clothing-exit tx=" + job.transaction + " fast lane expired/owner gone; regular purge retained");
+                    ClothingExits.RemoveAt(j);
+                    continue;
+                }
+                if (imagesBusy || Busy(job.selector)) continue;
+                while (job.index < job.items.Count && budget > 0 && checks > 0)
+                {
+                    var item = job.items[job.index++];
+                    checks--;
+                    // User/plugin may have put it back on while images loaded.
+                    if (item == null || !item.ready) continue;
+                    if (item.active || item.locked) { job.retained++; continue; }
+                    var flag = DynamicLoadFlag != null
+                        ? DynamicLoadFlag.GetValue(item) as AsyncFlag : null;
+                    if (flag != null && !flag.Raised) { job.retained++; continue; }
+                    object ledger = InstanceAssetLedger.Capture(item);
+                    try
+                    {
+                        item.UnloadIfInactive();
+                        if (item.ready) item.UnloadIfNotEnabled();
+                        if (item.ready) job.retained++; else job.unloaded++;
+                    }
+                    catch (Exception e)
+                    {
+                        job.failed++;
+                        Log("clothing-exit unload failed: " + e.GetType().Name);
+                    }
+                    if (item.ready) InstanceAssetLedger.Discard(ledger);
+                    else InstanceAssetLedger.Queue(ledger);
+                    budget--;
+                }
+                if (job.index < job.items.Count) continue;
+                Log("clothing-exit tx=" + job.transaction + " done unloaded=" + job.unloaded +
+                    " retained=" + job.retained + " failed=" + job.failed);
+                // One coalesced cleanup request per transaction, not per item.
+                if (job.unloaded > 0) KickUnusedAssets();
+                ClothingExits.RemoveAt(j);
+            }
         }
 
         private static bool Busy(DAZCharacterSelector sel)
@@ -635,6 +741,17 @@ namespace Quest3TriggerUI
                 CancelTransaction(atom);
                 __state = new Transaction { atom = atom, id = ++_transactionId,
                     morph = self.name == "AppearancePresets" && (clothing == null || !clothing.lockParams) };
+                if (self.name == "ClothingPresets")
+                {
+                    var selector = atom.GetStorableByID("geometry") as DAZCharacterSelector;
+                    if (selector != null && selector.clothingItems != null)
+                    {
+                        __state.wornClothing = new List<DAZClothingItem>();
+                        foreach (var item in selector.clothingItems)
+                            if (item != null && item.active)
+                                __state.wornClothing.Add(item);
+                    }
+                }
                 ActiveTransactions[atom] = __state;
             }
             catch (Exception e) { Log("transaction begin retained native load: " + e.Message); }
@@ -647,8 +764,13 @@ namespace Quest3TriggerUI
                 Transaction active;
                 if (ActiveTransactions.TryGetValue(__state.atom, out active) && ReferenceEquals(active, __state))
                     ActiveTransactions.Remove(__state.atom);
-                if (!__state.superseded && __exception == null && __result) Schedule(__state);
+                if (!__state.superseded && __exception == null && __result)
+                {
+                    QueueClothingExits(__state);
+                    Schedule(__state);
+                }
                 else Log("transaction " + __state.id + " aborted/superseded; no purge scheduled");
+                __state.wornClothing = null;
             }
             return __exception;
         }
@@ -687,6 +809,7 @@ namespace Quest3TriggerUI
             _scanActive = false;
             _purgeAt.Clear();
             ActiveTransactions.Clear();
+            ClothingExits.Clear();
             _purgeJobs.Clear();
             _purgeRetries.Clear();
             _dueAtoms.Clear();

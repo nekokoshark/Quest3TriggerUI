@@ -85,6 +85,23 @@ namespace Quest3TriggerUI
         private static MethodInfo _getResCat;       // ResourceType.GetResourceCategory
         private static MethodInfo _regExistingUD;   // DataFileManifest.RegisterExisitingDFUserLocalResource
         private static MethodInfo _regUserSaveReq;  // DataFileManifest.RegisterLocalResourceUserSaveRequest
+        // Upserts that already carry a userData record must NOT go through
+        // RegisterLocalResourceOfType: its SetLocalFileScanTime touches the
+        // lazy userDataFile getter, which registers the new RVGE into the
+        // first free-capacity data file (and queues that file for save)
+        // before the real file can be bound — and BA's re-register guard
+        // (rvgeLocalDataFileDict) is never populated, so the rvge ends up
+        // serialised into BOTH files and the duplicate key then kills
+        // ReloadLocalDataFiles (and every manifest refresh behind it) at
+        // the next startup. Mirror ReloadLocalDataFiles' order instead:
+        // construct → RegisterExisitingDFUserLocalResource → AddRVGE →
+        // LoadLocalUserData → ReApplyAllCombiTags.
+        private static ConstructorInfo _localRvgeCtor; // LocalRVGE(string,int)
+        private static ConstructorInfo _localCHCtor;   // LocalClothingHairRVGE(string,int,JSONClass)
+        private static MethodInfo _addRvge;         // ResourceManifest.AddRVGE
+        private static MethodInfo _reapplyTags;     // TagManifest.ReApplyAllCombiTags
+        private static MethodInfo _lud;             // LocalRVGE.LoadLocalUserData
+        private static int _rcClothing = 5, _rcHair = 10; // ResourceCategory.clothing/hair
         private static int _rcPreset = 1;           // ResourceCategory.preset
         private static int _rtPresetAtom = -1, _rtUnknown = 0;
         private static int _rtClothingItemPresets = -1, _rtHairItemPresets = -1;
@@ -698,6 +715,10 @@ namespace Quest3TriggerUI
                     {
                         FieldInfo pf = rc.GetField("preset", StaticAll);
                         if (pf != null) _rcPreset = (int)pf.GetValue(null);
+                        FieldInfo cf = rc.GetField("clothing", StaticAll);
+                        if (cf != null) _rcClothing = (int)cf.GetValue(null);
+                        FieldInfo hf = rc.GetField("hair", StaticAll);
+                        if (hf != null) _rcHair = (int)hf.GetValue(null);
                     }
                     if (dfm != null)
                     {
@@ -713,6 +734,25 @@ namespace Quest3TriggerUI
                                 _regUserSaveReq = m;
                         }
                     }
+                    Type lrvgeT = asm.GetType("JayJayWon.LocalRVGE");
+                    Type lchT = asm.GetType("JayJayWon.LocalClothingHairRVGE");
+                    Type rvgeT = asm.GetType("JayJayWon.ResourceVersionGroupEntry");
+                    Type tagT = asm.GetType("JayJayWon.TagManifest");
+                    _localRvgeCtor = lrvgeT == null ? null :
+                        lrvgeT.GetConstructor(
+                            new[] { typeof(string), typeof(int) });
+                    _localCHCtor = lchT == null ? null : lchT.GetConstructor(
+                        new[] { typeof(string), typeof(int),
+                            typeof(JSONClass) });
+                    _lud = lrvgeT == null ? null : lrvgeT.GetMethod(
+                        "LoadLocalUserData", InstAll, null,
+                        new[] { typeof(JSONClass) }, null);
+                    _addRvge = rvgeT == null ? null : resManifest.GetMethod(
+                        "AddRVGE", StaticAll, null,
+                        new[] { typeof(string), rvgeT }, null);
+                    _reapplyTags = rvgeT == null || tagT == null ? null :
+                        tagT.GetMethod("ReApplyAllCombiTags", StaticAll, null,
+                            new[] { rvgeT }, null);
                     if (rt != null)
                         _getResCat = FindStatic(rt, "GetResourceCategory", 1);
                     if (rt != null)
@@ -1313,7 +1353,7 @@ namespace Quest3TriggerUI
             {
                 try
                 {
-                    bool exists = File.Exists(abs);
+                    bool exists = VarExistsOnDisk(abs);
                     bool disabled = File.Exists(abs + ".disabled");
                     if (!exists && !disabled)
                     {
@@ -1523,7 +1563,7 @@ namespace Quest3TriggerUI
             {
                 try
                 {
-                    bool exists = File.Exists(path);
+                    bool exists = VarExistsOnDisk(path);
                     // VaM only indexes packages under packageFolder —
                     // offloaded vars stay outside its registry.
                     if (exists && !UnderPackageFolder(path))
@@ -1535,6 +1575,12 @@ namespace Quest3TriggerUI
                         ? null : byUid[uid];
                     if (pkg != null)
                     {
+                        // A dead link unregisters the uid — but the same
+                        // archive may still live at another registered
+                        // path, where dropping it would kill a live
+                        // package.
+                        if (!exists && VarPackageAliveElsewhere(rel))
+                        { skipped++; continue; }
                         _fmUnregister.Invoke(null, new[] { pkg });
                         removed++;
                     }
@@ -1732,6 +1778,7 @@ namespace Quest3TriggerUI
             { Log("轻扫 VAR 指纹异常：" + e.Message); return; }
             if (_truncated)
             { Log("轻扫 VAR：指纹超限，请用 BA 完整重扫"); return; }
+            PruneDeadVarLinks();
             int pop = -1;
             try { pop = CollectionCount(_availableVars.GetValue(null, null)); }
             catch { }
@@ -1797,7 +1844,7 @@ namespace Quest3TriggerUI
                     try
                     {
                         string rel = ToRelative(abs, ref cwd);
-                        bool exists = File.Exists(abs);
+                        bool exists = VarExistsOnDisk(abs);
                         bool disabled = File.Exists(abs + ".disabled");
                         if (!exists && !disabled)
                         {   // truly gone → mark missing
@@ -1854,6 +1901,47 @@ namespace Quest3TriggerUI
             }
         }
 
+        private static object GetVpme(string relPath)
+        {
+            if (_vpmeKeyFromFile == null || _vpmeByKey == null)
+                return null;
+            try
+            {
+                string key = _vpmeKeyFromFile.Invoke(null,
+                    new object[] { Path.GetFileName(relPath) }) as string;
+                if (key == null) return null;
+                return _vpmeByKey.Invoke(null, new object[] { key });
+            }
+            catch { return null; }
+        }
+
+        // The same archive may be reachable through another registered
+        // path (second link, second AddonPackages location). True when
+        // BA's vpme still lists a live path other than relPath — a dead
+        // link is then just one stale registration, not a removed package.
+        private static bool VarPackageAliveElsewhere(string relPath)
+        {
+            object vpme = GetVpme(relPath);
+            if (vpme == null) return false;
+            try
+            {
+                var pnames = Prop(vpme, vpme.GetType(), "varFilePathNames")
+                    as System.Collections.IEnumerable;
+                if (pnames == null) return false;
+                string rel = relPath.Replace('/', '\\');
+                foreach (object o in pnames)
+                {
+                    string p = o as string;
+                    if (p == null ||
+                        string.Equals(p.Replace('/', '\\'), rel,
+                            StringComparison.OrdinalIgnoreCase)) continue;
+                    if (VarExistsOnDisk(p)) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private static void MarkVarMissing(string relPath)
         {
             if (_vpmeKeyFromFile == null || _vpmeByKey == null ||
@@ -1867,6 +1955,40 @@ namespace Quest3TriggerUI
                 if (key == null) return;
                 object vpme = _vpmeByKey.Invoke(null, new object[] { key });
                 if (vpme == null) return;
+                // A dead link is only one registered path — the same
+                // package may still live at another AddonPackages location.
+                // Drop just the dead path and keep the package available;
+                // only a vpme with no live path left is really missing.
+                try
+                {
+                    var pnames = Prop(vpme, vpme.GetType(), "varFilePathNames")
+                        as System.Collections.IEnumerable;
+                    if (pnames != null)
+                    {
+                        var deads = new List<string>();
+                        int alive = 0;
+                        foreach (object o in pnames)
+                        {
+                            string p = o as string;
+                            if (p == null) continue;
+                            if (string.Equals(p.Replace('/', '\\'),
+                                    relPath.Replace('/', '\\'),
+                                    StringComparison.OrdinalIgnoreCase) ||
+                                !VarExistsOnDisk(p))
+                                deads.Add(p);
+                            else alive++;
+                        }
+                        if (alive > 0)
+                        {
+                            var rm = vpme.GetType().GetMethod("RemovePath");
+                            if (rm != null)
+                                foreach (string dp in deads)
+                                    rm.Invoke(vpme, new object[] { dp });
+                            return;
+                        }
+                    }
+                }
+                catch { }
                 // Removed clothing/hair still needs the scene list refresh —
                 // the vpvge keeps its registered paths until purged.
                 if (VpmeContainsClothingHair(vpme)) _quickScanSawCH = true;
@@ -1981,6 +2103,9 @@ namespace Quest3TriggerUI
                     Log("VAR 指纹超限（>" + MaxEntries + " 条），回退原生全量");
                     return true;
                 }
+                var pruned = PruneDeadVarLinks();
+                if (pruned != null)
+                    foreach (string p in pruned) cur.Remove(Norm(p));
                 int pop = -1;
                 try { pop = CollectionCount(_availableVars.GetValue(null, null)); }
                 catch { }
@@ -2758,6 +2883,12 @@ namespace Quest3TriggerUI
                     Log("VAR 指纹超限（>" + MaxEntries + " 条），回退原生全量");
                     return true;
                 }
+                // A standalone RescanPackages (the BA button path) prunes
+                // dead links itself — RescanAllVARResources already did it
+                // and nulled the list, so the second call is a no-op.
+                var pruned = PruneDeadVarLinks();
+                if (pruned != null)
+                    foreach (string p in pruned) cur.Remove(Norm(p));
                 int pop = -1;
                 try { pop = CollectionCount(_availableVars.GetValue(null, null)); }
                 catch { }
@@ -3324,24 +3455,62 @@ namespace Quest3TriggerUI
                         ? rvgeDict[rel] : null;
                     if (old != null)
                         _purgeLocal.Invoke(null, new[] { old });
-                    object rvge = _regLocal.Invoke(null, new object[]
-                        { rel, type, atomType, DateTime.Now, false });
                     KeyValuePair<string, JSONClass> ud;
+                    object rvge;
                     if (udata != null && udata.TryGetValue(rel, out ud))
                     {
-                        MethodInfo lud = rvge == null ? null :
-                            rvge.GetType().GetMethod("LoadLocalUserData",
-                                BindingFlags.Instance | BindingFlags.Public);
-                        if (lud == null || _regExistingUD == null)
+                        if (_localRvgeCtor == null || _addRvge == null ||
+                            _lud == null || _regExistingUD == null)
                         {
                             Log("本地增量用户数据回绑不可用 " + rel +
                                 "，回退原生全量");
                             return false;
                         }
+                        int cat = _getResCat == null ? -1
+                            : (int)_getResCat.Invoke(null,
+                                new object[] { type });
+                        if (cat == _rcClothing || cat == _rcHair)
+                        {
+                            JSONClass vapJC = null;
+                            try
+                            {
+                                vapJC = SuperController.singleton
+                                    .LoadJSON(rel).AsObject;
+                            }
+                            catch { }
+                            if (_localCHCtor == null || vapJC == null)
+                            {
+                                Log("本地增量服装/头发数据读取失败 " + rel +
+                                    "，回退原生全量");
+                                return false;
+                            }
+                            rvge = _localCHCtor.Invoke(new object[]
+                                { rel, type, vapJC });
+                        }
+                        else
+                            rvge = _localRvgeCtor.Invoke(new object[]
+                                { rel, type });
                         _regExistingUD.Invoke(null,
                             new object[] { rvge, ud.Key });
-                        lud.Invoke(rvge, new object[] { ud.Value });
+                        _addRvge.Invoke(null, new object[] { rel, rvge });
+                        _lud.Invoke(rvge, new object[] { ud.Value });
+                        if (_reapplyTags != null)
+                            try
+                            {
+                                _reapplyTags.Invoke(null, new[] { rvge });
+                            }
+                            catch { }
+                        if (_regUserSaveReq != null)
+                            try
+                            {
+                                _regUserSaveReq.Invoke(null,
+                                    new object[] { ud.Key });
+                            }
+                            catch { }
                     }
+                    else
+                        rvge = _regLocal.Invoke(null, new object[]
+                            { rel, type, atomType, DateTime.Now, false });
                     reg++;
                 }
                 catch (Exception e)
@@ -4112,6 +4281,15 @@ namespace Quest3TriggerUI
         private static Dictionary<string, string> _linkTargets;
         private static int _lkAttrHits, _lkFallbacks;
 
+        // .var links whose target vanished. Collected during the var
+        // fingerprint pass; PruneDeadVarLinks deletes the link entries so
+        // the next enumeration (ours, VaM's rescan, BA's list) stops
+        // seeing the package — deleting the target file alone leaves the
+        // link entry, which every directory listing still advertises.
+        private static List<string> _deadVarLinks;
+        private static bool _collectDeadLinks;
+        internal static bool AutoPruneDeadLinks; // config [BA]AutoPruneDeadLinks
+
         private static void SeedLinkTargets(Dictionary<string, string> prev)
         {
             _linkTargets = new Dictionary<string, string>(
@@ -4163,6 +4341,176 @@ namespace Quest3TriggerUI
             int a = v.LastIndexOf('|', b - 1);
             if (a <= 4) return null;
             return v.Substring(4, a - 4);
+        }
+
+        // Mono's File.Exists reports a dangling symlink's link entry, so
+        // every managed-side existence check sees dead links as alive
+        // (verified: File.Exists=true in-process where PowerShell
+        // Test-Path=false). A reparse point counts as existing only while
+        // CreateFileW can actually open its target.
+        private static bool VarExistsOnDisk(string path)
+        {
+            IntPtr buf = Marshal.AllocHGlobal(FindDataSize);
+            try
+            {
+                IntPtr h = FindFirstFileW(path, buf);
+                if (h == FindInvalidHandle) return false;
+                bool link;
+                try
+                {
+                    link = ((uint)Marshal.ReadInt32(buf, 0) &
+                        AttrReparsePointMask) != 0;
+                }
+                finally { FindClose(h); }
+                return !link || LinkTargetStat(path) != null;
+            }
+            finally { Marshal.FreeHGlobal(buf); }
+        }
+
+        // FSCTL_GET_REPARSE_POINT reader: the prune's volume check must not
+        // depend on the cached "lnk:" fingerprint — once it degrades to a
+        // plain stat the target string is gone and the link can never be
+        // cleared. Reads the link's stored target straight from the reparse
+        // buffer instead.
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool DeviceIoControl(IntPtr hDevice, uint code,
+            IntPtr inBuf, uint inSize, IntPtr outBuf, uint outSize,
+            out uint bytesReturned, IntPtr overlapped);
+        private const uint FsctlGetReparsePoint = 0x000900A8;
+        private const uint ReparseTagSymlink = 0xA000000C;
+        private const uint ReparseTagMountPoint = 0xA0000003;
+
+        private static string ReadReparseTarget(string linkPath)
+        {
+            // FILE_FLAG_OPEN_REPARSE_POINT opens the link itself — works
+            // even when the target is gone.
+            IntPtr h = CreateFileW(linkPath, 0x80 /*FILE_READ_ATTRIBUTES*/,
+                0x7, IntPtr.Zero, 3 /*OPEN_EXISTING*/,
+                0x00200000 /*FILE_FLAG_OPEN_REPARSE_POINT*/ |
+                0x02000000 /*FILE_FLAG_BACKUP_SEMANTICS*/, IntPtr.Zero);
+            if (h == InvalidFileHandle || h == IntPtr.Zero) return null;
+            try
+            {
+                IntPtr buf = Marshal.AllocHGlobal(16384);
+                try
+                {
+                    uint ret;
+                    if (!DeviceIoControl(h, FsctlGetReparsePoint,
+                            IntPtr.Zero, 0, buf, 16384, out ret,
+                            IntPtr.Zero) || ret < 20)
+                        return null;
+                    uint tag = (uint)Marshal.ReadInt32(buf, 0);
+                    ushort subOff = (ushort)Marshal.ReadInt16(buf, 8);
+                    ushort subLen = (ushort)Marshal.ReadInt16(buf, 10);
+                    int baseOff;
+                    uint flags = 0;
+                    if (tag == ReparseTagSymlink)
+                    {
+                        flags = (uint)Marshal.ReadInt32(buf, 16);
+                        baseOff = 20;
+                    }
+                    else if (tag == ReparseTagMountPoint) baseOff = 16;
+                    else return null;
+                    string sub = Marshal.PtrToStringUni(new IntPtr(
+                        buf.ToInt64() + baseOff + subOff), subLen / 2);
+                    if (string.IsNullOrEmpty(sub)) return null;
+                    if (tag == ReparseTagSymlink && (flags & 1) != 0)
+                    {
+                        // SYMLINK_FLAG_RELATIVE — resolve against the
+                        // link's directory.
+                        string dir = Path.GetDirectoryName(linkPath);
+                        return dir == null ? null :
+                            Path.GetFullPath(Path.Combine(dir, sub));
+                    }
+                    if (sub.StartsWith("\\??\\", StringComparison.Ordinal))
+                        return sub.Substring(4);
+                    return null;   // \??\Volume{guid} — unmapped
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+            finally { CloseHandle(h); }
+        }
+
+        // A deleted .var target leaves its link entry behind, so every
+        // enumeration keeps advertising the package — removing it from
+        // VaM's registry is not enough while the link still exists.
+        // Deleting the link entry is the only way the removal sticks.
+        // Safety: only when the cached target's volume is present — a
+        // disconnected library drive must NOT purge thousands of links.
+        private static List<string> PruneDeadVarLinks()
+        {
+            var dead = _deadVarLinks;
+            _deadVarLinks = null;
+            if (dead == null || dead.Count == 0) return null;
+            var online = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var offline = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            List<string> removed = null;
+            int noTarget = 0, volOff = 0;
+            foreach (string link in dead)
+            {
+                try
+                {
+                    string cached;
+                    string target = _linkTargets != null &&
+                        _linkTargets.TryGetValue(Norm(link), out cached)
+                        ? LinkTargetOfValue(cached) : null;
+                    if (target == null)
+                    {
+                        // Fingerprint already degraded past "lnk:" — the
+                        // cached target is gone. Read the link's own
+                        // reparse buffer instead of giving up forever.
+                        target = ReadReparseTarget(link);
+                        if (target != null)
+                        {
+                            // The stored destination could have been
+                            // re-created since the enum collected this
+                            // link — only a still-missing target prunes.
+                            Win32FileAttrData live;
+                            if (GetFileAttributesExW(target, 0, out live))
+                                continue;
+                        }
+                    }
+                    string vol = VolumeRootOf(target);
+                    if (vol == null) { noTarget++; continue; }
+                    if (offline.Contains(vol)) { volOff++; continue; }
+                    if (!online.Contains(vol))
+                    {
+                        if (Directory.Exists(vol)) online.Add(vol);
+                        else { offline.Add(vol); volOff++; continue; }
+                    }
+                    // Re-check it is still a reparse point: a real file
+                    // that replaced the link between enum and prune must
+                    // never be deleted.
+                    if ((File.GetAttributes(link) &
+                        FileAttributes.ReparsePoint) == 0) continue;
+                    File.Delete(link);
+                    if (removed == null) removed = new List<string>();
+                    removed.Add(link);
+                }
+                catch (Exception e)
+                { Log("清死链失败 " + link + ": " + e.Message); }
+            }
+            int n = removed == null ? 0 : removed.Count;
+            if (n > 0 || noTarget > 0 || volOff > 0)
+                Log("失联 var 链接：清除 " + n +
+                    (volOff > 0 ? "，目标盘不在线跳过 " + volOff : "") +
+                    (noTarget > 0 ? "，目标不可解析跳过 " + noTarget : ""));
+            return removed;
+        }
+
+        private static string VolumeRootOf(string target)
+        {
+            if (string.IsNullOrEmpty(target)) return null;
+            // GetFinalPathNameByHandle returns \\?\C:\… — strip the prefix
+            // so GetPathRoot sees a plain drive root.
+            if (target.StartsWith("\\\\?\\", StringComparison.Ordinal))
+                target = target.Substring(4);
+            try
+            {
+                string root = Path.GetPathRoot(target);
+                return string.IsNullOrEmpty(root) ? null : root;
+            }
+            catch { return null; }
         }
 
         [System.Runtime.InteropServices.StructLayout(
@@ -4244,6 +4592,11 @@ namespace Quest3TriggerUI
             {
                 string link = LinkStatCached(path);
                 if (link != null) return link;
+                // Reparse point whose target resolution failed = dead link.
+                // It still fingerprints (own entry stat below), so without
+                // recording it here the loss would go unreported.
+                if (_collectDeadLinks && _deadVarLinks != null)
+                    _deadVarLinks.Add(path);
             }
             return size + "|" + (fileTime + FileTimeToDateTimeTicks);
         }
@@ -4367,10 +4720,13 @@ namespace Quest3TriggerUI
             // One traversal for all var extensions — AddonPackages holds
             // ~10k entries behind junctions, each extra pass costs seconds.
             // Patterns must be lowercase: EnumTree lowercases file names.
+            _deadVarLinks = AutoPruneDeadLinks ? new List<string>() : null;
+            _collectDeadLinks = _deadVarLinks != null;
             EnumTree(map, "AddonPackages",
                 new[] { ".var", ".var.disabled", ".var.batempvar" },
                 true, null);
             AddPattern(map, _offloadRoot, "*.var", false);
+            _collectDeadLinks = false;
             // VaM-side per-var user prefs are re-read by the rescan — include
             // them so toggling prefs/metascore still triggers the real scan.
             AddTree(map, "AddonPackagesFilePrefs", null);
@@ -4827,6 +5183,251 @@ namespace Quest3TriggerUI
             if (map != null)
                 foreach (var kv in map) node[kv.Key] = kv.Value;
             return node;
+        }
+
+        // ---------- Live var-group probe (read-only) ----------
+        // Drop ba_varprobe.txt into the plugin dir; file content is an
+        // optional creator filter (empty = VAMSOY, "all" = every group).
+        // Dumps varPackageVersionGroups' real state — declared versions,
+        // missing flags, registered file paths and whether those paths
+        // still exist — to a TSV plus a log summary. Answers "BA shows N
+        // packages but disk has M" without guessing.
+
+        private const string VarProbeTrigger =
+            @"F:\vam1.22.0.12\BepInEx\plugins\Quest3TriggerUI\ba_varprobe.txt";
+        private const string VarProbeDir =
+            @"F:\vam1.22.0.12\工作区\ba_varprobe";
+        private static float _varProbeNext;
+
+        internal static void VarProbeFrame()
+        {
+            try
+            {
+                float now = Time.realtimeSinceStartup;
+                if (now < _varProbeNext) return;
+                _varProbeNext = now + 2f;
+                if (!File.Exists(VarProbeTrigger)) return;
+                string filter;
+                try { filter = File.ReadAllText(VarProbeTrigger).Trim(); }
+                catch { filter = ""; }
+                try { File.Delete(VarProbeTrigger); } catch { }
+                DumpVarGroups(filter);
+            }
+            catch { }
+        }
+
+        private static void DumpVarGroups(string filter)
+        {
+            if (_varGroupsProp == null)
+            { Log("VAR 组探针：清单接口未绑定"); return; }
+            var groups = _varGroupsProp.GetValue(null, null)
+                as System.Collections.IDictionary;
+            if (groups == null || groups.Count == 0)
+            { Log("VAR 组探针：组清单为空"); return; }
+            if (string.IsNullOrEmpty(filter)) filter = "VAMSOY";
+            bool all = string.Equals(filter, "all",
+                StringComparison.OrdinalIgnoreCase);
+            string cwd = null;
+            int total = 0, stale = 0, missingFlagged = 0, pathEmpty = 0,
+                pathDead = 0;
+            var staleLines = new List<string>();
+            Directory.CreateDirectory(VarProbeDir);
+            string tsv = Path.Combine(VarProbeDir,
+                "vargroups_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") +
+                ".tsv");
+            using (var w = new StreamWriter(tsv, false))
+            {
+                w.WriteLine("uid\tversions\tmissing\tavailable\t" +
+                    "reg_paths\tdisk");
+                foreach (System.Collections.DictionaryEntry de in groups)
+                {
+                    object grp = de.Value;
+                    Type gt = grp.GetType();
+                    string uid = StrProp(grp, gt, "vpvgeUID");
+                    if (uid == null ||
+                        !(all || uid.IndexOf(filter,
+                            StringComparison.OrdinalIgnoreCase) >= 0))
+                        continue;
+                    total++;
+                    var vers = IntListField(grp, gt, "_varVersions");
+                    var miss = IntSetField(grp, gt, "missingVARVersions");
+                    int avail = 0, dead = 0, reg = 0;
+                    var sb = new StringBuilder();
+                    foreach (int v in vers)
+                    {
+                        object vpme = null;
+                        try
+                        {
+                            vpme = _getVpme == null ? null :
+                                _getVpme.Invoke(grp, new object[] { v });
+                        }
+                        catch { }
+                        if (vpme == null) continue;
+                        bool va = BoolProp(vpme, vpme.GetType(),
+                            "isBAAvailableVAR");
+                        if (va) avail++;
+                        var paths = Prop(vpme, vpme.GetType(),
+                            "varFilePathNames") as System.Collections.IEnumerable;
+                        if (paths != null)
+                            foreach (object po in paths)
+                            {
+                                string rp = po as string;
+                                if (string.IsNullOrEmpty(rp)) continue;
+                                reg++;
+                                string full = rp;
+                                if (!Path.IsPathRooted(full))
+                                {
+                                    if (cwd == null) cwd =
+                                        Directory.GetCurrentDirectory();
+                                    full = Path.Combine(cwd, rp);
+                                }
+                                bool ok = false;
+                                try { ok = File.Exists(full); } catch { }
+                                if (!ok) dead++;
+                                if (sb.Length > 0) sb.Append(' ');
+                                sb.Append(rp).Append(ok ? "[ok]" : "[DEAD]");
+                            }
+                    }
+                    if (miss.Count > 0) missingFlagged++;
+                    if (reg == 0) pathEmpty++;
+                    else if (dead == reg) { pathDead++; }
+                    if (avail == 0 && miss.Count == 0)
+                    {
+                        stale++;
+                        staleLines.Add(uid + " vers=" + JoinInts(vers) +
+                            (reg == 0 ? " 无登记路径" : " 登记路径全死"));
+                    }
+                    w.WriteLine(uid + "\t" + JoinInts(vers) + "\t" +
+                        JoinInts(miss) + "\t" + avail + "\t" + reg +
+                        "\t" + dead + "\t" + sb);
+                }
+            }
+            Log("VAR 组探针[" + filter + "]：组 " + total +
+                "，missing 标记 " + missingFlagged +
+                "，无登记路径 " + pathEmpty +
+                "，登记路径全死 " + pathDead +
+                "，未标 missing 且无可用版本 " + stale +
+                " → " + tsv);
+            foreach (string s in staleLines)
+                Log("  陈旧组 " + s);
+            DumpVarResources(filter, tsv);
+        }
+
+        // Second half of the same probe: the browser's package list reads
+        // ResourceManifest.varResourceVersionGroups (resource-level), not
+        // the group map — stale PackagedRVGEs there would inflate the
+        // count past the live group total.
+        private static void DumpVarResources(string filter, string tsv)
+        {
+            try
+            {
+                if (_localRvges == null)
+                { Log("VAR 资源探针：清单类型未绑定"); return; }
+                FieldInfo f = _localRvges.DeclaringType.GetField(
+                    "varResourceVersionGroups",
+                    BindingFlags.NonPublic | BindingFlags.Static);
+                var set = f == null ? null : f.GetValue(null)
+                    as System.Collections.IEnumerable;
+                if (set == null) { Log("VAR 资源探针：集合为空"); return; }
+                int total = 0, noGrp = 0, missing = 0, dupKey = 0;
+                var keys = new HashSet<string>(
+                    StringComparer.OrdinalIgnoreCase);
+                var lines = new List<string>();
+                using (var w = new StreamWriter(tsv, true))
+                {
+                    w.WriteLine("--- varResourceVersionGroups ---");
+                    foreach (object rvge in set)
+                    {
+                        Type rt = rvge.GetType();
+                        string creator = StrProp(rvge, rt, "creatorName");
+                        if (creator == null || creator.IndexOf(filter,
+                                StringComparison.OrdinalIgnoreCase) < 0)
+                            continue;
+                        total++;
+                        string path = StrProp(rvge, rt,
+                            "resourceFolderPathFileName");
+                        bool present = BoolProp(rvge, rt, "resourcePresent");
+                        bool miss = BoolProp(rvge, rt, "isMissing");
+                        object grp = Prop(rvge, rt, "vpvge");
+                        if (grp == null) noGrp++;
+                        if (miss) missing++;
+                        // Group by the package key part before ':' to spot
+                        // duplicate resource rows for one package.
+                        string pkgKey = path;
+                        int colon = path == null ? -1 : path.IndexOf(':');
+                        if (colon > 0) pkgKey = path.Substring(0, colon);
+                        if (pkgKey != null && !keys.Add(pkgKey)) dupKey++;
+                        lines.Add((path ?? "?") + " present=" + present +
+                            " missing=" + miss +
+                            " grp=" + (grp == null ? "无" :
+                                StrProp(grp, grp.GetType(), "vpvgeUID")));
+                        w.WriteLine(lines[lines.Count - 1]);
+                    }
+                }
+                Log("VAR 资源探针[" + filter + "]：资源级条目 " + total +
+                    "，无组归属 " + noGrp + "，missing " + missing +
+                    "，同包重复行 " + dupKey);
+                foreach (string s in lines) Log("  " + s);
+            }
+            catch (Exception e)
+            { Log("VAR 资源探针异常：" + e.Message); }
+        }
+
+        private static object Prop(object o, Type t, string name)
+        {
+            try
+            {
+                PropertyInfo p = t.GetProperty(name,
+                    BindingFlags.Public | BindingFlags.NonPublic |
+                    BindingFlags.Instance);
+                return p == null ? null : p.GetValue(o, null);
+            }
+            catch { return null; }
+        }
+
+        private static string StrProp(object o, Type t, string name)
+        {
+            return Prop(o, t, name) as string;
+        }
+
+        private static bool BoolProp(object o, Type t, string name)
+        {
+            object v = Prop(o, t, name);
+            return v is bool && (bool)v;
+        }
+
+        private static List<int> IntListField(object o, Type t, string name)
+        {
+            var list = new List<int>();
+            try
+            {
+                FieldInfo f = t.GetField(name,
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var e = f == null ? null :
+                    f.GetValue(o) as System.Collections.IEnumerable;
+                if (e != null)
+                    foreach (object x in e)
+                        if (x is int) list.Add((int)x);
+            }
+            catch { }
+            list.Sort();
+            return list;
+        }
+
+        private static HashSet<int> IntSetField(object o, Type t, string name)
+        {
+            return new HashSet<int>(IntListField(o, t, name));
+        }
+
+        private static string JoinInts(IEnumerable<int> xs)
+        {
+            var sb = new StringBuilder();
+            foreach (int x in xs)
+            {
+                if (sb.Length > 0) sb.Append(',');
+                sb.Append(x);
+            }
+            return sb.ToString();
         }
     }
 }

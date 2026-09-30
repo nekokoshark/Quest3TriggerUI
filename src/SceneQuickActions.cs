@@ -233,41 +233,6 @@ namespace Quest3TriggerUI
             OpenPersonTab("Clothing");
         }
 
-        // Story scenes fade the HMD through a VAMOverlays fullscreen quad:
-        // "Fade Out Instant" blacks the view, "Start Fade In" restores it.
-        // If the fade-in never arrives (transition chain stalled), the whole
-        // scene + world-space panels stay black while the HUD still shows.
-        // This action is the manual recovery: fire Start Fade In on every
-        // VAMOverlays storable. Harmless when nothing is faded.
-        internal void ClearOverlayFades()
-        {
-            int fired = 0;
-            if (SuperController.singleton != null)
-            {
-                foreach (Atom atom in SuperController.singleton.GetAtoms())
-                {
-                    if (atom == null) continue;
-                    foreach (string id in atom.GetStorableIDs())
-                    {
-                        if (id == null ||
-                            !id.EndsWith("_VAMOverlaysPlugin.VAMOverlays", StringComparison.Ordinal))
-                            continue;
-                        JSONStorable storable = atom.GetStorableByID(id);
-                        JSONStorableAction fadeIn =
-                            storable == null ? null : storable.GetAction("Start Fade In");
-                        if (fadeIn != null && fadeIn.actionCallback != null)
-                        {
-                            fadeIn.actionCallback();
-                            fired++;
-                        }
-                    }
-                }
-            }
-            LogInfo(fired > 0
-                ? "清屏：已向 " + fired + " 个 VAMOverlays 实例发送 Start Fade In。"
-                : "清屏：场景里没有 VAMOverlays 插件实例。");
-        }
-
         internal void OpenUiAssistClothingEditor()
         {
             UiAssistHudLink.CancelPending();

@@ -15,9 +15,8 @@ namespace Quest3TriggerUI
     // only when returned after Finish. Exact-length
     // buckets are mandatory: Finish passes raw straight to
     // LoadRawTextureData, so an oversized pooled array would corrupt upload.
-    // Entries age out after IdleSeconds without a rent — large arrays are
-    // standalone Boehm blocks, so evicting them actually returns pages
-    // instead of sitting at the pool's high-water mark forever.
+    // Idle expiry removes pool ownership. OS page return is runtime-dependent;
+    // dropping references does not promise immediate working-set reduction.
     internal static class DecodedBufferPool
     {
         internal static ConfigEntry<bool> Enabled;
@@ -36,18 +35,24 @@ namespace Quest3TriggerUI
         // reservation is taken before the buffer becomes visible to a sharer
         // and released by the last holder's Finish, so a shared buffer cannot
         // enter Buckets while another request is still uploading it.
-        private sealed class SharedRef { internal int N; }
-        private sealed class ReferenceComparer : IEqualityComparer<byte[]>
+        // Tracking must not own the decoded array: Finish can be cancelled or
+        // unpatched during hot reload. QueuedImage.raw owns the actual data.
+        private sealed class SharedRef { internal WeakReference A; internal int N; }
+        private static readonly List<SharedRef> Shared = new List<SharedRef>();
+
+        // Caller holds Gate. A strong local keeps a found array alive while
+        // checking identity; expired bookkeeping never accumulates past MaxShared.
+        private static SharedRef FindShared(byte[] a)
         {
-            internal static readonly ReferenceComparer Instance = new ReferenceComparer();
-            public bool Equals(byte[] a, byte[] b) { return ReferenceEquals(a, b); }
-            public int GetHashCode(byte[] a)
+            SharedRef found = null;
+            for (int i = Shared.Count - 1; i >= 0; i--)
             {
-                return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(a);
+                object target = Shared[i].A.Target;
+                if (target == null) Shared.RemoveAt(i);
+                else if (ReferenceEquals(target, a)) found = Shared[i];
             }
+            return found;
         }
-        private static readonly Dictionary<byte[], SharedRef> Shared =
-            new Dictionary<byte[], SharedRef>(ReferenceComparer.Instance);
         private static readonly Dictionary<int, Stack<Pooled>> Buckets =
             new Dictionary<int, Stack<Pooled>>();
         private static long _pooledBytes;
@@ -55,6 +60,10 @@ namespace Quest3TriggerUI
         internal static long Reserves, Claims, Held, Refused;
         private static int _lastRent;
         private static bool _borrowed;
+        // Set when this payload generation is shutting down. Late worker
+        // callbacks may still return a shared buffer, but an old generation
+        // must never put it back into a pool that can outlive the callback.
+        private static bool _retired;
 
         // Cross-generation handoff: publish the live Buckets dictionary so the
         // next payload generation can harvest its byte[]s instead of refilling
@@ -110,8 +119,10 @@ namespace Quest3TriggerUI
             if (a == null || (Enabled != null && !Enabled.Value)) return false;
             lock (Gate)
             {
-                if (Shared.Count >= MaxShared) { Refused++; return false; }
-                Shared[a] = new SharedRef { N = 1 };
+                FindShared(null);
+                if (_retired || Shared.Count >= MaxShared) { Refused++; return false; }
+                if (FindShared(a) != null) { Refused++; return false; }
+                Shared.Add(new SharedRef { A = new WeakReference(a), N = 1 });
                 Reserves++;
             }
             return true;
@@ -125,8 +136,9 @@ namespace Quest3TriggerUI
             if (a == null) return false;
             lock (Gate)
             {
-                SharedRef r;
-                if (!Shared.TryGetValue(a, out r)) { Refused++; return false; }
+                if (_retired) { Refused++; return false; }
+                SharedRef r = FindShared(a);
+                if (r == null) { Refused++; return false; }
                 r.N++;
                 Claims++;
             }
@@ -139,6 +151,7 @@ namespace Quest3TriggerUI
             if (Enabled != null && !Enabled.Value) return new byte[length];
             lock (Gate)
             {
+                if (_retired) return new byte[length];
                 Rents++;
                 _borrowed = true;
                 _lastRent = Environment.TickCount;
@@ -157,20 +170,24 @@ namespace Quest3TriggerUI
         // Called on the main thread after Finish; raw has been nulled by then.
         internal static void ReturnArray(byte[] a)
         {
-            if (a == null || (Enabled != null && !Enabled.Value)) return;
+            if (a == null) return;
             long cap = (BudgetMiB == null ? 1536 : Math.Max(64, BudgetMiB.Value)) * 1048576L;
             int now = Environment.TickCount;
             lock (Gate)
             {
                 Returns++;
-                SharedRef shared;
-                if (Shared.TryGetValue(a, out shared))
+                SharedRef shared = FindShared(a);
+                if (shared != null)
                 {
                     // Another request is still uploading this very buffer; keep
                     // it out of the pool until the last holder returns it.
                     if (--shared.N > 0) { Held++; return; }
-                    Shared.Remove(a);
+                    Shared.Remove(shared);
                 }
+                // A retired generation has no safe pool owner. The last
+                // shared holder was accounted above; dropping here lets the
+                // array become collectable without reintroducing a stale pool.
+                if (_retired || (Enabled != null && !Enabled.Value)) { Drops++; return; }
                 // Arrays this pool neither rented nor adopted have no borrower
                 // to reuse them, so parking one leaves dead weight in a
                 // cache-served session while every rent comes back empty.
@@ -203,21 +220,25 @@ namespace Quest3TriggerUI
                 List<int> dead = null;
                 foreach (KeyValuePair<int, Stack<Pooled>> kv in Buckets)
                 {
-                    Stack<Pooled> keep = new Stack<Pooled>();
-                    int dropped = 0;
+                    bool expired = false;
                     foreach (Pooled p in kv.Value)
+                        if (unchecked(now - p.Tick) >= maxAge) { expired = true; break; }
+                    if (!expired) continue;
+                    // Mutate this stack, not Buckets while its enumerator is live.
+                    // Snapshot only buckets containing expired entries.
+                    Pooled[] entries = kv.Value.ToArray();
+                    kv.Value.Clear();
+                    for (int i = entries.Length - 1; i >= 0; i--)
                     {
-                        if (now - p.Tick < maxAge) keep.Push(p);
-                        else { _pooledBytes -= p.A.LongLength; dropped++; }
+                        Pooled p = entries[i];
+                        if (unchecked(now - p.Tick) < maxAge) kv.Value.Push(p);
+                        else { _pooledBytes -= p.A.LongLength; Evicted++; }
                     }
-                    if (dropped == 0) continue;
-                    Evicted += dropped;
-                    if (keep.Count == 0)
+                    if (kv.Value.Count == 0)
                     {
                         if (dead == null) dead = new List<int>();
                         dead.Add(kv.Key);
                     }
-                    else Buckets[kv.Key] = keep;
                 }
                 if (dead != null)
                     foreach (int k in dead) Buckets.Remove(k);
@@ -227,6 +248,51 @@ namespace Quest3TriggerUI
         internal static long PooledBytes
         {
             get { lock (Gate) return _pooledBytes; }
+        }
+
+        // Retire is used only by payload shutdown. It deliberately keeps the
+        // Shared refcounts until late Finish callbacks arrive; unlike clearing
+        // Shared immediately, this cannot let one sharer race an owner's return
+        // and accidentally reuse the same array.
+        internal static void Retire()
+        {
+            lock (Gate)
+            {
+                _retired = true;
+                Buckets.Clear();
+                _pooledBytes = 0;
+                _borrowed = false;
+            }
+        }
+
+        // Install also runs when the loader restores this generation after a failed load.
+        // Preserve outstanding shared holders; retirement already emptied idle buckets.
+        internal static void Reactivate()
+        {
+            lock (Gate) { _retired = false; }
+        }
+
+        internal static int SharedEntries
+        {
+            get { lock (Gate) { FindShared(null); return Shared.Count; } }
+        }
+
+        internal static long SharedBytes
+        {
+            get
+            {
+                lock (Gate)
+                {
+                    long total = 0;
+                    FindShared(null);
+                    foreach (SharedRef entry in Shared)
+                    {
+                        byte[] a = entry.A.Target as byte[];
+                        if (a != null) total += a.LongLength;
+                    }
+                    return total;
+                }
+            }
         }
 
         internal static void Clear()

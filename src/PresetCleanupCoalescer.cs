@@ -120,9 +120,15 @@ namespace Quest3TriggerUI
         private static AsyncOperation StartSweep(string origin)
         {
             long epoch = _released;
+            long demotedBefore = UuaGate.SkippedCount;
             AsyncOperation op = Resources.UnloadUnusedAssets();
-            NoteSweep(op);
-            Log("sweep " + origin + " covers release epoch=" + epoch);
+            bool demoted = UuaGate.SkippedCount != demotedBefore;
+            // Only a sweep that really ran covers the release debt. A demoted
+            // call hands back an older completed operation, so recording it as
+            // coverage would make the debt disappear on paper.
+            if (!demoted) NoteSweep(op);
+            Log("sweep " + origin + " covers release epoch=" + epoch +
+                (demoted ? " (demoted by UuaGate: no real sweep ran)" : ""));
             return op;
         }
 

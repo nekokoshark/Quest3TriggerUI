@@ -824,7 +824,6 @@ namespace Quest3TriggerUI
                         new QuickActionDefinition("optimize-memory.vram", "显存报告",
                             delegate { MemoryProbe.Snapshot("manual"); })
                     }),
-                new QuickActionDefinition("unfade", "清除黑屏", _quickActions.ClearOverlayFades),
                 new QuickActionDefinition("standby", "待机/恢复", ToggleStandby,
                     delegate { return _quickActions.StandbyActive; })
             };

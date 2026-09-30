@@ -172,6 +172,7 @@ namespace Quest3TriggerUI
                 if (prevStamp != null)
                     foreach (KeyValuePair<string, long> kv in prevStamp)
                         _pdThumbStamp[kv.Key] = kv.Value;
+                DropOversizedPdThumbStamps();
             }
             GenBridge.Publish("dock.thumbs", _pdThumbs);
             GenBridge.Publish("dock.thumbStamp", _pdThumbStamp);
@@ -465,6 +466,24 @@ namespace Quest3TriggerUI
         private const float PdHoverZoomScale = 3f;
         private static PdSlotTag _pdHzTag;
         private static float _pdHzSince;
+        private static long _pdHoverChanges, _pdZoomShows, _pdThumbReads, _pdThumbReadBytes;
+        private static long _pdThumbLoadTicks, _pdCpuCopiesReleased;
+
+        internal static void ReportPdMemory()
+        {
+            long bytes = 0;
+            foreach (var kv in _pdThumbs)
+            {
+                Texture2D t = kv.Value;
+                if (t == null) continue;
+                bytes += (long)t.width * t.height * 4;
+            }
+            Log("[pd-memory] hoverChanges=" + _pdHoverChanges + " zoomShows=" + _pdZoomShows +
+                " reads=" + _pdThumbReads + " readMiB=" + (_pdThumbReadBytes / 1048576) +
+                " loadMs=" + (_pdThumbLoadTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
+                " cached=" + _pdThumbs.Count + " rgbaEstimateMiB=" + (bytes / 1048576) +
+                " cpuCopiesReleased=" + _pdCpuCopiesReleased + " queued=" + _pdThumbQueue.Count);
+        }
         private static RectTransform _pdHzPanel;
         private static RawImage _pdHzImage;
 
@@ -502,8 +521,7 @@ namespace Quest3TriggerUI
                 SetPdZoom(false);
                 _pdHzTag = hit;
                 _pdHzSince = Time.unscaledTime;
-                if (hit != null)
-                    Log("Q3 pdzoom: hovering " + hit.Path);
+                if (hit != null) _pdHoverChanges++;
             }
             // A destroyed tag compares equal to null in Unity — the early
             // return must still hide the panel or it floats loose forever.
@@ -528,7 +546,7 @@ namespace Quest3TriggerUI
             }
             if (Time.unscaledTime - _pdHzSince >= PdHoverZoomSeconds)
             {
-                Log("Q3 pdzoom: apply " + _pdHzTag.Path);
+                _pdZoomShows++;
                 ApplyPdZoom(_pdHzTag);
             }
         }
@@ -878,6 +896,32 @@ namespace Quest3TriggerUI
                 ExitSdSaveSession();
                 if (_sdTagEditing != null) CommitSdTagRename();
                 CancelSdRename();
+            }
+            // Scene mode has no use for the clothing editor body — hide it
+            // like the 隐藏 button does. Leaving scene mode restores only
+            // what we auto-hid; a manual 隐藏/显示 click clears the flag.
+            if (mode == 2)
+            {
+                if (!_panelHidden && _panelRoot != null)
+                {
+                    _panelHidden = true;
+                    _sdAutoHidEditor = true;
+                    if (_editorVisibilityButton != null)
+                        _editorVisibilityButton.label = "显示";
+                    ApplyPanelPresentation();
+                }
+            }
+            else if (_sdAutoHidEditor)
+            {
+                _sdAutoHidEditor = false;
+                if (_panelHidden)
+                {
+                    _panelHidden = false;
+                    RestoreEditorGroup();
+                    if (_editorVisibilityButton != null)
+                        _editorVisibilityButton.label = "隐藏";
+                    ApplyPanelPresentation();
+                }
             }
         }
 
@@ -1421,6 +1465,26 @@ namespace Quest3TriggerUI
             return file;
         }
 
+        // A stale entry adopted from a run that decoded it at the sidecar
+        // jpg's native size would hold that VRAM for the whole session. Only
+        // the stamp is dropped, not the texture: the next visit re-reads the
+        // file through CapThumbEdge and the swap happens inside LoadPdThumb,
+        // so a cell never renders a destroyed texture.
+        private static void DropOversizedPdThumbStamps()
+        {
+            List<string> over = null;
+            foreach (KeyValuePair<string, Texture2D> kv in _pdThumbs)
+            {
+                if (!ThumbOversized(kv.Value)) continue;
+                if (over == null) over = new List<string>();
+                over.Add(kv.Key);
+            }
+            if (over == null) return;
+            foreach (string k in over) _pdThumbStamp.Remove(k);
+            WardrobeJanitor.Log("pd thumbs: re-decode queued for " + over.Count +
+                " adopted thumbnail(s) above " + ThumbMaxEdge + "px");
+        }
+
         private static void LoadPdThumb(PdSlotTag tag)
         {
             string jpg = tag.Path.Substring(0, tag.Path.Length -
@@ -1453,12 +1517,21 @@ namespace Quest3TriggerUI
                 {
                     if (File.Exists(full))
                     {
+                        long started = System.Diagnostics.Stopwatch.GetTimestamp();
                         byte[] bytes = File.ReadAllBytes(full);
+                        _pdThumbReads++;
+                        _pdThumbReadBytes += bytes.LongLength;
                         Texture2D t = new Texture2D(2, 2,
                             TextureFormat.RGBA32, false);
                         t.name = "Q3PdThumb";
-                        if (t.LoadImage(bytes)) tex = t;
+                        if (t.LoadImage(bytes))
+                        {
+                            tex = CapThumbEdge(t, "Q3PdThumb");
+                            // RawImage/hover use GPU data only; release the CPU copy.
+                            if (tex != null) { tex.Apply(false, true); _pdCpuCopiesReleased++; }
+                        }
                         else UnityEngine.Object.Destroy(t);
+                        _pdThumbLoadTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
                     }
                 }
                 catch { tex = null; }

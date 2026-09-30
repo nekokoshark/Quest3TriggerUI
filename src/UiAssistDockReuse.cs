@@ -400,6 +400,67 @@ namespace Quest3TriggerUI
         private static readonly Queue<PdSlotTag> _pdThumbQueue = new Queue<PdSlotTag>();
         private static readonly HashSet<PdSlotTag> _pdThumbQueued = new HashSet<PdSlotTag>();
 
+        // Decoded thumbnails arrive at the sidecar jpg's native size - 512x512
+        // for a cell that draws at 80x76 (240x228 once the hover zoom is
+        // applied), so a full-size RGBA32 cost 1MiB per slot and a dock that
+        // had visited all five tabs sat at ~112MiB of uploads for content the
+        // panel can never resolve. Bigger sources are resampled down once, on
+        // this pump's own 2ms budget.
+        private const int ThumbMaxEdge = 256;
+
+        // GPU-side downscale: one blit plus a <=256x256 readback, so capping
+        // the dock costs no managed pixel arrays (a GetPixels32/SetPixels32
+        // pass would allocate 1MiB of garbage per thumbnail and undo the
+        // saving). Any failure returns the original texture untouched - a
+        // thumbnail must never be lost to a resize.
+        private static Texture2D CapThumbEdge(Texture2D src, string name)
+        {
+            if (src == null) return null;
+            int sw = src.width, sh = src.height;
+            if (sw <= ThumbMaxEdge && sh <= ThumbMaxEdge) return src;
+            int nw, nh;
+            if (sw >= sh)
+            {
+                nw = ThumbMaxEdge;
+                nh = Mathf.Max(1, Mathf.RoundToInt(sh * (ThumbMaxEdge / (float)sw)));
+            }
+            else
+            {
+                nh = ThumbMaxEdge;
+                nw = Mathf.Max(1, Mathf.RoundToInt(sw * (ThumbMaxEdge / (float)sh)));
+            }
+            RenderTexture prev = RenderTexture.active;
+            RenderTexture rt = null;
+            Texture2D dst = null;
+            try
+            {
+                rt = RenderTexture.GetTemporary(nw, nh, 0);
+                Graphics.Blit(src, rt);
+                RenderTexture.active = rt;
+                dst = new Texture2D(nw, nh, TextureFormat.RGBA32, false);
+                dst.name = name;
+                dst.ReadPixels(new Rect(0f, 0f, nw, nh), 0, 0);
+                dst.Apply(false, false);
+            }
+            catch
+            {
+                if (dst != null) UnityEngine.Object.Destroy(dst);
+                return src;
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+                if (rt != null) RenderTexture.ReleaseTemporary(rt);
+            }
+            UnityEngine.Object.Destroy(src);
+            return dst;
+        }
+
+        private static bool ThumbOversized(Texture2D t)
+        {
+            return t != null && (t.width > ThumbMaxEdge || t.height > ThumbMaxEdge);
+        }
+
         private static void ApplyPdThumb(PdSlotTag tag)
         {
             Texture2D cached;
@@ -415,6 +476,10 @@ namespace Quest3TriggerUI
         {
             // Unity texture upload stays on the main thread. At most two
             // files per frame, stop after ~2ms; a single decode is indivisible.
+            // Keep thumbnail decodes out of the character's decode/upload peak.
+            // Requests stay queued and resume once the existing load window settles.
+            if (LoadWindow.PresetBusy || SceneLoadAccelerator.SceneLoadActive ||
+                WardrobeJanitor.ImagesBusy()) return;
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
             int work = 0;
             while (_pdThumbQueue.Count > 0 && work < 2)

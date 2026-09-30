@@ -77,6 +77,21 @@ namespace Quest3TriggerUI
         private static HashSet<string> _syllables;
         private static string[] _allKeys;
 
+        // ---- idle release of the optional tables ---------------------------
+        // Census 2026-09-30 (liveset_20260930_030108) attributed 316MB to this
+        // class: _full 69.8MB, _fuzzy 51.0MB, _initials 25.9MB, _allKeys
+        // 6.0MB (plus these keys' strings). Only _full is on the primary
+        // path - every use site of the other three already null-checks them -
+        // so they are dropped after OptionalIdleReleaseMs without input and
+        // rebuilt on the next keystroke by the worker below. All four are also
+        // published to GenBridge, which holds them across hot reloads; the
+        // Drop calls are what actually lets go.
+        private const int OptionalIdleReleaseMs = 15 * 60 * 1000;
+        private static int _optLastUse;       // Environment.TickCount
+        private static int _optNextTry;       // retry backoff after a failure
+        private static bool _optLoading;
+
+
         // ---- user dictionary (learning) -----------------------------------
         // Committed words are remembered under both their full-syllable key
         // and their initials key, so a phrase typed once in full pinyin is
@@ -121,6 +136,9 @@ namespace Quest3TriggerUI
                     _userSaveQueued = false;
                 }
             }
+            _optNextTry = 0;
+            _optLoading = false;
+            _optLastUse = Environment.TickCount;
             ReleaseRetiredDictionaries();
         }
 
@@ -831,6 +849,11 @@ namespace Quest3TriggerUI
         //   3 initials — 简拼 shorthand on the whole input
         private static void RebuildCandidates()
         {
+            // Input is the only thing that pulls the optional tables
+            // back in (see EnsureOptionalTables): a keystroke re-arms
+            // the idle timer and starts a background reload.
+            _optLastUse = Environment.TickCount;
+            EnsureOptionalTables();
             _cands.Clear();
             _pageStart = 0;
             string raw = _comp.Replace("'", string.Empty);
@@ -1075,6 +1098,114 @@ namespace Quest3TriggerUI
 
         // Drain finished queries on the main thread. Stale responses (the
         // composition moved past the queried letters) are dropped.
+
+        // Called every frame by the plugin Update, so the idle release does
+        // not depend on a text field being focused (VrTextInputBridge.Tick
+        // returns early when no target is selected).
+        internal static void IdleTick()
+        {
+            if (_closed) return;
+            if (_initials == null && _fuzzy == null && _allKeys == null) return;
+            if (_optLastUse == 0)
+            {
+                _optLastUse = Environment.TickCount;
+                return;
+            }
+            if (Environment.TickCount - _optLastUse < OptionalIdleReleaseMs)
+                return;
+            ReleaseOptionalTables();
+        }
+
+        private static void ReleaseOptionalTables()
+        {
+            int init, fuzzy, keys;
+            long approx;
+            lock (_stateGate)
+            {
+                init = _initials == null ? 0 : _initials.Count;
+                fuzzy = _fuzzy == null ? 0 : _fuzzy.Count;
+                keys = _allKeys == null ? 0 : _allKeys.Length;
+                if (init == 0 && fuzzy == 0 && keys == 0) return;
+                // Census-measured per-entry cost (92-95B, same report);
+                // _allKeys is a reference array, 8B per entry.
+                approx = (init + fuzzy) * 96L + keys * 8L + 262144L;
+                _initials = null;
+                _fuzzy = null;
+                _allKeys = null;
+                _optLastUse = Environment.TickCount;
+            }
+            GenBridge.Drop("py.initials");
+            GenBridge.Drop("py.fuzzy");
+            GenBridge.Drop("py.allKeys");
+            Log("idle release: dropped initials=" + init + " fuzzy=" + fuzzy +
+                " keys=" + keys + " approxMiB=" + (approx / 1048576) +
+                " (reloads on next input)");
+        }
+
+        private static void EnsureOptionalTables()
+        {
+            if (_closed || _full == null) return;
+            if (_initials != null && _fuzzy != null && _allKeys != null) return;
+            if (_optNextTry != 0 && Environment.TickCount - _optNextTry < 0) return;
+            lock (_stateGate)
+            {
+                if (_optLoading) return;
+                _optLoading = true;
+            }
+            int generation = _generation;
+            ThreadPool.QueueUserWorkItem(delegate { LoadOptionalWorker(generation); });
+        }
+
+        private static void LoadOptionalWorker(int generation)
+        {
+            try
+            {
+                string dir = PluginDir();
+                if (_initials == null)
+                {
+                    var loaded = LoadTable(Path.Combine(dir, "pinyin_initials.txt"));
+                    if (!LoadIsCurrent(generation)) return;
+                    lock (_stateGate) { if (_initials == null) _initials = loaded; }
+                }
+                if (_fuzzy == null)
+                {
+                    var loaded = LoadTable(Path.Combine(dir, "pinyin_fuzzy.txt"));
+                    if (!LoadIsCurrent(generation)) return;
+                    lock (_stateGate) { if (_fuzzy == null) _fuzzy = loaded; }
+                }
+                if (_allKeys == null)
+                {
+                    Dictionary<string, string[]> full = _full;
+                    string[] sorted = null;
+                    if (full != null && full.Count > 0)
+                    {
+                        sorted = new string[full.Count];
+                        full.Keys.CopyTo(sorted, 0);
+                        Array.Sort(sorted, StringComparer.Ordinal);
+                    }
+                    if (!LoadIsCurrent(generation)) return;
+                    lock (_stateGate) { if (_allKeys == null) _allKeys = sorted; }
+                }
+                GenBridge.Publish("py.initials", _initials);
+                GenBridge.Publish("py.fuzzy", _fuzzy);
+                GenBridge.Publish("py.allKeys", _allKeys);
+                _optNextTry = 0;
+                Log("optional tables reloaded: init=" +
+                    (_initials == null ? 0 : _initials.Count) + " fuzzy=" +
+                    (_fuzzy == null ? 0 : _fuzzy.Count) + " keys=" +
+                    (_allKeys == null ? 0 : _allKeys.Length));
+            }
+            catch (Exception e)
+            {
+                _optNextTry = Environment.TickCount + 60000;
+                Log("optional table reload failed: " + e.Message);
+            }
+            finally
+            {
+                lock (_stateGate) { _optLoading = false; }
+            }
+        }
+
         internal static void Tick()
         {
             if (_closed) return;

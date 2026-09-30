@@ -88,6 +88,10 @@ namespace Quest3TriggerUI
                             var arr = row as object[];
                             if (arr != null) pendingRows.Add(arr);
                         }
+                        // Transfer bookkeeping; destroyed old anchors can still
+                        // be held by a byte-loaded generation's static _mine.
+                        var oldRows = rows as IList;
+                        if (oldRows != null) oldRows.Clear();
                     }
                 }
                 catch { }
@@ -98,6 +102,7 @@ namespace Quest3TriggerUI
             if (storeMerges != null)
             {
                 foreach (IDictionary dict in storeMerges)
+                {
                     foreach (DictionaryEntry e in dict)
                     {
                         string k = e.Key as string;
@@ -105,6 +110,10 @@ namespace Quest3TriggerUI
                             !_mine.Store.ContainsKey(k))
                             _mine.Store[k] = e.Value;
                     }
+                    // Values now belong to the new anchor. Clear the old map,
+                    // not the transferred values or their Unity resources.
+                    dict.Clear();
+                }
                 adoptedStore = _mine.Store.Count;
             }
             if (pendingRows != null)
@@ -138,6 +147,19 @@ namespace Quest3TriggerUI
         }
 
         // Permanent-share lookup. Does not remove the entry.
+
+        // Removes a permanent-share entry so the next generation cannot adopt
+        // it. Deliberately does NOT call DestroyContents: the caller owns the
+        // lifetime (the pinyin tables are plain BCL dictionaries that the
+        // engine releases itself), and clearing contents here would be wrong
+        // for an entry a live generation still holds.
+        internal static bool Drop(string key)
+        {
+            var a = Anchor;
+            if (a == null) return false;
+            lock (a.Store) return a.Store.Remove(key);
+        }
+
         internal static object Take(string key)
         {
             var a = Anchor;
@@ -163,9 +185,12 @@ namespace Quest3TriggerUI
                     if (p == null || (bool)p[3] ||
                         !string.Equals(p[0] as string, key, StringComparison.Ordinal))
                         continue;
+                    object value = p[1];
                     p[3] = true;
-                    PruneDead(p[1]);
-                    return p[1];
+                    p[1] = null;
+                    a.Pending.RemoveAt(i);
+                    PruneDead(value);
+                    return value;
                 }
                 return null;
             }
@@ -241,7 +266,15 @@ namespace Quest3TriggerUI
                 for (int i = a.Pending.Count - 1; i >= 0; i--)
                 {
                     object[] p = a.Pending[i];
-                    if (p == null || (bool)p[3] || now < (float)p[2]) continue;
+                    if (p == null || (bool)p[3])
+                    {
+                        // Legacy claimed rows must release bookkeeping only;
+                        // their textures are owned by the claimant, not by us.
+                        if (p != null) p[1] = null;
+                        a.Pending.RemoveAt(i);
+                        continue;
+                    }
+                    if (now < (float)p[2]) continue;
                     if (expired == null) expired = new List<object[]>();
                     expired.Add(p);
                     a.Pending.RemoveAt(i);

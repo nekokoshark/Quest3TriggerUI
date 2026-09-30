@@ -205,23 +205,23 @@ namespace Quest3TriggerUI
         // Entry used by our own callers (matches GetMediaPathDialog role).
         // filter e.g. "vap"; saveMode shows filename entry; callback gets full
         // VaM-relative slash path or "" on cancel.
-        internal static void ShowDialog(
+        internal static bool ShowDialog(
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string> onResult)
         {
-            Instance.Open(title, suggestedDir, filter, saveMode,
+            return Instance.Open(title, suggestedDir, filter, saveMode,
                 defaultSaveName, onResult, null);
         }
 
-        internal static void ShowDialogFull(
+        internal static bool ShowDialogFull(
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string, bool> onResult, bool dirPick = false,
             bool pickMode = false, Atom loadTarget = null,
             bool compact = false, bool personMode = false)
         {
-            Instance.Open(title, suggestedDir, filter, saveMode,
+            return Instance.Open(title, suggestedDir, filter, saveMode,
                 defaultSaveName, null, onResult, dirPick, pickMode,
                 loadTarget, compact, personMode);
         }
@@ -382,7 +382,10 @@ namespace Quest3TriggerUI
         private readonly HashSet<string> _jpgSet =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        private void Open(
+        // Returns false when the panel failed to open — the takeover
+        // caller then hands Show back to the native browser instead of
+        // leaving the user with a flash and no dialog at all.
+        private bool Open(
             string title, string suggestedDir, string filter,
             bool saveMode, string defaultSaveName,
             Action<string> cb, Action<string, bool> cbFull,
@@ -395,12 +398,14 @@ namespace Quest3TriggerUI
                 OpenInternal(title, suggestedDir, filter, saveMode,
                     defaultSaveName, cb, cbFull, dirPick, pickMode,
                     loadTarget, compact, personMode);
+                return true;
             }
             catch (Exception ex)
             {
                 LogErr("Q3 browser open FAILED: " + ex);
                 try { if (_canvas != null) _canvas.gameObject.SetActive(false); }
                 catch { }
+                return false;
             }
         }
 
@@ -3783,6 +3788,15 @@ namespace Quest3TriggerUI
                 if (sc == null || sc.mainHUD == null || _canvas == null)
                     return;
                 Transform top = sc.mainHUD;
+                // The sibling walk climbs from our canvas to mainHUD hiding
+                // side branches. When the canvas got parented outside the
+                // HUD (start-screen containers, a never-shown native window
+                // host), the climb would pass the scene ROOT instead and
+                // blank every top-level sibling — the whole start menu
+                // included. Only walk when the canvas is actually inside
+                // the HUD tree.
+                if (!_canvas.transform.IsChildOf(top))
+                    return;
                 // The sibling walk runs GetComponentInChildren on every
                 // sibling subtree — hundreds of HUD objects — so scanning
                 // every frame was the constant-stutter source. New siblings
@@ -4739,16 +4753,21 @@ namespace Quest3TriggerUI
                 if (string.IsNullOrEmpty(dir) ||
                     !FileManager.DirectoryExists(dir, false, false))
                     dir = "Custom";
-                VrPresetBrowser.ShowDialogFull(title, dir, fb.fileFormat,
-                    saveMode, saveName,
-                    (path, didClose) =>
-                    {
-                        if (cbf != null)
-                            cbf(path, didClose);
-                        else if (cb != null)
-                            cb(path);
-                    },
-                    fb.selectDirectory);
+                // Fail-open: our panel threw or never became visible, so
+                // the native Show proceeds with the ORIGINAL callback —
+                // the caller's delegate is untouched and the dialog still
+                // works, just stock.
+                if (!VrPresetBrowser.ShowDialogFull(title, dir,
+                        fb.fileFormat, saveMode, saveName,
+                        (path, didClose) =>
+                        {
+                            if (cbf != null)
+                                cbf(path, didClose);
+                            else if (cb != null)
+                                cb(path);
+                        },
+                        fb.selectDirectory))
+                { Pass("open failed"); return true; }
                 return false;   // native Show skipped — window never opens
             }
             catch (Exception ex)

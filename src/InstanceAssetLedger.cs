@@ -62,7 +62,42 @@ namespace Quest3TriggerUI
             internal float Due;
             internal readonly HashSet<Material> Materials = new HashSet<Material>();
             internal readonly HashSet<Mesh> Meshes = new HashSet<Mesh>();
+            internal Watch Pending;
         }
+
+        // ---- sweep reconciliation (phase B/1) ------------------------------
+        // The question this phase exists to answer: when a real
+        // Resources.UnloadUnusedAssets finishes, WHAT did it take, and was any
+        // of it already known to this ledger? UuaTypeCensus already enumerates
+        // Material/Mesh/Texture2D/RenderTexture around every sweep; with an id
+        // map built in those same loops the reclaimed set falls out as set
+        // arithmetic, so the answer costs no extra heap walk.
+        internal sealed class AssetRef
+        {
+            internal int Id;
+            internal string Name;
+            internal long Bytes;
+            internal int Kind;   // 0 material, 1 mesh, 2 texture2d, 3 rendertexture
+        }
+
+        // The watch set is deliberately id-only. An Entry holds strong
+        // references (Release needs them) and is dropped ~2s after the unload,
+        // i.e. seconds before the sweep - but a strong reference is a root, and
+        // a root stops the sweep from reclaiming exactly what is being
+        // measured. Ids cost nothing and cannot veto anything.
+        private sealed class Watch
+        {
+            internal const int MaxIds = 600;
+            internal string Item;
+            internal float At;
+            internal readonly List<int> Ids = new List<int>(64);
+        }
+
+        private static readonly List<Watch> Watching = new List<Watch>(4);
+        private const int MaxWatching = 8;
+        private const float WatchLifeSeconds = 60f;
+        private static int _sweepNo;
+        private static long _sweepTaken, _sweepHit, _sweepMiss, _sweepMissBytes;
 
         // Called while the instance still exists. Returns null when there is
         // nothing to track, so callers can pass the result straight to
@@ -106,6 +141,7 @@ namespace Quest3TriggerUI
                 if (filters != null)
                     for (int i = 0; i < filters.Length; i++)
                         if (filters[i] != null) Add(entry.Meshes, filters[i].sharedMesh);
+                entry.Pending = WatchOf(entry);
                 return entry;
             }
             catch (Exception e)
@@ -115,12 +151,139 @@ namespace Quest3TriggerUI
             }
         }
 
+        private static Watch WatchOf(Entry entry)
+        {
+            var watch = new Watch();
+            watch.Item = entry.Item;
+            watch.At = entry.At;
+            foreach (Material material in entry.Materials)
+            {
+                if (watch.Ids.Count >= Watch.MaxIds) break;
+                watch.Ids.Add(material.GetInstanceID());
+            }
+            foreach (Mesh mesh in entry.Meshes)
+            {
+                if (watch.Ids.Count >= Watch.MaxIds) break;
+                watch.Ids.Add(mesh.GetInstanceID());
+            }
+            return watch;
+        }
+
         internal static void Queue(object handle)
         {
             Entry entry = handle as Entry;
             if (entry == null) return;
             if (Queued.Count >= MaxQueued) Queued.RemoveAt(0);
             Queued.Add(entry);
+            if (entry.Pending != null)
+            {
+                if (Watching.Count >= MaxWatching) Watching.RemoveAt(0);
+                Watching.Add(entry.Pending);
+                entry.Pending = null;
+            }
+        }
+
+        private static string Tag(AssetRef a)
+        {
+            string kind = a.Kind == 0 ? "m" : (a.Kind == 1 ? "M" : (a.Kind == 2 ? "t" : "r"));
+            return a.Name + "[" + kind + (a.Bytes > 0 ? "," + (a.Bytes / 1024) + "KB" : "") + "]";
+        }
+
+        // Called by UuaTypeCensus once a sweep has reported done, with the id
+        // maps it built immediately before and immediately after. "Taken" is
+        // every object present before and gone after (the sweep, plus anything
+        // else freed in those two frames). "Hit" is the part of that set this
+        // ledger had already seen leave the scene with a dying item - the
+        // coverage number. The miss list is the point of the phase: it names
+        // the assets a targeted release would have to own.
+        internal static void NoteSweepDiff(Dictionary<int, AssetRef> before,
+            Dictionary<int, AssetRef> after)
+        {
+            if (before == null || after == null || before.Count == 0) return;
+            _sweepNo++;
+            float now = Time.realtimeSinceStartup;
+            var watchIds = new HashSet<int>();
+            int watches = 0;
+            for (int w = 0; w < Watching.Count; w++)
+            {
+                Watch watch = Watching[w];
+                if (now - watch.At > WatchLifeSeconds) continue;
+                watches++;
+                for (int i = 0; i < watch.Ids.Count; i++) watchIds.Add(watch.Ids[i]);
+            }
+            var taken = new List<AssetRef>(64);
+            foreach (KeyValuePair<int, AssetRef> kv in before)
+                if (!after.ContainsKey(kv.Key)) taken.Add(kv.Value);
+            int created = 0;
+            foreach (KeyValuePair<int, AssetRef> kv in after)
+                if (!before.ContainsKey(kv.Key)) created++;
+            long[] kindIds = new long[4];
+            long[] kindBytes = new long[4];
+            long[] hitIds = new long[4];
+            long[] hitBytes = new long[4];
+            var hitNames = new List<string>(6);
+            for (int i = 0; i < taken.Count; i++)
+            {
+                AssetRef a = taken[i];
+                int k = a.Kind;
+                if (k < 0 || k > 3) k = 0;
+                kindIds[k]++;
+                kindBytes[k] += a.Bytes;
+                if (watchIds.Contains(a.Id))
+                {
+                    hitIds[k]++;
+                    hitBytes[k] += a.Bytes;
+                    if (hitNames.Count < 6) hitNames.Add(a.Name);
+                }
+            }
+            long ids = 0, bytes = 0, hits = 0, hitB = 0;
+            for (int k = 0; k < 4; k++)
+            {
+                ids += kindIds[k];
+                bytes += kindBytes[k];
+                hits += hitIds[k];
+                hitB += hitBytes[k];
+            }
+            var miss = new List<AssetRef>(64);
+            for (int i = 0; i < taken.Count; i++)
+                if (!watchIds.Contains(taken[i].Id)) miss.Add(taken[i]);
+            miss.Sort(delegate(AssetRef x, AssetRef y) { return y.Bytes.CompareTo(x.Bytes); });
+            var missNames = new List<string>(6);
+            int shown = 0;
+            long missBytes = bytes - hitB;
+            // Largest first, then whatever is left by count: in this build
+            // materials carry no byte estimate at all (Profiler returns 0), and
+            // a purely byte-ordered list would hide every one of them behind
+            // the meshes. Kind letters: m material, M mesh, t texture2d, r rt.
+            for (int i = 0; i < miss.Count && shown < 6; i++)
+            {
+                if (miss[i].Bytes <= 0) continue;
+                shown++;
+                missNames.Add(Tag(miss[i]));
+            }
+            for (int i = 0; i < miss.Count && shown < 6; i++)
+            {
+                if (miss[i].Bytes > 0) continue;
+                shown++;
+                missNames.Add(Tag(miss[i]));
+            }
+            _sweepTaken += ids;
+            _sweepHit += hits;
+            _sweepMiss += ids - hits;
+            _sweepMissBytes += missBytes;
+            Log("sweep reconcile #" + _sweepNo + ": taken=" + ids +
+                "(~" + (bytes / 1024) + "KB) [mat=" + kindIds[0] + " mesh=" + kindIds[1] +
+                "/" + (kindBytes[1] / 1024) + "KB tex=" + kindIds[2] + "/" + (kindBytes[2] / 1024) +
+                "KB rt=" + kindIds[3] + "/" + (kindBytes[3] / 1024) + "KB]" +
+                " created=" + created +
+                " ledgerHit=" + hits + "(~" + (hitB / 1024) + "KB) ledgerMiss=" + (ids - hits) +
+                "(~" + (missBytes / 1024) + "KB) watches=" + watches +
+                "/" + watchIds.Count + "ids" +
+                Samples("hit", hitNames) + Samples("missTop", missNames) +
+                " [total: sweeps=" + _sweepNo + " taken=" + _sweepTaken + " hit=" + _sweepHit +
+                " (" + (_sweepTaken > 0 ? _sweepHit * 100 / _sweepTaken : 0) + "%) miss=" +
+                _sweepMiss + " ~" + (_sweepMissBytes / 1024) + "KB]");
+            Watching.Clear();
         }
 
         internal static void Discard(object handle) { }
@@ -253,6 +416,7 @@ namespace Quest3TriggerUI
         {
             Queued.Clear();
             Live.Clear();
+            Watching.Clear();
             _censusAt = -1f;
         }
 

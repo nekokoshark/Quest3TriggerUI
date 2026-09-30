@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
@@ -242,6 +242,10 @@ namespace Quest3TriggerUI
                 "BA", "SkipPackageListSync", true,
                 "Incremental VA/VAR rescans skip VaM PackageBuilder.SyncPackages refresh handler (~13s on an 11k-var library). VaM own package registry is updated per package instead; only the Package Builder tool list waits for the next full rescan. false = always run it.");
             BrowserAssistScanAccelerator.SkipPackageListSync = baPkgSync.Value;
+            ConfigEntry<bool> baDeadLinks = Config.Bind(
+                "BA", "AutoPruneDeadLinks", true,
+                "During scans, remove .var link entries whose target vanished (deleted from the linked library) so the package stops listing. Skips pruning when the target volume is offline. false = keep dead links untouched.");
+            BrowserAssistScanAccelerator.AutoPruneDeadLinks = baDeadLinks.Value;
             // Drop thumbnail decodes/cache left over from any package
             // manager session that ran before this payload loaded.
             PackageManagerGuard.PurgeResiduals();
@@ -410,6 +414,8 @@ namespace Quest3TriggerUI
                 "Above the 80% load line raise the idle watchdog's growth band to 3GiB instead of refusing the collect. Measured here: the session's steady state is load=82-88% with the external trimmer off, the 1.5GiB gate fired every cycle, and the load line refused every attempt until the heap sawtoothed 19.74 -> 26.6GB of 28.90GB and one 4.4-4.7s mark landed wherever Boehm picked it. The physical floor (2GB available RAM, 8GB page file) and the 60s minimum interval still apply. Set false to keep the 80% line absolute.");
             PresetSweepGate.IdleGcOnExhaust = Config.Bind("PresetLoading", "IdleGcOnHeapExhaust", true,
                 "Also let the idle watchdog collect while RAM load sits above its 80% line, once the managed heap itself is nearly out of room (free below 8% of capacity, floor 256MiB). Measured twice in one idle session: the watchdog logged 'idle GC blocked ... load=84%' for the whole climb, monoFree fell to 0.24-0.28GB of 26.17GB, and Boehm then collected on its own from inside a UI frame at 4.2-4.5s of freeze. Same mark either way, cheaper frame. The hardware floor (2GB available RAM, 8GB page file) still applies. Set false to keep the load line absolute.");
+            ColdTextureBufferLayout.Enabled = Config.Bind("TextureLoading", "CompactColdDecodeBuffers", true,
+                "Use exact upload-sized cold buffers and convert bump maps in place after a local Unity byte-layout selftest; no new resident pool or cache format change.");
             BumpNormalRowConverter.Enabled = Config.Bind(
                 "TextureLoading", "BumpNormalThreeRows", true,
                 "Use three scratch rows for native-equivalent bump-to-normal conversion; preserve output format and resolution.");
@@ -461,6 +467,12 @@ namespace Quest3TriggerUI
             WardrobeJanitor.PurgeDelaySeconds = Config.Bind(
                 "Wardrobe", "PurgeDelaySeconds", 5f,
                 "Seconds after a full person preset load before the inactive-item purge runs — lets the async texture/morph tail settle first.");
+            FaceDetailDistanceGuard.Enabled = Config.Bind(
+                "Wardrobe", "FaceDetailDistanceGuard", true,
+                "VAMSOY's template woman wears razor-thin facial overlays (CMA_EYESSHADOW, CMA_IRIS REFLEX, Lacrimal_gland_v2, Realistic Eyes, Eyes upper/side shadow, EYE2) whose alpha is ~0 in nearly every texel: a distant mip averages the transparent RGB back in and paints a grey film over the face, and her lashes are hair, so the hair distance LOD collapses them into long spikes. This switches those items' worn renderers off past FaceDetailDistanceM and back on inside it. item.active/item.enabled are never written, so the preset is unchanged; only renderers this guard switched off are switched back on.");
+            FaceDetailDistanceGuard.HideDistance = Config.Bind(
+                "Wardrobe", "FaceDetailDistanceM", 3f,
+                "Metres from the camera at which facial overlays and lashes are switched off (measured to the item's own world bounds, so a reclining pose is measured against the face). Shown again below 85% of this to avoid flicker; tune to taste in a VAMSOY scene.");
             TextureOrphanSweeper.Enabled = Config.Bind(
                 "Wardrobe", "TexOrphanSweep", true,
                 "Release unused textureCache ownership only for observed native character/material callback results. Unknown/UI/preload consumers are retained; no direct texture destruction.");
@@ -479,6 +491,9 @@ namespace Quest3TriggerUI
             SceneOrphanSweep.SweepObjects = Config.Bind(
                 "Wardrobe", "OrphanSweepObjects", false,
                 "Include the GameObject census leg of the post-scene-load orphan sweep (groups inactive (Clone) trees, feeds the clone-kill pass). Measured 16.1s of a 17.7s sweep with zero kills, so it is off unless a clone leak is suspected.");
+            SceneOrphanSweep.Census = Config.Bind(
+                "Wardrobe", "OrphanSweepCensus", false,
+                "Include the observation-only component census leg of the post-scene-load orphan sweep (stranded-component count plus a per-MonoBehaviour-type histogram). Nothing but the log line reads it, and it measured 6147ms of slice time in the last sweep, so it is off unless the census is what is being investigated.");
             SceneOrphanSweep.MeasureGC = Config.Bind(
                 "Wardrobe", "OrphanSweepMeasureGC", false,
                 "The sweep additionally forces a full GC just to log liveMiB vs retained heap. Off: the same numbers come from the scheduled PresetSweepGate GC without a multi-second collect inside the sweep.");
@@ -494,6 +509,18 @@ namespace Quest3TriggerUI
             TextureCacheByteReuse.MinBytesKB = Config.Bind(
                 "TextureLoading", "ReuseCachedTextureBytesMinKB", 256,
                 "Smallest cached texture (KB) worth pooling; thumbnails, meta files and other small reads stay on the native path.");
+            NativeCacheBuffer.Enabled = Config.Bind(
+                "TextureLoading", "NativeCacheReadBuffers", true,
+                "Stage a completed .vamcache read in a native block (VirtualAlloc) and upload it with Texture2D.LoadRawTextureData(IntPtr,int); the block is released as soon as the upload consumed it, so its pages go back to the OS instead of joining Boehm's free lists for the rest of the session. Small files, oversize files, budget and every read failure fall back to the pooled managed read, so the request always uploads the same bytes.");
+            NativeCacheBuffer.BudgetMiB = Config.Bind(
+                "TextureLoading", "NativeCacheReadBudgetMiB", 1024,
+                "Total bytes that may be staged natively at once; above it a request falls back to the pooled managed read.");
+            NativeCacheBuffer.IdleMiB = Config.Bind(
+                "TextureLoading", "NativeCacheReadReuseMiB", 192,
+                "Committed native bytes kept for reuse after an upload. Above the cap blocks are released to the OS instead of being held; larger keeps more reuse, smaller holds less.");
+            NativeCacheBuffer.MaxFileMiB = Config.Bind(
+                "TextureLoading", "NativeCacheReadMaxFileMiB", 512,
+                "Largest single cache file staged natively; anything bigger keeps the pooled managed read.");
             WardrobeJanitor.PurgeMorphDeltas = Config.Bind(
                 "Wardrobe", "PurgeMorphDeltas", true,
                 "The post-load purge also calls UnloadRuntimeMorphDeltas (the same call VaM's optimize-memory makes) to drop the previous preset's runtime morph deltas.");
@@ -514,6 +541,12 @@ namespace Quest3TriggerUI
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
             Config.Bind("Diagnostics", "EyeMaterialSnapshot", false,
                 "Read-only one-shot eye/lash material bindings in the log; auto-resets, no scene changes.");
+            Config.Bind("Diagnostics", "MemoryRetentionReport", false,
+                "One-shot read-only retention report: set true (the cfg reloads live) and the plugin logs the collection-field inventory of this plugin and of Assembly-CSharp, then resets itself to false. Measurement only: it never releases anything.");
+            Config.Bind("Diagnostics", "MemoryRetentionReportDeep", false,
+                "One-shot retention report plus a GameObject/Transform/Component census; freezes the frame for seconds, auto-resets, no scene changes.");
+            Config.Bind("Diagnostics", "MemoryRetentionReportGameScan", true,
+                "Include the Assembly-CSharp half of the retention report. Reading a static field runs that type's initializer, so setting this to false and editing the cfg again stops the game half immediately; the plugin-assembly half keeps working.");
             _memWatchEntry = Config.Bind(
                 "Diagnostics", "MemWatchSeconds", 15,
                 "Periodic one-line memory/VRAM/texture-cache snapshot (snap[watch]); 0=off. Cheap — safe to leave on while hunting leaks.");
@@ -521,6 +554,7 @@ namespace Quest3TriggerUI
             Instance = this;
             Log = Logger;
             BodySmootherCompatibility.Install();
+            ClothingScriptAssemblyReuse.Install();
             PresetDeltaApply.Install();
             PresetHairRenderBatch.Install();
             PresetSweepGate.Install();
@@ -551,7 +585,12 @@ namespace Quest3TriggerUI
                 "Also enumerate GameObject and Component in the census. SceneOrphanSweep measured those legs at 4.7s/16.1s including per-object analysis; a bare count may be far cheaper, and every [uua-census] line reports censusMs so the real cost shows up. Off by default because it lands on the sweep path.");
             UuaGate.Enabled = Config.Bind("Diagnostics", "UuaGate", true,
                 "Demote the native sweep the preset path submits after a swap settles. Measured over four real swaps (character x2, appearance, clothing): 8.57-9.12s of main-thread stall for 0-16 MiB of CPU allocation, 0 MiB of VRAM, 3-6 materials, 0-3 textures totalling <=1 MiB and no render targets, while the managed GC in the same swap frees 2.5-3.0GB in ~3.7s. Only a sweep whose caller chain names PresetSweepGate.SubmitSweep is skipped, and only after a real sweep has run once in this session (its completed operation is what gets handed back); standby, scene load, janitor cleanup and unrecognised callers keep their sweep. On by default (the enabled path): this changes behaviour on the swap path; set false to hand every sweep back to the engine.");
+            UuaGate.BackstopSeconds = Config.Bind("Diagnostics", "UuaGateBackstopSeconds", 180,
+                "Hard bound on how long the preset path may keep handing back a completed operation instead of running a real sweep. A swap-only session must not drift forever, so once this many seconds have passed since the last real sweep the next demotable call really sweeps (8-21s). Set 0 to keep the 180s default.");
+            UuaGate.MaxSkips = Config.Bind("Diagnostics", "UuaGateMaxSkips", 8,
+                "Hard bound on how many demotable sweeps may be handed a completed operation in a row. Reaching either this or UuaGateBackstopSeconds lets the next one run for real. Set 0 to keep the 8 default.");
             UuaGate.Report();
+            FaceDetailDistanceGuard.Report();
             UuaTypeCensus.Install();
             LongFrameWatch.Install();
             TextureDecodeBudget.ColdEstimate = ColdTextureHeader.Estimate;
@@ -893,6 +932,7 @@ namespace Quest3TriggerUI
         {
             LoadAttributionProbe.BeginFrame();
             LiveSetCensus.BeginFrame();
+            BrowserAssistScanAccelerator.VarProbeFrame();
             long __frameBudgetT0 = FrameBudgetProbe.MarkUpdateStart();
             try
             {
@@ -999,9 +1039,13 @@ namespace Quest3TriggerUI
             AudioCacheJanitor.Tick();
             LoadAttributionProbe.Mark(4);
             WardrobeJanitor.Tick();
+            FaceDetailDistanceGuard.Tick();
             GenBridge.Tick();
+            PinyinEngine.IdleTick();
             LoadAttributionProbe.Mark(5);
             PresetSweepGate.Tick();
+            MemoryRetentionReport.Tick();
+            MeshOwnerRetentionProbe.Tick();
             UnloadCoverageProbe.Tick();
             UuaTypeCensus.Tick();
             SceneLoadAccelerator.RetryPendingBrackets();
@@ -1140,7 +1184,11 @@ namespace Quest3TriggerUI
                 bool evict = text.Contains("AudioCacheEvictNow = true");
                 bool ucov = text.Contains("UnloadCoverageProbeOnce = true");
                 bool uip = text.Contains("UiRaycastCensusOnce = true");
-                if (!snap && !evict && !eye && !ucov && !uip)
+                bool mrr = text.Contains("MemoryRetentionReport = true");
+                bool mrd = text.Contains("MemoryRetentionReportDeep = true");
+                MemoryRetentionReport.GameScan =
+                    !text.Contains("MemoryRetentionReportGameScan = false");
+                if (!snap && !evict && !eye && !ucov && !uip && !mrr && !mrd)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -1156,6 +1204,12 @@ namespace Quest3TriggerUI
                 text = text.Replace(
                     "UiRaycastCensusOnce = true",
                     "UiRaycastCensusOnce = false");
+                text = text.Replace(
+                    "MemoryRetentionReport = true",
+                    "MemoryRetentionReport = false");
+                text = text.Replace(
+                    "MemoryRetentionReportDeep = true",
+                    "MemoryRetentionReportDeep = false");
                 // GetBytes re-emits the BOM because the decoded string
                 // still carries the \uFEFF character.
                 System.IO.File.WriteAllBytes(
@@ -1167,6 +1221,8 @@ namespace Quest3TriggerUI
                 if (evict) AudioCacheJanitor.SweepNow();
                 if (ucov) UnloadCoverageProbe.Arm();
                 if (uip) UiRaycastProbe.Dump();
+                if (mrr) MemoryRetentionReport.Report("once");
+                if (mrd) MemoryRetentionReport.DeepReport("once-deep");
             }
             catch (Exception ex)
             {
@@ -1376,8 +1432,11 @@ namespace Quest3TriggerUI
             VrShotCameras.Shutdown();
             ClothingRegionMode.Shutdown();
             PluginListMode.Shutdown();
+            MeshOwnerRetentionProbe.Shutdown();
             WardrobeJanitor.Shutdown();
+            FaceDetailDistanceGuard.Shutdown();
             BodySmootherCompatibility.Shutdown();
+            ClothingScriptAssemblyReuse.Shutdown();
             PresetDeltaApply.Shutdown();
             PresetHairRenderBatch.Shutdown();
             PresetSweepGate.Shutdown();

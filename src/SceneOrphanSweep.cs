@@ -30,6 +30,7 @@ namespace Quest3TriggerUI
         // "is it stranded junk or something still in use" before we destroy
         // anything third-party.
         private static Dictionary<string, int> _lastCompCounts;
+        private static bool _censusOff;
         private static readonly Dictionary<string, string> _lastCompPath =
             new Dictionary<string, string>();
 
@@ -55,6 +56,14 @@ namespace Quest3TriggerUI
         // (clone kills) destroyed nothing across sweeps (cloneGo killed=0).
         // Off by default; re-enable when a clone leak is actually suspected.
         internal static ConfigEntry<bool> SweepObjects;
+        // The components leg counts stranded components and builds a
+        // per-MonoBehaviour-type histogram. Nothing reads either: the count and
+        // the histogram go into the log line and nowhere else, while the leg
+        // walks every live MonoBehaviour and resolves Transform.root for each.
+        // Measured 6147ms of slice time in the 14.70 sweep (graphics=1033ms for
+        // comparison). Off by default; re-enable when the census is the thing
+        // being investigated.
+        internal static ConfigEntry<bool> Census;
 
         private const int Batch = 256;
         private static readonly System.Diagnostics.Stopwatch _frameWatch =
@@ -249,6 +258,7 @@ namespace Quest3TriggerUI
             _zombieGo = 0;
             _killedNames = "";
             _timings = "";
+            _censusOff = (Census != null && !Census.Value);
             _objects = null;
             _index = 0;
             _step = 1;
@@ -365,6 +375,19 @@ namespace Quest3TriggerUI
         // counter and the per-type live census walked the same array twice.
         private static void StepComponents()
         {
+            if (_censusOff)
+            {
+                // Observation-only leg: leave it out and hand the step on.
+                bool objectsOn = (SweepObjects == null) || SweepObjects.Value;
+                Advance("components", objectsOn ? 5 : 7);
+                _timings += " census=off";
+                if (!objectsOn)
+                {
+                    _timings += " objects=off clones=off";
+                    _suspectIds = new HashSet<int>();
+                }
+                return;
+            }
             if (_objects == null)
             {
                 _objects = Resources.FindObjectsOfTypeAll<MonoBehaviour>();
@@ -627,7 +650,7 @@ namespace Quest3TriggerUI
                 " cloneGo killed=" + _killedGo + " zombieGo=" + _zombieGo +
                 " suspects=" + suspectCount +
                 (_killedNames.Length > 0 ? " names:" + _killedNames : "") +
-                " strandedComps=" + _orphanTotal + top +
+                " strandedComps=" + (_censusOff ? "off" : _orphanTotal.ToString()) + top +
                 (grew.Length > 0 ? " grewGroups:" + grew : "") +
                 memLine +
                 " totalMs=" +

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using UnityEngine;
 using UnityEngine.UI;
 using MVR.FileManagement;
@@ -39,6 +40,7 @@ namespace Quest3TriggerUI
         private static GameObject _sdList;
         private static float _sdListHeight;
         private static bool _sdDirty = true, _sdLoaded, _sdTagsLoaded;
+        private static bool _sdPreviewDirty;
         private static bool _sdPositionLogged;
 
         private static readonly List<string[]> _sdFavorites =
@@ -54,6 +56,7 @@ namespace Quest3TriggerUI
         private static string _sdTagEditing;
         private static InputField _sdTagInput;
         private static bool _sdUserHidden, _sdCollapsedApplied;
+        private static bool _sdAutoHidEditor;
         private static GameObject _sdShowBar;
         private static Image _sdDeleteButton;
         private static Text _sdDeleteLabel;
@@ -91,6 +94,7 @@ namespace Quest3TriggerUI
                 if (prevStamp != null)
                     foreach (KeyValuePair<string, long> kv in prevStamp)
                         _sdThumbStamp[kv.Key] = kv.Value;
+                DropOversizedSdThumbStamps();
             }
             GenBridge.Publish("sd.thumbs", _sdThumbs);
             GenBridge.Publish("sd.thumbStamp", _sdThumbStamp);
@@ -218,12 +222,38 @@ namespace Quest3TriggerUI
             _sdPositionLogged = false;
         }
 
+        // Keeps the dock alive through an ACE teardown while
+        // BrowserAssist's browser is up — TickSceneDock re-anchors it to
+        // BA's window. Returns true when the dock was preserved.
+        private static bool PreserveSceneDockForBa()
+        {
+            SuperController sc = SuperController.singleton;
+            float baX, baY;
+            if (_dockMode == 2 && _sdDock != null && sc != null &&
+                !sc.isLoading && BaDockAnchor(out baX, out baY) != null)
+            {
+                _sdList = null;
+                _sdDirty = true;
+                return true;
+            }
+            return false;
+        }
+
         private static void TickSceneDock()
         {
-            if (_sdDock == null || _sdList == null) return;
+            if (_sdDock == null) return;
             SuperController sc = SuperController.singleton;
-            bool visible = _dockMode == 2 && _sdList.activeInHierarchy &&
-                sc != null && sc.MainHUDVisible && !_presetBrowsing;
+            // While BrowserAssist's main browser is up, the dock glues to
+            // its window instead of the ACE list — that is the whole point
+            // of scene mode (dragging BA scene cells onto it). The dock
+            // attaches left of BA's full extent (background box + rotated
+            // tag sidebar), outside the window instead of inside it.
+            float baEdgeX, baMidY;
+            RectTransform ba = BaDockAnchor(out baEdgeX, out baMidY);
+            bool visible = _dockMode == 2 && sc != null &&
+                !_presetBrowsing && (ba != null ||
+                (_sdList != null && _sdList.activeInHierarchy &&
+                 sc.MainHUDVisible));
             if (_sdDock.gameObject.activeSelf != visible)
                 _sdDock.gameObject.SetActive(visible);
             if (!visible) return;
@@ -233,6 +263,30 @@ namespace Quest3TriggerUI
                 Log("场景收藏栏可见，位置已锁定于列表左缘。");
             }
 
+            if (ba != null)
+            {
+                _sdDock.rotation = ba.rotation;
+                _sdDock.localScale = ba.lossyScale;
+                Vector3 leftEdge = ba.TransformPoint(
+                    new Vector3(baEdgeX, baMidY, 0f));
+                _sdDock.position = leftEdge - ba.right *
+                    (24f * ba.lossyScale.x +
+                     _sdDock.rect.width * _sdDock.lossyScale.x * 0.5f);
+                Camera viewer = sc.lookCamera;
+                if (viewer != null)
+                {
+                    Vector3 baAway =
+                        _sdDock.position - viewer.transform.position;
+                    _sdDock.position -= baAway.normalized *
+                        (12f * ba.lossyScale.x);
+                    if (baAway.sqrMagnitude > 0.0001f &&
+                        Vector3.Cross(baAway, ba.up).sqrMagnitude > 0.0001f)
+                        _sdDock.rotation =
+                            Quaternion.LookRotation(baAway, ba.up);
+                }
+            }
+            else
+            {
             RectTransform list = (RectTransform)_sdList.transform;
             list.GetWorldCorners(_dockCorners);
             _sdDock.rotation = list.rotation;
@@ -252,12 +306,13 @@ namespace Quest3TriggerUI
                     Vector3.Cross(away, list.up).sqrMagnitude > 0.0001f)
                     _sdDock.rotation = Quaternion.LookRotation(away, list.up);
             }
+            }
             ApplySdCollapsed();
             if (_sdUserHidden) return;
-            if (_sdDirty || _sdBuildSlots != null)
+            if (_sdDirty || _sdPreviewDirty || _sdBuildSlots != null)
             {
-                bool restart = _sdDirty;
-                if (restart) _sdDirty = false;
+                bool restart = _sdDirty || _sdPreviewDirty;
+                if (restart) _sdDirty = _sdPreviewDirty = false;
                 PumpSdCells(SdBuildPerTick, restart);
             }
             TickDockScroll(2);
@@ -273,7 +328,7 @@ namespace Quest3TriggerUI
             {
                 _sdKeptCells.Clear();
                 _sdCellPosition = 0;
-                _sdBuildSlots = new List<string[]>(VisibleSdFavorites);
+                _sdBuildSlots = new List<string[]>(SdDisplayOrder());
                 _sdBuildIdx = 0;
             }
             int count = _sdBuildSlots.Count;
@@ -528,6 +583,21 @@ namespace Quest3TriggerUI
         // Sidecar jpg next to the scene .json, same freshness-stamp scheme
         // as the preset dock. A texture fed by a BrowserAssist sprite handoff
         // survives until a real file lands on disk.
+        // Same stale-entry migration as the preset dock: drop the stamp so
+        // the next visible visit re-decodes through CapThumbEdge.
+        private static void DropOversizedSdThumbStamps()
+        {
+            List<string> over = null;
+            foreach (KeyValuePair<string, Texture2D> kv in _sdThumbs)
+            {
+                if (!ThumbOversized(kv.Value)) continue;
+                if (over == null) over = new List<string>();
+                over.Add(kv.Key);
+            }
+            if (over == null) return;
+            foreach (string k in over) _sdThumbStamp.Remove(k);
+        }
+
         private static void LoadSdThumb(SdSlotTag tag)
         {
             string path = tag.Path;
@@ -589,7 +659,7 @@ namespace Quest3TriggerUI
                         Texture2D t = new Texture2D(2, 2,
                             TextureFormat.RGBA32, false);
                         t.name = "Q3SdThumb";
-                        if (t.LoadImage(bytes)) tex = t;
+                        if (t.LoadImage(bytes)) tex = CapThumbEdge(t, "Q3SdThumb");
                         else UnityEngine.Object.Destroy(t);
                     }
                 }
@@ -617,6 +687,93 @@ namespace Quest3TriggerUI
                 if (cell == null || cell.Path != scenePath) continue;
                 if (cell.Thumb != null) cell.Thumb.texture = null;
                 ApplySdThumb(cell);
+            }
+        }
+
+        // ---------- BrowserAssist window anchor ----------
+
+        // JayJayWon.BrowserAssist.mainBrowserUI: isVisible tracks
+        // mainCanvas.enabled; isActive means the browser is open. The dock
+        // glues to the LEFT of the whole BA assembly — backgroundBoxGO plus
+        // the rotated sideTagBoxGO wing — so edgeX is the union's leftmost
+        // corner in canvas space. Reflection resolves once; member reads
+        // run per tick (a few property/field invokes).
+        private static bool _baAnchorTried;
+        private static PropertyInfo _baMainUiProp, _baActiveProp,
+            _baVisibleProp, _baTagProp;
+        private static FieldInfo _baBgField;
+        private static readonly Vector3[] _baCorners = new Vector3[4];
+
+        private static RectTransform BaDockAnchor(
+            out float edgeLocalX, out float midLocalY)
+        {
+            edgeLocalX = 0f;
+            midLocalY = 0f;
+            try
+            {
+                if (!_baAnchorTried)
+                {
+                    _baAnchorTried = true;
+                    Assembly asm =
+                        AssemblyCatalog.FindByType("JayJayWon.BrowserAssist");
+                    if (asm == null) return null;
+                    Type t = asm.GetType("JayJayWon.BrowserAssist");
+                    _baMainUiProp = t.GetProperty("mainBrowserUI",
+                        BindingFlags.Public | BindingFlags.Static);
+                    if (_baMainUiProp == null) return null;
+                    Type ui = _baMainUiProp.PropertyType;
+                    _baActiveProp = ui.GetProperty("isActive",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    _baVisibleProp = ui.GetProperty("isVisible",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    _baBgField = ui.GetField("backgroundBoxGO",
+                        BindingFlags.NonPublic | BindingFlags.Instance);
+                    _baTagProp = ui.GetProperty("sideTagBoxGO",
+                        BindingFlags.Public | BindingFlags.Instance);
+                    if (_baActiveProp == null || _baVisibleProp == null ||
+                        _baBgField == null)
+                        _baMainUiProp = null;
+                }
+                if (_baMainUiProp == null) return null;
+                object browser = _baMainUiProp.GetValue(null, null);
+                if (browser == null) return null;
+                if (!(bool)_baActiveProp.GetValue(browser, null) ||
+                    !(bool)_baVisibleProp.GetValue(browser, null))
+                    return null;
+                GameObject box = _baBgField.GetValue(browser) as GameObject;
+                if (box == null || !box.activeInHierarchy) return null;
+                RectTransform boxRect = box.transform as RectTransform;
+                RectTransform canvas =
+                    box.transform.parent as RectTransform;
+                if (boxRect == null || canvas == null) return null;
+                float minX = float.MaxValue, midY = 0f;
+                AccumulateBaEdge(boxRect, canvas, ref minX, ref midY, true);
+                if (_baTagProp != null)
+                {
+                    GameObject tag =
+                        _baTagProp.GetValue(browser, null) as GameObject;
+                    if (tag != null && tag.activeInHierarchy)
+                        AccumulateBaEdge(tag.transform as RectTransform,
+                            canvas, ref minX, ref midY, false);
+                }
+                if (minX == float.MaxValue) return null;
+                edgeLocalX = minX;
+                midLocalY = midY;
+                return canvas;
+            }
+            catch { return null; }
+        }
+
+        private static void AccumulateBaEdge(RectTransform rt,
+            RectTransform space, ref float minX, ref float midY, bool withY)
+        {
+            if (rt == null) return;
+            rt.GetWorldCorners(_baCorners);
+            for (int i = 0; i < 4; i++)
+            {
+                Vector3 p = space.InverseTransformPoint(_baCorners[i]);
+                if (p.x < minX) minX = p.x;
+                if (withY) midY += p.y * 0.25f;
             }
         }
 

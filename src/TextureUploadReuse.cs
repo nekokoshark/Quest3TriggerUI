@@ -68,7 +68,11 @@ namespace Quest3TriggerUI
             if (cached.mipmapCount != mipCount) return false;
             int format = (int)q.textureFormat;
             long required = RequiredBytes(q.width, q.height, format, q.createMipMaps);
-            if (required == 0 || q.raw == null || q.raw.LongLength < required) return false;
+            // A staged native block carries the same payload as q.raw: the
+            // read site keeps the bytes off the managed heap and uploads them
+            // by pointer, so the recheck has to measure the block instead.
+            long payload = q.raw != null ? q.raw.LongLength : NativeCacheBuffer.StagedLength(q);
+            if (required == 0 || payload < required) return false;
             bool compress = q.compress && (q.preprocessed || !q.createMipMaps || (PowerOfTwo(q.width) && PowerOfTwo(q.height)));
             if (compress && format != 10 && format != 12)
             {
@@ -90,7 +94,7 @@ namespace Quest3TriggerUI
             var cache = _cache.GetValue(loader) as Dictionary<string, Texture2D>;
             Texture2D texture;
             if (cache == null || !cache.TryGetValue(q.cacheSignature, out texture) || !Compatible(q, texture)) return;
-            long bytes = q.raw.LongLength;
+            long bytes = q.raw != null ? q.raw.LongLength : NativeCacheBuffer.StagedLength(q);
             // Native PostProcessCompletedImages already chooses this very cache
             // entry after Finish. Avoid creating/uploading its throwaway duplicate.
             q.tex = texture;

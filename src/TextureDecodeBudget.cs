@@ -64,6 +64,7 @@ namespace Quest3TriggerUI
         internal static void Install()
         {
             if (_harmony != null) return;
+            DecodedBufferPool.Reactivate();
             try
             {
                 var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -81,6 +82,7 @@ namespace Quest3TriggerUI
                 _harmony.Patch(finish, prefix: Patch("BeforeFinish"), finalizer: Patch("AfterFinish"));
                 _harmony.Patch(resolve, finalizer: Patch("AfterResolve"));
                 _harmony.Patch(dispatch, prefix: Patch("BeforeDispatch"), transpiler: Patch("DispatchTranspiler"), postfix: Patch("AfterDispatch"));
+                ColdTextureBufferLayout.ValidateUpload();
                 _harmony.Patch(decode, transpiler: Patch("DecodeTranspiler"));
                 Log("installed: main-thread admission; estimated bytes held through Finish; native cache metadata sizing; pooled decode buffers; no quality changes");
             }
@@ -134,24 +136,33 @@ namespace Quest3TriggerUI
 
         private static IEnumerable<CodeInstruction> DecodeTranspiler(IEnumerable<CodeInstruction> instructions)
         {
-            // ProcessFromStream allocates the decoded pixel array via
-            // `newarr byte` (two sites: direct decode + bump result). Route
-            // every byte[] allocation through the pool; Single[]/Single
-            // scratch and other element types are untouched.
+            // Only the first allocation stores QueuedImage.raw. Native bump
+            // output remains separately pooled if the three-row path is off.
             var code = new List<CodeInstruction>(instructions);
-            int matched = 0;
+            int matched = 0, compact = 0;
             MethodInfo rent = typeof(DecodedBufferPool).GetMethod("RentByteArray",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            MethodInfo coldRent = typeof(ColdTextureBufferLayout).GetMethod("RentDecoded",
                 BindingFlags.Static | BindingFlags.NonPublic);
             for (int i = 0; i < code.Count; i++)
             {
-                if (code[i].opcode != OpCodes.Newarr) continue;
-                var elem = code[i].operand as Type;
-                if (elem != typeof(byte)) continue;
-                code[i] = new CodeInstruction(OpCodes.Call, rent);
+                if (code[i].opcode != OpCodes.Newarr || !Equals(code[i].operand, typeof(byte))) continue;
+                var raw = i + 1 < code.Count ? code[i + 1].operand as FieldInfo : null;
+                if (i + 1 < code.Count && code[i + 1].opcode == OpCodes.Stfld && raw != null &&
+                    raw.Name == "raw" && raw.DeclaringType == typeof(ImageLoaderThreaded.QueuedImage))
+                {
+                    // Stack: [image for stfld, length] -> [..., length, image].
+                    // Keep labels and exception blocks on the first replacement.
+                    code[i].opcode = OpCodes.Ldarg_0; code[i].operand = null;
+                    code.Insert(++i, new CodeInstruction(OpCodes.Call, coldRent));
+                    compact++;
+                }
+                else { code[i].opcode = OpCodes.Call; code[i].operand = rent; }
                 matched++;
             }
-            if (matched == 0) throw new InvalidOperationException("no newarr byte allocation sites found");
-            Log("decode pool transpiler: " + matched + " byte[] allocation sites pooled");
+            if (compact != 1 || matched != 2)
+                throw new InvalidOperationException("native cold allocation anchors changed");
+            Log("decode pool transpiler: " + matched + " byte[] sites; exact-layout cold raw=" + compact);
             return code;
         }
 
@@ -398,6 +409,9 @@ namespace Quest3TriggerUI
                     " headerSized=" + _headerSized + " headerMs=" + (_headerTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
                     " pendingWriteMiB=" + ((PendingCacheBytes == null ? 0 : PendingCacheBytes()) / MiB) +
                     " directCopies=" + TextureScratchLifetime.DirectCopies +
+                    " compactSavedMiB=" + (ColdTextureBufferLayout.SavedBytes / MiB) +
+                    " compactArrays=" + ColdTextureBufferLayout.CompactArrays +
+                    " inPlaceBumps=" + ColdTextureBufferLayout.InPlaceBumps +
                     " managedDecodeMiB=" + (_managedBytes / MiB) +
                     " bumpScratchMiB=" + (_bumpBytes / MiB) +
                     " heapMiB=" + (_heapStart / MiB) + "->" + (GC.GetTotalMemory(false) / MiB) +
@@ -406,8 +420,15 @@ namespace Quest3TriggerUI
                     " poolEvicted=" + DecodedBufferPool.Evicted +
                     " poolShared=" + DecodedBufferPool.Reserves + "/" + DecodedBufferPool.Claims +
                     "/" + DecodedBufferPool.Held + "/" + DecodedBufferPool.Refused +
+                    " sharedLive=" + DecodedBufferPool.SharedEntries +
+                    " sharedMiB=" + (DecodedBufferPool.SharedBytes / MiB) +
                     " cacheReuse=" + TextureCacheByteReuse.Hits + "/" + (TextureCacheByteReuse.Bytes / MiB) +
                     "MiB fallback=" + TextureCacheByteReuse.Fallbacks +
+                    " nativeStaged=" + NativeCacheBuffer.Staged + "/" + (NativeCacheBuffer.StagedBytes / MiB) +
+                    "MiB nativeUploaded=" + NativeCacheBuffer.Uploaded +
+                    " nativeLive=" + NativeCacheBuffer.LiveMiB + "MiB" +
+                    " nativeHeld=" + NativeCacheBuffer.IdleHeldMiB + "MiB" +
+                    " nativeFail=" + NativeCacheBuffer.Failures +
                     " probeMaxMs=" + (_probeMaxTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
                     " probeIoMs=" + (_probeIoTicks * 1000 / System.Diagnostics.Stopwatch.Frequency) +
                     " probeSuspended=" + _probeSuspended +
@@ -429,7 +450,7 @@ namespace Quest3TriggerUI
         {
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null;
-            DecodedBufferPool.Clear();
+            DecodedBufferPool.Retire();
             Held.Clear();
             _reserved = _peak = _nextMemoryCheck = 0;
             _admitted = _deferred = _discarded = 0;

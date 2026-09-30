@@ -94,6 +94,17 @@ namespace Quest3TriggerUI
         private const long HeapExhaustFreePercent = 8L;
         private const long HeapExhaustFreeFloor = 256L * 1024 * 1024;
 
+        // Yield gate for the idle watchdog (idle logs 2026-09-30): the same
+        // ~3s mark paid 2453 / 112 / 515 / 1536 / 3086MiB on five consecutive
+        // idle collects. A collect returning under 5% of the heap is not
+        // buying headroom, so the below-line band doubles instead of paying
+        // the same mark every 1.5GiB. The load-line, heap-exhaustion and
+        // pressure paths stay ungated: those fire because something else is
+        // about to happen, not because a band was crossed.
+        private const int IdleGcStretchMaxStrikes = 2;
+        private static int _idleGcStrikes;
+
+
         private static bool IdleGcDue(float now)
         {
             long used = GC.GetTotalMemory(false);
@@ -104,7 +115,7 @@ namespace Quest3TriggerUI
                 _idleBlockedLogged = now;
                 return false;
             }
-            if (used - _idleBytes < IdleGcGrowthLimit) return false;
+            if (used - _idleBytes < IdleGcBand()) return false;
             if (now - _idleAt < IdleGcMinInterval) return false;
             // Same rule as the deferred path: never collect into a load, a
             // queued decode or a scene switch, and never collect below the
@@ -146,7 +157,8 @@ namespace Quest3TriggerUI
                 {
                     _idleBlockedLogged = now;
                     Log("idle GC blocked: growthMiB=" +
-                        ((used - _idleBytes) / (1024 * 1024)) + " gates=" + gates +
+                        ((used - _idleBytes) / (1024 * 1024)) + " bandMiB=" +
+                        (IdleGcBand() / (1024 * 1024)) + " gates=" + gates +
                         " ready=" + ready + " load=" + load + "% availMiB=" +
                         (availablePhysical / (1024 * 1024)));
                 }
@@ -168,6 +180,13 @@ namespace Quest3TriggerUI
                     "; collecting at a quiet moment rather than waiting for the line");
             }
             return true;
+        }
+
+        private static long IdleGcBand()
+        {
+            // 1.5GiB -> 3GiB -> 6GiB, and only while consecutive idle collects
+            // keep returning under the yield floor (see RunGc).
+            return IdleGcGrowthLimit << _idleGcStrikes;
         }
 
         // This machine's steady state IS 73-76% load (GlobalMemoryStatusEx:
@@ -459,6 +478,8 @@ namespace Quest3TriggerUI
                 " restoreMs=" + __state.clock.ElapsedMilliseconds +
                 " window=[" + (__state.events == null ? "-" : string.Join(";", __state.events.ToArray())) + "]");
             __state.clock.Stop();
+            if (__state.owner != null && __state.success)
+                MemoryRetentionReport.Request("preset-completion:" + __state.kind);
             return __exception;
         }
 
@@ -744,6 +765,7 @@ namespace Quest3TriggerUI
 
         private static void RunGc(string reason)
         {
+            MemoryRetentionReport.NoteGc(reason);
             _gcPending = false;
             _gcOwner = null;
             long before = GC.GetTotalMemory(false);
@@ -756,6 +778,22 @@ namespace Quest3TriggerUI
                 _lastGcYield = before > _lastGcBytes ? before - _lastGcBytes : 0;
                 _lastGcTime = Time.realtimeSinceStartup;
                 _hasGc = true;
+                MemoryRetentionReport.Request("post-gc:" + reason);
+                // Yield gate (see IdleGcStretchMaxStrikes): any collect
+                // that pays off re-arms the idle band; only an idle
+                // collect that does not pay stretches it.
+                long payFloor = Math.Max(64L * 1024 * 1024, before / 20);
+                if (_lastGcYield >= payFloor) _idleGcStrikes = 0;
+                else if (reason == "idle growth watchdog" &&
+                         _idleGcStrikes < IdleGcStretchMaxStrikes)
+                {
+                    _idleGcStrikes++;
+                    Log("idle GC band stretched to " +
+                        (IdleGcBand() / (1024 * 1024)) +
+                        "MiB: last idle collect returned " +
+                        (_lastGcYield / 1048576) + "MiB against a " +
+                        (before / (1024 * 1024)) + "MiB heap (<5%)");
+                }
                 _idleBytes = _lastGcBytes;
                 _idleAt = _lastGcTime;
             }
@@ -958,6 +996,7 @@ namespace Quest3TriggerUI
             _lastGcBytes = 0;
             _lastGcTime = 0;
             _hasGc = false;
+            _idleGcStrikes = 0;
             _gcPending = false;
             _gcOwner = null;
             _gcRequestedAt = _gcNextCheck = 0;

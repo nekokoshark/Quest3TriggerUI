@@ -1852,6 +1852,7 @@ namespace Quest3TriggerUI
                 source.FromSceneDock)) return false;
             BeginFavoriteReorder(source);
             BeginPdReorder(source);
+            BeginSdReorder(source);
             VrHaptics.Press();
             // Our 0.35s drag threshold fires before BrowserAssist's own
             // ~500ms long-press (favorite/hide toggles) — disarm that
@@ -1972,6 +1973,7 @@ namespace Quest3TriggerUI
             // Live reorder preview (phone-icon reflow) on both docks.
             TickPdReorder();
             TickFavoriteReorder();
+            TickSdReorder();
         }
 
         private static bool PointerOverFavoritesBar()
@@ -2013,6 +2015,8 @@ namespace Quest3TriggerUI
                         sdActed = FileSceneFavorite(source, sdGroup);
                     else if (overSd && !source.FromSceneDock)
                         sdActed = AddSceneFavorite(source);
+                    else if (overSd)
+                        sdActed = CommitSdReorder(source);
                     if (sdActed)
                     {
                         if (_dockMode != 2) SetDockMode(2);
@@ -2137,6 +2141,7 @@ namespace Quest3TriggerUI
                 _favoriteClickAfter = Time.unscaledTime + 0.2f;
                 ClearFavoriteReorder();
                 ClearPdReorder();
+                ClearSdReorder();
                 if (_favGhostRoot != null) UnityEngine.Object.Destroy(_favGhostRoot);
                 _favGhost = null;
                 _favGhostRoot = null;

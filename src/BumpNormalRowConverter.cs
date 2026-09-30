@@ -76,15 +76,23 @@ namespace Quest3TriggerUI
             long pixels = (long)q.width * q.height;
             if (q.width <= 0 || q.height <= 0 || pixels > int.MaxValue / 8 ||
                 q.raw == null || q.raw.LongLength < pixels * 4) return false;
-            q.raw = Convert(q.raw, q.width, q.height, q.bumpStrength);
+            q.raw = Convert(q.raw, q.width, q.height, q.bumpStrength, q.createMipMaps);
             return true;
         }
 
         internal static byte[] Convert(byte[] raw, int width, int height, float strength)
         {
-            // Preserve even the native oversized, zero-padded output length so
-            // texture upload and existing disk cache byte layouts stay unchanged.
-            var output = new byte[checked(width * height * 8)];
+            return Convert(raw, width, height, strength, true);
+        }
+
+        internal static byte[] Convert(byte[] raw, int width, int height, float strength, bool mipmaps)
+        {
+            // Each row is sampled before its source pixels are overwritten:
+            // previous/current/next values already live in the three-row ring.
+            // No shared decode consumers exist until ProcessFromStream returns.
+            bool inPlace = ColdTextureBufferLayout.CanConvertInPlace(raw, width, height, mipmaps);
+            int nativeOutputBytes = checked(width * height * 8);
+            var output = inPlace ? raw : new byte[nativeOutputBytes];
             var rows = new float[checked(width * 3)];
             FillRow(raw, rows, width, 0);
             Vector3 normal = new Vector3();
@@ -118,6 +126,14 @@ namespace Quest3TriggerUI
                     output[index + 2] = (byte)(int)(normal.z * 255f);
                     output[index + 3] = 255;
                 }
+            }
+            if (inPlace)
+            {
+                // Pooled tails can contain old bytes. Match the native new[]
+                // zero padding before upload regenerates the actual mip chain.
+                int baseBytes = checked(width * height * 4);
+                Array.Clear(output, baseBytes, output.Length - baseBytes);
+                ColdTextureBufferLayout.RecordInPlace(nativeOutputBytes);
             }
             return output;
         }

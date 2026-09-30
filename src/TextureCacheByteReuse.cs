@@ -35,15 +35,28 @@ namespace Quest3TriggerUI
                 (DecodedBufferPool.Enabled == null || DecodedBufferPool.Enabled.Value);
         }
 
-        private static int Minimum()
+        internal static int MinimumBytes()
         {
             return (MinBytesKB == null ? 256 : Math.Max(0, MinBytesKB.Value)) * 1024;
+        }
+
+        // Stands in for the two cache reads of QueuedImage.Process. The native
+        // module stages the payload off the managed heap when it can; anything
+        // it refuses keeps the pooled managed read that was there before.
+        private static void Acquire(ImageLoaderThreaded.QueuedImage q, string path, bool onlySystem)
+        {
+            if (q != null && NativeCacheBuffer.TryStage(q, path))
+            {
+                q.raw = null;
+                return;
+            }
+            q.raw = ReadCachedBytes(path, onlySystem);
         }
 
         // Stands in for MVR.FileManagement.FileManager.ReadAllBytes(string, bool)
         // at the two cache-read sites of QueuedImage.Process. The pool returns
         // an exact-length recycled array which is then overwritten in full.
-        private static byte[] ReadCachedBytes(string path, bool onlySystem)
+        internal static byte[] ReadCachedBytes(string path, bool onlySystem)
         {
             if (!Active() || string.IsNullOrEmpty(path))
                 return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
@@ -52,7 +65,7 @@ namespace Quest3TriggerUI
                 var info = new FileInfo(path);
                 if (!info.Exists) return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
                 long length = info.Length;
-                if (length < Minimum() || length > int.MaxValue)
+                if (length < MinimumBytes() || length > int.MaxValue)
                 {
                     Fallbacks++;
                     return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
@@ -101,8 +114,11 @@ namespace Quest3TriggerUI
         internal static IEnumerable<CodeInstruction> ProcessTranspiler(
             IEnumerable<CodeInstruction> instructions)
         {
-            MethodInfo swap = typeof(TextureCacheByteReuse).GetMethod("ReadCachedBytes", All);
+            MethodInfo swap = typeof(TextureCacheByteReuse).GetMethod("Acquire",
+                BindingFlags.Static | BindingFlags.NonPublic);
             if (swap == null) throw new MissingMethodException("cache byte reader");
+            FieldInfo raw = typeof(ImageLoaderThreaded.QueuedImage).GetField("raw", All);
+            if (raw == null) throw new MissingFieldException("QueuedImage.raw");
             var code = new List<CodeInstruction>(instructions);
             int matches = 0;
             for (int i = 0; i < code.Count; i++)
@@ -114,7 +130,17 @@ namespace Quest3TriggerUI
                 var ps = m.GetParameters();
                 if (ps.Length != 2 || ps[0].ParameterType != typeof(string) ||
                     ps[1].ParameterType != typeof(bool)) continue;
+                // The reader keeps the q.raw store inside the replacement: a
+                // staged native block means the request has no managed payload,
+                // and a fallback writes the pooled array itself.
+                if (i + 1 >= code.Count || code[i + 1].opcode != OpCodes.Stfld ||
+                    !Equals(code[i + 1].operand, raw))
+                    throw new InvalidOperationException("cache read result store changed");
+                if (code[i].blocks.Count != 0 || code[i + 1].blocks.Count != 0)
+                    throw new InvalidOperationException("cache read exception boundary changed");
                 code[i].operand = swap;
+                code[i].labels.AddRange(code[i + 1].labels);
+                code.RemoveAt(i + 1);
                 matches++;
             }
             if (matches != 2)
@@ -125,7 +151,9 @@ namespace Quest3TriggerUI
         internal static void Install()
         {
             if (_harmony != null) return;
-            if (Enabled != null && !Enabled.Value) return;
+            bool managed = Enabled == null || Enabled.Value;
+            bool native = NativeCacheBuffer.Enabled == null || NativeCacheBuffer.Enabled.Value;
+            if (!managed && !native) return;
             try
             {
                 _harmony = new Harmony("Quest3TriggerUI.texture-cache-byte-reuse");
