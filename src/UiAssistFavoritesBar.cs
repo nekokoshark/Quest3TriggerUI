@@ -1993,6 +1993,62 @@ namespace Quest3TriggerUI
             return PointerOnRect(_favDock, out local);
         }
 
+        // "Dropped onto the clothing editor": the drag source's pointer is
+        // over the ACE scroll list. Rows resolve as children of _favList;
+        // the rect test covers stale look targets the same way the docks do.
+        private static bool PointerOverEditorList()
+        {
+            if (_favList == null || !_favList.activeInHierarchy) return false;
+            GameObject target =
+                VrPointerPresentation.CurrentLookTarget(DragRight());
+            if (target != null &&
+                target.transform.IsChildOf(_favList.transform))
+                return true;
+            Vector2 local;
+            return PointerOnRect((RectTransform)_favList.transform, out local);
+        }
+
+        // Dropping a ban/lock entry onto the editor list means "off the bar
+        // and onto the person". Bar membership is removed FIRST because the
+        // ban veto patch would silently eat the wear call; the wear then
+        // uses the same SetActiveClothingItem path a favorites click does.
+        private static bool RemoveBarAndWear(AceFavDragSource source,
+            bool fromLock)
+        {
+            bool removed = fromLock
+                ? RemoveLock(source.Uid) : RemoveBan(source.Uid);
+            SuperController sc = SuperController.singleton;
+            Atom atom = _favAtom;
+            if (sc == null || atom == null || atom.gameObject == null ||
+                sc.GetAtomByUid(atom.uid) != atom)
+            {
+                Snapshot state = FindEditor(sc);
+                atom = state == null ? null : state.Target;
+                _favAtom = atom;
+            }
+            DAZClothingItem item = ResolveClothingItem(source.Uid, atom);
+            if (item == null)
+            {
+                if (removed)
+                    Log("该服装当前不适用于此角色（性别不符或包未启用），" +
+                        "仅" + (fromLock ? "解除锁定" : "移除禁用") + "：" +
+                        (source.DisplayName ?? source.Uid));
+                return removed;
+            }
+            if (!item.active)
+            {
+                try
+                {
+                    item.characterSelector.SetActiveClothingItem(
+                        item, true, false);
+                    Log("已" + (fromLock ? "解除锁定" : "移除禁用") +
+                        "并穿上：" + (item.displayName ?? source.Uid));
+                }
+                catch (Exception e) { Error(e); }
+            }
+            return removed || item.active;
+        }
+
         internal static void EndFavoriteDrag(AceFavDragSource source)
         {
             try
@@ -2055,6 +2111,7 @@ namespace Quest3TriggerUI
                 bool overFav = PointerOverFavoritesBar();
                 bool overBan = PointerOverBanBar();
                 bool overLock = PointerOverLockBar();
+                bool overEditor = PointerOverEditorList();
                 Vector2 favoriteDropPoint;
                 // Preview rebuilds replace slot objects. Hit the persistent
                 // dock plane so a stale LookTarget cannot turn a reorder into deletion.
@@ -2104,8 +2161,11 @@ namespace Quest3TriggerUI
                 }
                 else if (source.FromBan)
                 {
-                    // Ban-bar slot: same rules mirrored.
-                    if (overLock)
+                    // Ban-bar slot: dropping on the editor list means
+                    // unban-and-wear; the rest mirrors the favorites rules.
+                    if (overEditor)
+                        acted = RemoveBarAndWear(source, false);
+                    else if (overLock)
                         acted = AddLock(source);
                     else if (overFav)
                     {
@@ -2117,10 +2177,13 @@ namespace Quest3TriggerUI
                 }
                 else
                 {
-                    // Lock-bar slot: dropping on favorites adds without
+                    // Lock-bar slot: dropping on the editor list means
+                    // unlock-and-wear; dropping on favorites adds without
                     // unlocking (lock and favorite coexist), dropping on ban
                     // moves it, anywhere else removes it.
-                    if (overFav)
+                    if (overEditor)
+                        acted = RemoveBarAndWear(source, true);
+                    else if (overFav)
                     {
                         if (onTagRow) SelectFavoriteTag(dropGroup);
                         acted = AddFavorite(source);

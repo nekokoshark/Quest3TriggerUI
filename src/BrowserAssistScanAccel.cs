@@ -1656,7 +1656,7 @@ namespace Quest3TriggerUI
                 var handlers = _refreshHandlers.GetValue(null) as Delegate;
                 if (handlers == null) return;
                 int skipped = 0, pkgSkipped = 0;
-                foreach (Delegate d in handlers.GetInvocationList())
+                foreach (Delegate d in DelegateSnapshot.GetInvocationList(handlers))
                 {
                     // Scene-bound handlers rebuild per-atom morph lists and
                     // clothing item selectors — the exact work the quick

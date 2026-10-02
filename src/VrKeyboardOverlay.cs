@@ -12,7 +12,7 @@ namespace Quest3TriggerUI
     internal sealed partial class VrKeyboardOverlay
     {
         private const float CanvasWidth = 2260f;
-        private const float CanvasHeight = 770f;
+        private const float CanvasHeight = 1106f;
         private const string DefaultHelpText =
             "用头部/控制器光标指向按键，食指扳机按下/松开会产生真实 KeyDown/KeyUp；方向键可按住。" +
             " Ctrl / Shift / Alt / Win 为锁定键，再点一次释放；关闭键盘会自动释放所有按下的键。";
@@ -68,6 +68,9 @@ namespace Quest3TriggerUI
 		private ShortcutActionButton _standbyButton;
         private Image _shortcutModeButtonImage;
         private Text _helpText;
+        private readonly Slider[] _faceSliders = new Slider[DirectMorphControls.SlotCount];
+        private readonly Text[] _faceTexts = new Text[DirectMorphControls.SlotCount];
+        private bool _syncingFaceMorphs;
         private Slider _eyeGapSlider;
         private Text _eyeGapValueText;
         private bool _syncingEyeGapSlider;
@@ -120,6 +123,7 @@ namespace Quest3TriggerUI
             VrTextInputBridge.Tick();
             TickImeUi();
             _quickActions.LateTickEyeGap();
+            _quickActions.TickFaceMorphs();
         }
 
         internal bool BindingMode
@@ -162,6 +166,7 @@ namespace Quest3TriggerUI
             if (show)
             {
                 SyncEyeGapSlider();
+                SyncFaceMorphSliders();
                 SyncDlssControls();
                 VrPointerPresentation.EnsureVisible();
             }
@@ -656,6 +661,7 @@ namespace Quest3TriggerUI
             CreateKeyboardRows(canvasRect);
             CreateImeUi(canvasRect);
             CreateShortcutPanel(canvasRect);
+            CreateFaceAdjustmentRows(canvasRect);
             SetLayerRecursively(canvasObject, ResolveUiLayer());
             Recenter();
             canvasObject.SetActive(false);
@@ -1115,7 +1121,7 @@ namespace Quest3TriggerUI
 
             GameObject help = CreateUiObject("Help", parent);
             RectTransform helpRect = help.GetComponent<RectTransform>();
-            SetTopLeft(helpRect, 20f, 606f, 1608f, 144f);
+            SetTopLeft(helpRect, 20f, 606f, 730f, 144f);
             _helpText = AddText(help.transform, DefaultHelpText,
                 27, TextAnchor.MiddleCenter, new Color(0.76f, 0.84f, 0.90f, 1f), 20f);
         }
@@ -1128,8 +1134,6 @@ namespace Quest3TriggerUI
             Image panelImage = panel.AddComponent<Image>();
             panelImage.color = new Color(0.055f, 0.075f, 0.095f, 0.98f);
             panelImage.raycastTarget = false;
-
-            CreateEyeGapSlider(parent);
 
             // Page 0: gesture -> binding list. Children keep the same absolute
             // coordinates inside a full-canvas page container so flipping is a
@@ -1367,19 +1371,44 @@ namespace Quest3TriggerUI
             return null;
         }
 
+        private const float FaceRowLeftX = 770f;
+        private const float FaceRowRightX = 1310f;
+        private const float FaceRowWidth = 520f;
+
+        private void CreateFaceAdjustmentRows(RectTransform parent)
+        {
+            CreateEyeGapSlider(CreateFaceAdjustmentRow(parent, "Eye gap row", FaceRowRightX, 676f));
+            CreateFaceMorphSlider(CreateFaceAdjustmentRow(parent, "Nose cheek row", FaceRowRightX, 816f), 0);
+            CreateFaceMorphSlider(CreateFaceAdjustmentRow(parent, "Cheek smoother row", FaceRowRightX, 956f), 1);
+            CreateFaceMorphSlider(CreateFaceAdjustmentRow(parent, "Fold line row", FaceRowLeftX, 676f), 2);
+            CreateFaceMorphSlider(CreateFaceAdjustmentRow(parent, "Cheek crease row", FaceRowLeftX, 816f), 3);
+            CreateFaceMorphSlider(CreateFaceAdjustmentRow(parent, "Mouth corner low row", FaceRowLeftX, 956f), 4);
+        }
+
+        private RectTransform CreateFaceAdjustmentRow(RectTransform parent, string name, float x, float y)
+        {
+            GameObject row = CreateUiObject(name, parent);
+            RectTransform rect = row.GetComponent<RectTransform>();
+            SetTopLeft(rect, x, y, FaceRowWidth, 130f);
+            Image image = row.AddComponent<Image>();
+            image.color = new Color(0.055f, 0.075f, 0.095f, 0.98f);
+            image.raycastTarget = false;
+            return rect;
+        }
+
         private void CreateEyeGapSlider(RectTransform parent)
         {
             GameObject title = CreateUiObject("Eye gap title", parent);
             RectTransform titleRect = title.GetComponent<RectTransform>();
-            SetTopLeft(titleRect, 1850f, 88f, 275f, 36f);
+            SetTopLeft(titleRect, 10f, 8f, 395f, 36f);
             _eyeGapValueText = AddText(title.transform, "调节眼缝 50%", 26,
                 TextAnchor.MiddleCenter, new Color(0.93f, 0.98f, 1f, 1f), 4f);
-            CreateActionButton(parent, "定标", 2135f, 88f, 95f, 36f,
+            CreateActionButton(parent, "定标", 415f, 8f, 95f, 36f,
                 CalibrateEyeGap);
 
             GameObject sliderObject = CreateUiObject("Eye gap slider", parent);
             RectTransform sliderRect = sliderObject.GetComponent<RectTransform>();
-            SetTopLeft(sliderRect, 1855f, 128f, 370f, 48f);
+            SetTopLeft(sliderRect, 15f, 48f, 490f, 48f);
             Image background = sliderObject.AddComponent<Image>();
             background.color = new Color(0.10f, 0.14f, 0.18f, 1f);
 
@@ -1419,9 +1448,95 @@ namespace Quest3TriggerUI
 
             GameObject hint = CreateUiObject("Eye gap hint", parent);
             RectTransform hintRect = hint.GetComponent<RectTransform>();
-            SetTopLeft(hintRect, 1850f, 178f, 380f, 30f);
+            SetTopLeft(hintRect, 10f, 98f, 500f, 30f);
             AddText(hint.transform, "闭合  ←    眼皮间距    →  睁开", 21,
                 TextAnchor.MiddleCenter, new Color(0.72f, 0.82f, 0.90f, 1f), 4f);
+        }
+
+        private void CreateFaceMorphSlider(RectTransform parent, int index)
+        {
+            string label = DirectMorphControls.Labels[index];
+            GameObject title = CreateUiObject(label + " title", parent);
+            RectTransform titleRect = title.GetComponent<RectTransform>();
+            SetTopLeft(titleRect, 10f, 8f, 395f, 36f);
+            Text valueText = AddText(title.transform, label + " 0.000", 26,
+                TextAnchor.MiddleCenter, new Color(0.93f, 0.98f, 1f, 1f), 4f);
+            CreateActionButton(parent, "恢复", 415f, 8f, 95f, 36f,
+                delegate { _quickActions.RestoreFaceMorph(index); SyncFaceMorphSliders(); });
+
+            GameObject sliderObject = CreateUiObject(label + " slider", parent);
+            RectTransform sliderRect = sliderObject.GetComponent<RectTransform>();
+            SetTopLeft(sliderRect, 15f, 48f, 490f, 48f);
+            Image background = sliderObject.AddComponent<Image>();
+            background.color = new Color(0.10f, 0.14f, 0.18f, 1f);
+
+            GameObject fillArea = CreateUiObject("Fill Area", sliderRect);
+            RectTransform fillAreaRect = fillArea.GetComponent<RectTransform>();
+            Stretch(fillAreaRect);
+            fillAreaRect.offsetMin = new Vector2(12f, 13f);
+            fillAreaRect.offsetMax = new Vector2(-12f, -13f);
+            GameObject fill = CreateUiObject("Fill", fillAreaRect);
+            RectTransform fillRect = fill.GetComponent<RectTransform>();
+            Stretch(fillRect);
+            Image fillImage = fill.AddComponent<Image>();
+            fillImage.color = new Color(0.12f, 0.64f, 0.80f, 1f);
+            fillImage.raycastTarget = false;
+
+            GameObject handleArea = CreateUiObject("Handle Slide Area", sliderRect);
+            RectTransform handleAreaRect = handleArea.GetComponent<RectTransform>();
+            Stretch(handleAreaRect);
+            handleAreaRect.offsetMin = new Vector2(18f, 0f);
+            handleAreaRect.offsetMax = new Vector2(-18f, 0f);
+            GameObject handle = CreateUiObject("Handle", handleAreaRect);
+            RectTransform handleRect = handle.GetComponent<RectTransform>();
+            handleRect.sizeDelta = new Vector2(38f, 54f);
+            Image handleImage = handle.AddComponent<Image>();
+            handleImage.color = new Color(0.96f, 0.98f, 1f, 1f);
+
+            Slider slider = sliderObject.AddComponent<Slider>();
+            slider.direction = Slider.Direction.LeftToRight;
+            slider.minValue = 0f;
+            slider.maxValue = 1f;
+            slider.wholeNumbers = false;
+            slider.fillRect = fillRect;
+            slider.handleRect = handleRect;
+            slider.targetGraphic = handleImage;
+            slider.value = 0f;
+            slider.onValueChanged.AddListener(delegate(float value) {
+                if (_syncingFaceMorphs) return;
+                string message;
+                _quickActions.SetFaceMorph(index, value, out message);
+                SyncFaceMorphSliders();
+                UpdateHelpText(message);
+            });
+            _faceSliders[index] = slider;
+            _faceTexts[index] = valueText;
+
+            GameObject hint = CreateUiObject(label + " hint", parent);
+            RectTransform hintRect = hint.GetComponent<RectTransform>();
+            SetTopLeft(hintRect, 10f, 98f, 500f, 30f);
+            AddText(hint.transform, DirectMorphControls.SourceNames[index] + " · 直接调整形变 · 三倍范围", 21,
+                TextAnchor.MiddleCenter, new Color(0.72f, 0.82f, 0.90f, 1f), 4f);
+        }
+
+        private void SyncFaceMorphSliders() {
+            if (_faceSliders[0] == null) return;
+            _quickActions.PrepareFaceMorphs();
+            _syncingFaceMorphs = true;
+            try {
+                for (int i = 0; i < _faceSliders.Length; i++) SyncFaceMorphSlider(i);
+            } finally { _syncingFaceMorphs = false; }
+        }
+        private void SyncFaceMorphSlider(int index) {
+            Slider slider = _faceSliders[index];
+            if (slider == null) return;
+            var slot = _quickActions.GetFaceMorph(index);
+            slider.interactable = slot.Morph != null;
+            slider.minValue = slot.Morph == null ? -DirectMorphControls.RangeScale : slot.Min;
+            slider.maxValue = slot.Morph == null ? DirectMorphControls.RangeScale : slot.Max;
+            slider.value = slot.Morph == null ? 0f : slot.Value;
+            _faceTexts[index].text = DirectMorphControls.Labels[index] + " " +
+                (slot.Morph == null ? "未加载" : slot.Value.ToString("F3"));
         }
 
         private void OnEyeGapSliderChanged(float sliderValue)

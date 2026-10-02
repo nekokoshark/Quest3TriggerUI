@@ -276,6 +276,7 @@ namespace Quest3TriggerUI
             try
             {
                 MeshOwnerRetentionProbe.Request(tag);
+                GpuPhysicsRetentionProbe.Request(tag);
                 Emit(tag, "own", OwnFields());
                 List<FieldInfo> game = GameFields();
                 if (game != null) Emit(tag, "game", game);

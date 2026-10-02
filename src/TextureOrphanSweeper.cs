@@ -74,7 +74,7 @@ namespace Quest3TriggerUI
         {
             if (q == null || q.isThumbnail || q.isPreload || q.rawImageToLoad != null ||
                 q.hadError || q.cancel || q.callback == null) return false;
-            foreach (Delegate cb in q.callback.GetInvocationList())
+            foreach (Delegate cb in DelegateSnapshot.GetInvocationList(q.callback))
             {
                 Type type = cb.Method.DeclaringType;
                 string name = cb.Method.Name;

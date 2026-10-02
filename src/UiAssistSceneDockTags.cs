@@ -210,15 +210,17 @@ namespace Quest3TriggerUI
             return -1;
         }
 
-        // Strip metrics: fixed rows below the tags are
-        // 默认+新建+pager?+存新+保存+删除+隐藏+服装+预设.
+        // Strip metrics: tag capacity matches the clothing bar's budget
+        // (默认+新建+pager+服装+预设+删除+隐藏 = 7 rows). The two extra
+        // management rows (存新/保存) extend the dock below the list
+        // height — RequiredSdStripHeight already grows the dock to fit.
         private static int SdTagCapacity
         {
             get
             {
                 float listH = _sdListHeight > 0f ? _sdListHeight : 400f;
                 float usable = listH - FavPad * 2f - TagCaptionH -
-                    9f * FavTagRowH - 10f * FavTagGap;
+                    7f * FavTagRowH - 8f * FavTagGap;
                 return Mathf.Max(1,
                     Mathf.FloorToInt(usable / (FavTagRowH + FavTagGap)));
             }

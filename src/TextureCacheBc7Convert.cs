@@ -49,7 +49,6 @@ namespace Quest3TriggerUI
         private static readonly Queue<Job> Waiting = new Queue<Job>();
         private static readonly HashSet<string> Known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private static readonly Regex Format = new Regex("\"format\"\\s*:\\s*\"([A-Za-z0-9]+)\"", RegexOptions.CultureInvariant);
-        private static readonly Regex ReplaceFormat = new Regex("\"format\"\\s*:\\s*\"(?:RGBA32|RGB24)\"", RegexOptions.CultureInvariant);
         private static readonly System.Reflection.PropertyInfo Signature = typeof(ImageLoaderThreaded.QueuedImage).GetProperty(
             "cacheSignature", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
             System.Reflection.BindingFlags.NonPublic);
@@ -58,8 +57,10 @@ namespace Quest3TriggerUI
         {
             internal string data, meta, key, format;
             internal int width, height, mips;
+            internal int targetWidth, targetHeight, targetMips;
             internal long rawBytes, dataStamp, metaStamp, encodedBytes;
             internal volatile bool encoded, swapped;
+            internal bool keepNative;
         }
 
         private static Job _encoding, _ready;
@@ -69,7 +70,7 @@ namespace Quest3TriggerUI
         private static string _toolPath, _workDir;
         private static bool _installed, _toolMissing, _toolLogged;
         private static int _probeStep;
-        private static long _nextStart, _observed, _queued, _converted, _failed, _dropped;
+        private static long _nextStart, _observed, _queued, _converted, _failed, _dropped, _keptNative;
         private static string _pendingPath;
         private static long _lastActivity;
         private static int _activityFrame = -1;
@@ -85,8 +86,13 @@ namespace Quest3TriggerUI
         internal static void Install()
         {
             if (_installed) return;
+            // A timed-out shutdown worker must retain its stop signal.
+            if (_worker != null && _worker.IsAlive) { Log("previous converter still retiring"); return; }
+            _worker = null;
+            _stop = false;
             try
             {
+                Bc7CacheLoadCompatibility.Install();
                 _workDir = Path.Combine(Path.GetTempPath(), "q3bc7");
                 _pendingPath = Path.Combine(_workDir, PendingName);
                 _lastActivity = Now();
@@ -102,14 +108,15 @@ namespace Quest3TriggerUI
         {
             _stop = true;
             _installed = false;
+            Bc7CacheLoadCompatibility.Shutdown();
             try { TextureCacheEstimate.RemoveObserver(Observe); } catch { }
-            var worker = _worker; _worker = null;
-            if (worker != null) { try { worker.Join(2000); } catch { } }
-            var tool = _tool; _tool = null;
+            var worker = _worker;
+            var tool = _tool;
             if (tool != null) { try { if (!tool.HasExited) tool.Kill(); } catch { } }
+            if (worker != null) { try { worker.Join(2000); } catch { } }
+            if (worker == null || !worker.IsAlive) { _worker = null; _tool = null; }
             try { Flush(); } catch { }
             lock (Sync) { Waiting.Clear(); Known.Clear(); _encoding = null; _ready = null; }
-            _stop = false;
             _allowEncode = false;
         }
 
@@ -156,6 +163,8 @@ namespace Quest3TriggerUI
             try
             {
                 if (q == null || string.IsNullOrEmpty(path) || bytes < MinRawBytes || bytes > MaxRawBytes) return;
+                if (q.isNormalMap || q.createNormalFromBump || q.createAlphaFromGrayscale || q.linear ||
+                    !Bc7CacheCompatibility.ColourCache(path)) return;
                 string format = Format.Match(text ?? string.Empty).Groups[1].Value;
                 if (format != "RGBA32" && format != "RGB24") return;
                 int width, height;
@@ -264,8 +273,13 @@ namespace Quest3TriggerUI
                 try { ok = Encode(job); }
                 catch (Exception e) { Log("encode failed " + Name(job.data) + ": " + e.Message); }
                 job.encoded = ok;
-                lock (Sync) { if (_encoding == job) _encoding = null; if (ok) _ready = job; }
-                if (!ok) { Finish(job, 1, true); continue; }
+                lock (Sync)
+                {
+                    if (_encoding == job) _encoding = null;
+                    if (_stop) ok = false;
+                    if (ok) _ready = job;
+                }
+                if (!ok) { Finish(job, job.keepNative ? 3 : 1, true); continue; }
                 long deadline = Now() + (long)(Stopwatch.Frequency * JobTimeoutSeconds);
                 while (!_stop && !job.swapped && Now() < deadline) Thread.Sleep(200);
                 lock (Sync) { if (_ready == job) _ready = null; }
@@ -283,47 +297,55 @@ namespace Quest3TriggerUI
             int mips = DetectMips(job.width, job.height, info.Length, bpp);
             if (mips <= 0) { Log("mip chain unknown for " + Name(job.data) + " " + job.width + "x" + job.height + " len=" + info.Length); return false; }
             job.mips = mips;
-            byte[] raw = File.ReadAllBytes(job.data);
-            if (raw.LongLength != job.rawBytes) return false;
-            if (bpp == 3) raw = Expand24(raw, job.width, job.height, mips);
+            long expected;
+            if (!Bc7CacheCompatibility.Plan(job.width, job.height, mips, job.rawBytes,
+                out job.targetWidth, out job.targetHeight, out job.targetMips, out expected))
+            {
+                job.keepNative = true;
+                Log("compatibility: keep native " + Name(job.data) + " (partial mip chain or POT BC7 saves no space)");
+                return false;
+            }
+            Func<bool> stopped = delegate { return _stop; };
+            if (!Bc7CacheCompatibility.Source(job.data, job.width, job.height, mips, bpp, stopped))
+            {
+                Log("compatibility: keep native " + Name(job.data) + " (not opaque colour)");
+                job.keepNative = true;
+                return false;
+            }
             if (!Directory.Exists(_workDir)) Directory.CreateDirectory(_workDir);
             string inDds = Path.Combine(_workDir, "in.dds");
             string outDir = Path.Combine(_workDir, "out");
             if (Directory.Exists(outDir)) Directory.Delete(outDir, true);
             Directory.CreateDirectory(outDir);
-            WriteDds(inDds, job.width, job.height, mips, raw);
-            raw = null;
-            if (!RunTool(tool, inDds, outDir, mips)) return false;
+            TextureCacheStreamIO.WriteInput(job.data, inDds, job.width, job.height, mips, bpp, stopped);
+            if (_stop || !RunTool(tool, inDds, outDir, job.targetMips, "BC7_UNORM", job.targetWidth, job.targetHeight) || _stop) return false;
             string outDds = Path.Combine(outDir, "in.DDS");
             if (!File.Exists(outDds)) { Log("tool produced no output for " + Name(job.data)); return false; }
-            byte[] encoded = File.ReadAllBytes(outDds);
-            long expected = ChainBc(job.width, job.height, mips, 16);
-            if (encoded.LongLength - DdsHeader != expected)
+            string verifyDir = Path.Combine(outDir, "verify");
+            Directory.CreateDirectory(verifyDir);
+            if (!RunTool(tool, outDds, verifyDir, job.targetMips, "R8G8B8A8_UNORM") || _stop) return false;
+            if (!Bc7CacheCompatibility.Decoded(Path.Combine(verifyDir, "in.DDS"), job.targetWidth, job.targetHeight, job.targetMips, stopped))
             {
-                Log("encoded size mismatch " + Name(job.data) + " got=" + (encoded.LongLength - DdsHeader) + " expected=" + expected);
+                Log("compatibility: keep native " + Name(job.data) + " (BC7 changes opaque alpha)");
+                job.keepNative = true;
                 return false;
             }
-            byte[] payload = new byte[expected];
-            Array.Copy(encoded, DdsHeader, payload, 0, (int)expected);
-            encoded = null;
-            File.WriteAllBytes(job.data + TempSuffix, payload);
-            string converted = ReplaceFormat.Replace(File.ReadAllText(job.meta), "\"format\" : \"BC7\"");
-            if (converted.IndexOf("\"format\" : \"BC7\"", StringComparison.Ordinal) < 0)
-            {
-                TryDelete(job.data + TempSuffix);
-                Log("meta has no rewriteable format for " + Name(job.meta));
-                return false;
-            }
+            TextureCacheStreamIO.ExtractBc7(outDds, job.data + TempSuffix,
+                job.targetWidth, job.targetHeight, job.targetMips, expected, stopped);
+            string converted = Bc7CacheCompatibility.Metadata(File.ReadAllText(job.meta), job.targetWidth, job.targetHeight);
             File.WriteAllText(job.meta + TempSuffix, converted, new UTF8Encoding(false));
             job.encodedBytes = expected;
             return true;
         }
 
-        private static bool RunTool(string tool, string inDds, string outDir, int mips)
+        private static bool RunTool(string tool, string inDds, string outDir, int mips, string format = "BC7_UNORM", int width = 0, int height = 0)
         {
             var start = new ProcessStartInfo(tool)
             {
-                Arguments = "-nologo -f BC7_UNORM -bcmax -m " + mips + " -o \"" + outDir + "\" \"" + inDds + "\"",
+                Arguments = "-nologo -dx10 -f " + format +
+                    (format == "BC7_UNORM" ? " -bcmax -aw 1024" : "") +
+                    (width > 0 ? " -w " + width + " -h " + height : "") +
+                    " -m " + mips + " -o \"" + outDir + "\" \"" + inDds + "\"",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
@@ -358,6 +380,7 @@ namespace Quest3TriggerUI
                 job.swapped = true;
                 Finish(job, 0, false);
                 Log("converted " + Name(job.data) + " " + job.width + "x" + job.height + " mips=" + job.mips +
+                    " -> " + job.targetWidth + "x" + job.targetHeight + " mips=" + job.targetMips +
                     " " + MiB(job.rawBytes) + "->" + MiB(job.encodedBytes) + "MiB");
             }
             catch (Exception e)
@@ -386,6 +409,7 @@ namespace Quest3TriggerUI
             }
             if (outcome == 0) _converted++;
             else if (outcome == 1) _failed++;
+            else if (outcome == 3) _keptNative++;
             else _dropped++;
             if (deleteTemps)
             {
@@ -440,51 +464,6 @@ namespace Quest3TriggerUI
             return 0;
         }
 
-        private static byte[] Expand24(byte[] raw, int width, int height, int mips)
-        {
-            byte[] expanded = new byte[ChainPix(width, height, mips, 4)];
-            long outIndex = 0, inIndex = 0;
-            int w = width, h = height;
-            for (int level = 0; level < mips; level++)
-            {
-                long pixels = (long)w * h;
-                for (long pixel = 0; pixel < pixels; pixel++)
-                {
-                    expanded[outIndex] = raw[inIndex];
-                    expanded[outIndex + 1] = raw[inIndex + 1];
-                    expanded[outIndex + 2] = raw[inIndex + 2];
-                    expanded[outIndex + 3] = 255;
-                    outIndex += 4; inIndex += 3;
-                }
-                w = Math.Max(1, w / 2); h = Math.Max(1, h / 2);
-            }
-            return expanded;
-        }
-
-        // DX10 header, R8G8B8A8_UNORM payload: the shape the batch converter already used.
-        private static void WriteDds(string path, int width, int height, int mips, byte[] payload)
-        {
-            byte[] header = new byte[DdsHeader];
-            using (var stream = new MemoryStream(header))
-            using (var writer = new BinaryWriter(stream))
-            {
-                writer.Write(0x20534444u); writer.Write(124u); writer.Write(0xA1007u);
-                writer.Write((uint)height); writer.Write((uint)width);
-                writer.Write((uint)width * 4u); writer.Write(0u); writer.Write((uint)mips);
-                for (int i = 0; i < 11; i++) writer.Write(0u);
-                writer.Write(32u); writer.Write(0x4u); writer.Write(0x30315844u);
-                for (int i = 0; i < 5; i++) writer.Write(0u);
-                writer.Write(0x1000u | 0x8u | 0x400000u);
-                for (int i = 0; i < 4; i++) writer.Write(0u);
-                writer.Write(28u); writer.Write(3u); writer.Write(0u); writer.Write(1u); writer.Write(0u);
-            }
-            using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                stream.Write(header, 0, header.Length);
-                stream.Write(payload, 0, payload.Length);
-            }
-        }
-
         // A staged pair can only be half applied when the process died between the two
         // renames. Finish it when the data already holds the BC7 chain, drop it otherwise.
         private static void RecoverInterrupted()
@@ -522,7 +501,7 @@ namespace Quest3TriggerUI
         internal static void Report()
         {
             Log("stats reads=" + _observed + " queued=" + _queued + " converted=" + _converted +
-                " dropped=" + _dropped + " failed=" + _failed + " pending=" + Known.Count);
+                " dropped=" + _dropped + " failed=" + _failed + " keptNative=" + _keptNative + " pending=" + Known.Count);
         }
 
         // Unity's own storage size for a block-compressed chain is the only authority on

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections;
 using System.Reflection;
@@ -697,13 +697,138 @@ namespace Quest3TriggerUI
         }
     }
 
+    // Some authored keybinds select a state first, then start it through a
+    // Relay. Calling just NextState/PreviousState omits that second action.
+    // Adopt only a unique bidirectional entry; never synthesize trigger actions.
+    internal sealed class PlaybackKeybindEntry
+    {
+        internal string AtomId, StorableId, NextId, PreviousId;
+        private JSONStorable _owner;
+        private FieldInfo _triggersField;
+        private object _nextTrigger, _previousTrigger;
+        private MethodInfo _invoke;
+
+        internal static PlaybackKeybindEntry Find(JSONClass scene, PlaybackRoute route, SuperController sc)
+        {
+            JSONArray atoms = scene == null ? null : scene["atoms"] as JSONArray;
+            if (atoms == null) return null;
+            PlaybackKeybindEntry found = null;
+            foreach (JSONNode atom in atoms.Childs)
+            {
+                string atomId = atom["id"];
+                JSONArray storables = atom["storables"] as JSONArray;
+                if (storables == null) continue;
+                foreach (JSONNode storable in storables.Childs)
+                {
+                    string id = storable["id"];
+                    if (id == null || !id.EndsWith("_JaxZoa.SimpleKeybind", StringComparison.Ordinal)) continue;
+                    int count = storable["TriggerCount"].AsInt;
+                    if (count < 2 || count > 1000) continue;
+                    string next = null, previous = null;
+                    int nextCount = 0, previousCount = 0;
+                    for (int i = 0; i < count; i++)
+                    {
+                        string triggerId = i.ToString();
+                        JSONNode trigger = storable[triggerId + "_Trigger"];
+                        if (Matches(trigger, atomId, route, route.Next)) { next = triggerId; nextCount++; }
+                        if (Matches(trigger, atomId, route, route.Previous)) { previous = triggerId; previousCount++; }
+                    }
+                    if (nextCount == 0 || previousCount == 0) continue;
+                    if (nextCount != 1 || previousCount != 1 || found != null) return null;
+                    found = new PlaybackKeybindEntry {
+                        AtomId = atomId, StorableId = id, NextId = next, PreviousId = previous
+                    };
+                }
+            }
+            return found != null && found.Bind(sc) ? found : null;
+        }
+
+        private static bool Enabled(JSONNode action)
+        {
+            return !string.Equals((string)action["enabled"], "false", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool Matches(JSONNode trigger, string ownerAtom, PlaybackRoute route, string actionName)
+        {
+            JSONArray actions = trigger == null ? null : trigger["startActions"] as JSONArray;
+            if (actions == null || actions.Count < 2) return false;
+            JSONNode first = actions[0];
+            string atom = first["receiverAtom"];
+            if (string.IsNullOrEmpty(atom)) atom = ownerAtom;
+            if (!Enabled(first) || atom != route.AtomId ||
+                (string)first["receiver"] != route.StorableId ||
+                (string)first["receiverTargetName"] != actionName) return false;
+            bool hasTail = false;
+            for (int i = 1; i < actions.Count; i++)
+            {
+                JSONNode tail = actions[i];
+                if (!Enabled(tail)) continue;
+                string tailAtom = tail["receiverAtom"];
+                if (string.IsNullOrEmpty(tailAtom)) tailAtom = ownerAtom;
+                // A second selector command is not a single directional step.
+                if (tailAtom == route.AtomId && (string)tail["receiver"] == route.StorableId &&
+                    ((string)tail["receiverTargetName"] == route.Next ||
+                     (string)tail["receiverTargetName"] == route.Previous)) return false;
+                if (!string.IsNullOrEmpty((string)tail["receiver"]) &&
+                    !string.IsNullOrEmpty((string)tail["receiverTargetName"])) hasTail = true;
+            }
+            return hasTail;
+        }
+
+        private bool Bind(SuperController sc)
+        {
+            Atom atom = sc.GetAtomByUid(AtomId);
+            _owner = atom == null ? null : atom.GetStorableByID(StorableId);
+            if (_owner == null || _owner.GetType().FullName != "JaxZoa.SimpleKeybind") return false;
+            _triggersField = _owner.GetType().GetField("triggers", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (_triggersField == null) return false;
+            _nextTrigger = ResolveTrigger(NextId);
+            _previousTrigger = ResolveTrigger(PreviousId);
+            if (_nextTrigger == null || _previousTrigger == null) return false;
+            _invoke = _nextTrigger.GetType().GetMethod("Trigger", BindingFlags.Instance | BindingFlags.Public,
+                null, Type.EmptyTypes, null);
+            return _invoke != null && _invoke.DeclaringType.IsInstanceOfType(_previousTrigger);
+        }
+
+        private object ResolveTrigger(string id)
+        {
+            IList entries = _triggersField.GetValue(_owner) as IList;
+            if (entries == null) return null;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                object entry = entries[i];
+                if (entry == null) continue;
+                PropertyInfo key = entry.GetType().GetProperty("ID");
+                if (key == null || (string)key.GetValue(entry, null) != id) continue;
+                PropertyInfo trigger = entry.GetType().GetProperty("Trigger");
+                return trigger == null ? null : trigger.GetValue(entry, null);
+            }
+            return null;
+        }
+
+        internal void Step(SuperController sc, bool next)
+        {
+            Atom atom = sc.GetAtomByUid(AtomId);
+            object trigger = next ? _nextTrigger : _previousTrigger;
+            if (atom == null || atom.GetStorableByID(StorableId) != _owner ||
+                !object.ReferenceEquals(trigger, ResolveTrigger(next ? NextId : PreviousId)))
+                throw new InvalidOperationException("原快捷键触发链已变化，请重新初始化");
+            // Invoke the author's EventTrigger once: it preserves action order,
+            // enabled flags, value setters, start/end actions and native callbacks.
+            // Never retry the bare selector after a partial native invocation.
+            _invoke.Invoke(trigger, null);
+        }
+    }
+
     internal sealed class ScenePlaybackFlow
     {
         private HierarchicalPlayback _hierarchical;
         private NumberedPlayback _numbered;
         private NumberedPlayback.TimelineStepPlayback _timestep;
+        private SegmentAnimPlayback _segmentAnim;
         private PlaybackRoute _route;
         private JSONStorable _controller;
+        private PlaybackKeybindEntry _keybindEntry;
         private JSONNode _scene;
         private float _nextAllowed;
         internal bool IsHierarchical
@@ -719,10 +844,11 @@ namespace Quest3TriggerUI
 
         internal void Initialize(Action<string> status)
         {
+            _keybindEntry = null;
             _hierarchical = null;
             _route = null;
             _controller = null;
-            _numbered = null; _timestep = null;
+            _numbered = null; _timestep = null; _segmentAnim = null;
             SuperController sc = SuperController.singleton;
             if (sc == null || sc.isLoading)
             {
@@ -760,6 +886,7 @@ namespace Quest3TriggerUI
                             NumberedPlayback richer = NumberedPlayback.RicherNamed(
                                 _scene as JSONClass, groups[0], sc);
                             _numbered = richer == null ? groups[0] : richer;
+                            if (AdoptSegmentAnimations(sc, status)) return;
                             status("播放初始化：识别到 " + _numbered.Stages.Count + " 个阶段" +
                                 (richer == null ? "（编号）；" : "（编号+命名合并）；") +
                                 "沿用原按钮完整触发链。");
@@ -808,6 +935,7 @@ namespace Quest3TriggerUI
                         if (namedBest != null && namedBest.Validate(sc))
                         {
                             _numbered = namedBest;
+                            if (AdoptSegmentAnimations(sc, status)) return;
                             status("播放初始化：识别到 " + _numbered.Stages.Count +
                                 " 个命名阶段" + (named.Count > 1
                                     ? "（另有 " + (named.Count - 1) + " 个备选按钮组未接管）"
@@ -853,15 +981,27 @@ namespace Quest3TriggerUI
                 }
                 _route = valid[0];
                 _controller = sc.GetAtomByUid(_route.AtomId).GetStorableByID(_route.StorableId);
+                try { _keybindEntry = PlaybackKeybindEntry.Find(_scene as JSONClass, _route, sc); }
+                catch (Exception entryError)
+                {
+                    // An optional plugin-version/entry-shape mismatch must not
+                    // invalidate an otherwise supported original controller.
+                    _keybindEntry = null;
+                    if (Quest3TriggerUIPlugin.Log != null)
+                        Quest3TriggerUIPlugin.Log.LogInfo("Playback authored entry unavailable; original controller retained: " + entryError.Message);
+                }
                 status("播放初始化：" + _route.States + " 个阶段，关联 " +
-                    _route.ReachableNodes + " 个节点；沿用原场景完整切换。总控：" + _route.AtomId);
+                    _route.ReachableNodes + " 个节点；沿用原场景完整切换。总控：" + _route.AtomId +
+                    (_keybindEntry == null ? "" : "；使用原快捷键完整触发链 " + _keybindEntry.AtomId +
+                        "/" + _keybindEntry.StorableId + "（" + _keybindEntry.NextId + "/" + _keybindEntry.PreviousId + "）。"));
             }
             catch (Exception e)
             {
+                _keybindEntry = null;
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null; _timestep = null;
+                _numbered = null; _timestep = null; _segmentAnim = null;
                 status("播放初始化失败：" + e.Message);
             }
         }
@@ -872,10 +1012,11 @@ namespace Quest3TriggerUI
             if (sc == null || sc.isLoading) { status("播放：场景正在加载。"); return; }
             if (!Ready || !object.ReferenceEquals(_scene, sc.loadJson))
             {
+                _keybindEntry = null;
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null; _timestep = null;
+                _numbered = null; _timestep = null; _segmentAnim = null;
                 status("播放：请先初始化当前场景。");
                 return;
             }
@@ -887,12 +1028,20 @@ namespace Quest3TriggerUI
                 catch (Exception e) { _hierarchical = null; status("播放切换失败，请重新初始化：" + e.Message); }
                 return;
             }
+            if (_segmentAnim != null)
+            {
+                if (Time.unscaledTime < _nextAllowed) return;
+                _nextAllowed = Time.unscaledTime + 0.5f;
+                try { _segmentAnim.Step(sc, next, status); }
+                catch (Exception e) { _segmentAnim = null; _numbered = null; _timestep = null; status("播放切换失败，请重新初始化：" + e.Message); }
+                return;
+            }
             if (_numbered != null)
             {
                 if (Time.unscaledTime < _nextAllowed) return;
                 _nextAllowed = Time.unscaledTime + 0.5f;
                 try { _numbered.Step(sc, next, status); }
-                catch (Exception e) { _numbered = null; _timestep = null; status("播放切换失败，请重新初始化：" + e.Message); }
+                catch (Exception e) { _numbered = null; _timestep = null; _segmentAnim = null; status("播放切换失败，请重新初始化：" + e.Message); }
                 return;
             }
             if (_timestep != null)
@@ -914,6 +1063,12 @@ namespace Quest3TriggerUI
             _nextAllowed = Time.unscaledTime + 0.5f;
             try
             {
+                if (_keybindEntry != null)
+                {
+                    _keybindEntry.Step(sc, next);
+                    status(next ? "播放：已调用原快捷键完整下一阶段触发链。" : "播放：已调用原快捷键完整上一阶段触发链。");
+                    return;
+                }
                 // One native command only. The author owns exit/entry triggers,
                 // delays, camera moves, lights and inactive actors. Never play all Timelines.
                 JSONStorableAction action = _controller.GetAction(next ? _route.Next : _route.Previous);
@@ -938,7 +1093,7 @@ namespace Quest3TriggerUI
                 _hierarchical = null;
                 _route = null;
                 _controller = null;
-                _numbered = null; _timestep = null;
+                _numbered = null; _timestep = null; _segmentAnim = null;
                 status("播放：请先初始化当前场景。");
                 return;
             }
@@ -972,6 +1127,30 @@ namespace Quest3TriggerUI
             StepHierarchical(next, false, status);
         }
 
+        // Two-level upgrade: keep the numbered segment list, but walk the
+        // animations inside each segment when the scene authors them for the
+        // same players.  Returning false leaves the numbered list in charge,
+        // so every scene without both levels behaves exactly as before.
+        private bool AdoptSegmentAnimations(SuperController sc, Action<string> status)
+        {
+            SegmentAnimPlayback finer;
+            try
+            {
+                finer = SegmentAnimPlayback.Find(_scene as JSONClass, _numbered);
+                if (finer == null || !finer.Validate(sc)) return false;
+            }
+            catch (Exception e)
+            {
+                if (Quest3TriggerUIPlugin.Log != null)
+                    Quest3TriggerUIPlugin.Log.LogInfo("Playback optional segment-animation tier unavailable; original route retained: " + e.Message);
+                return false;
+            }
+            _segmentAnim = finer;
+            status("播放初始化：识别到 " + finer.PhaseCount + " 个阶段、" + finer.Stages.Count +
+                " 个动画（阶段+动画两级）；" + finer.PlayerCount + " 个角色同步；沿用原按钮完整触发链。");
+            return true;
+        }
+
         private static void ReportDiscovery(SuperController sc, List<PlaybackRoute> candidates, int validCount)
         {
             // Only on failed initialization; never probe by executing a scene action.
@@ -996,6 +1175,315 @@ namespace Quest3TriggerUI
         }
     }
 
+// New two-level tier inserted into ScenePlaybackFlow.cs
+    // Two-level scenes: the numbered buttons only switch between authored
+    // segments ("Play Segment Segment 3"), while the animations inside a
+    // segment are picked by further authored buttons driving the Timeline
+    // per-segment animation chooser ("Animations (Segment 3 / Main)").  The
+    // numbered list alone then has no step inside a segment, so on the last
+    // segment "next" is a dead end and "previous" drops a whole phase.
+    // This tier keeps the authored buttons as the execution endpoint and
+    // flattens segment x animation into one ordered walk; it is adopted only
+    // when the scene really carries both levels for the same players.
+    internal sealed class SegmentAnimPlayback
+    {
+        internal sealed class Source
+        {
+            internal string ButtonId, ButtonStorable, ButtonAction;
+        }
+
+        internal sealed class Stage
+        {
+            internal string Segment, Anim, Param, PhaseAction;
+            internal bool SegmentHead;
+            internal Source Button;
+            internal JSONStorable Resolved;
+            internal int PhaseIndex = -1;
+        }
+
+        internal readonly List<JSONStorable> Players = new List<JSONStorable>();
+        internal readonly List<Stage> Stages = new List<Stage>();
+
+        private readonly List<string> _targets = new List<string>();
+        private readonly Dictionary<string, Dictionary<string, Source>> _sources =
+            new Dictionary<string, Dictionary<string, Source>>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _params =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, int> _phaseIndex =
+            new Dictionary<string, int>(StringComparer.Ordinal);
+        private NumberedPlayback _phases;
+        private int _cursor = -1;
+
+        private static readonly Regex AnimParam = new Regex(@"^Animations \((.+?) / .+\)$");
+
+        internal int PlayerCount { get { return _targets.Count; } }
+        internal int PhaseCount { get { return _sources.Count; } }
+
+        internal static SegmentAnimPlayback Find(JSONClass scene, NumberedPlayback phases)
+        {
+            if (scene == null || phases == null || phases.DirectMode || !phases.SegmentStages) return null;
+            JSONArray atoms = scene["atoms"] as JSONArray;
+            if (atoms == null) return null;
+            var candidate = new SegmentAnimPlayback();
+            candidate._phases = phases;
+            candidate._targets.AddRange(phases.Targets);
+            foreach (JSONNode atom in NumberedPlayback.ButtonEntries(atoms))
+            {
+                JSONArray storables = atom["storables"] as JSONArray;
+                if (storables == null) continue;
+                foreach (JSONNode storable in storables.Childs)
+                {
+                    if ((string)storable["id"] != "Trigger") continue;
+                    JSONNode trigger = storable["trigger"];
+                    JSONArray actions = trigger == null ? null : trigger["startActions"] as JSONArray;
+                    if (actions == null) continue;
+                    var targets = new List<string>();
+                    string segment = null, param = null, anim = null;
+                    bool mismatch = false;
+                    foreach (JSONNode action in actions.Childs)
+                    {
+                        string receiver = action["receiver"];
+                        if (receiver == null || !receiver.EndsWith("_VamTimeline.AtomPlugin", StringComparison.Ordinal)) continue;
+                        string named = action["receiverTargetName"];
+                        Match match = AnimParam.Match(named ?? "");
+                        string value = action["stringChooserValue"];
+                        if (!match.Success || string.IsNullOrEmpty(value)) { mismatch = true; break; }
+                        if (param != null && (param != named || anim != value)) { mismatch = true; break; }
+                        param = named; segment = match.Groups[1].Value; anim = value;
+                        string targetAtom = action["receiverAtom"];
+                        if (string.IsNullOrEmpty(targetAtom)) targetAtom = atom["id"];
+                        string target = targetAtom + "\n" + receiver;
+                        if (!targets.Contains(target)) targets.Add(target);
+                    }
+                    if (mismatch || targets.Count == 0 || string.IsNullOrEmpty(anim)) continue;
+                    targets.Sort(StringComparer.Ordinal);
+                    if (!SameTargets(candidate._targets, targets)) continue;
+                    Dictionary<string, Source> byAnim;
+                    if (!candidate._sources.TryGetValue(segment, out byAnim))
+                    {
+                        byAnim = new Dictionary<string, Source>(StringComparer.Ordinal);
+                        candidate._sources.Add(segment, byAnim);
+                    }
+                    if (!byAnim.ContainsKey(anim))
+                        byAnim.Add(anim, new Source {
+                            ButtonId = atom["id"],
+                            ButtonStorable = string.IsNullOrEmpty(atom["sourceStorable"]) ? "Trigger" : (string)atom["sourceStorable"],
+                            ButtonAction = atom["sourceAction"] });
+                    if (!candidate._params.ContainsKey(segment)) candidate._params.Add(segment, param);
+                }
+            }
+            int rich = 0;
+            foreach (KeyValuePair<string, Dictionary<string, Source>> pair in candidate._sources)
+                if (pair.Value.Count >= 2) rich++;
+            if (rich < 2) return null;
+            // Every authored segment of the numbered list must carry its own
+            // animation list, otherwise a currently reachable step would vanish.
+            for (int i = 0; i < phases.Stages.Count; i++)
+            {
+                NumberedPlayback.Stage stage = phases.Stages[i];
+                if (string.IsNullOrEmpty(stage.SegmentName)) return null;
+                Dictionary<string, Source> byAnim;
+                if (!candidate._sources.TryGetValue(stage.SegmentName, out byAnim) || byAnim.Count < 2) return null;
+                if (!candidate._phaseIndex.ContainsKey(stage.SegmentName))
+                    candidate._phaseIndex.Add(stage.SegmentName, i);
+            }
+            return candidate;
+        }
+
+        private static bool SameTargets(List<string> a, List<string> b)
+        {
+            if (a.Count != b.Count) return false;
+            foreach (string target in a) if (!b.Contains(target)) return false;
+            return true;
+        }
+
+        internal bool Validate(SuperController sc)
+        {
+            Players.Clear();
+            Stages.Clear();
+            _cursor = -1;
+            if (_phases == null || _targets.Count == 0) return false;
+            foreach (string target in _targets)
+            {
+                string[] ids = target.Split('\n');
+                Atom atom = sc.GetAtomByUid(ids[0]);
+                JSONStorable player = atom == null ? null : atom.GetStorableByID(ids[1]);
+                if (player == null) return false;
+                Players.Add(player);
+            }
+            JSONStorableStringChooser segments = Players[0].GetStringChooserJSONParam("Segment");
+            if (segments == null || segments.choices == null) return false;
+            var ordered = new List<string>();
+            foreach (string segment in segments.choices)
+            {
+                Dictionary<string, Source> byAnim;
+                if (_sources.TryGetValue(segment, out byAnim) && byAnim.Count >= 2 &&
+                    !ordered.Contains(segment)) ordered.Add(segment);
+            }
+            if (ordered.Count < 2) return false;
+            foreach (string segment in _phaseIndex.Keys) if (!ordered.Contains(segment)) return false;
+            foreach (string segment in ordered)
+            {
+                string param = _params[segment];
+                JSONStorableStringChooser anims = Players[0].GetStringChooserJSONParam(param);
+                List<string> choices = anims == null ? null : anims.choices;
+                if (choices == null || choices.Count < 2) return false;
+                Dictionary<string, Source> byAnim = _sources[segment];
+                foreach (string choice in choices) if (!byAnim.ContainsKey(choice)) return false;
+                foreach (JSONStorable player in Players)
+                {
+                    JSONStorableStringChooser peer = player.GetStringChooserJSONParam(param);
+                    if (peer == null || peer.choices == null || peer.choices.Count != choices.Count) return false;
+                    for (int c = 0; c < choices.Count; c++)
+                        if (peer.choices[c] != choices[c]) return false;
+                }
+                for (int i = 0; i < choices.Count; i++)
+                {
+                    Source source = null;
+                    byAnim.TryGetValue(choices[i], out source);
+                    var stage = new Stage {
+                        Segment = segment, Anim = choices[i], Param = param, SegmentHead = i == 0,
+                        Button = source, PhaseAction = "Play Segment " + segment };
+                    int phase;
+                    if (_phaseIndex.TryGetValue(segment, out phase)) stage.PhaseIndex = phase;
+                    Stages.Add(stage);
+                }
+            }
+            if (Stages.Count <= _phases.Stages.Count) return false;
+            foreach (Stage stage in Stages)
+            {
+                if (stage.Button == null) continue;
+                Atom atom = sc.GetAtomByUid(stage.Button.ButtonId);
+                JSONStorable button = atom == null ? null : atom.GetStorableByID(stage.Button.ButtonStorable);
+                if (button == null) continue;
+                if (string.IsNullOrEmpty(stage.Button.ButtonAction))
+                {
+                    if (button.GetType().GetMethod("OnButtonClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) == null) continue;
+                }
+                else if (button.GetAction(stage.Button.ButtonAction) == null) continue;
+                stage.Resolved = button;
+            }
+            return true;
+        }
+
+        internal void Step(SuperController sc, bool next, Action<string> status)
+        {
+            for (int i = 0; i < Players.Count; i++)
+            {
+                string[] ids = _targets[i].Split('\n');
+                Atom atom = sc.GetAtomByUid(ids[0]);
+                if (atom == null || atom.GetStorableByID(ids[1]) != Players[i])
+                    throw new InvalidOperationException("阶段播放器已变化");
+            }
+            string segment, anim;
+            ResolveCurrent(out segment, out anim);
+            int index = IndexOf(segment, anim);
+            if (index < 0) index = _cursor;
+            if (index < 0 && segment != null) index = HeadOf(segment);
+            int selected = index < 0 ? (next ? 0 : -1) : index + (next ? 1 : -1);
+            if (selected < 0 || selected >= Stages.Count) { status("播放：已到阶段边界。"); return; }
+            Stage target = Stages[selected];
+            if (target.SegmentHead && target.PhaseIndex >= 0)
+                EnterPhase(sc, target);
+            else if (target.SegmentHead && HasAction(target.PhaseAction))
+                foreach (JSONStorable player in Players) Invoke(player, target.PhaseAction);
+            else if (target.Resolved != null)
+                Click(target.Resolved, target.Button);
+            else
+            {
+                bool moved = false;
+                foreach (JSONStorable player in Players)
+                {
+                    JSONStorableStringChooser chooser = player.GetStringChooserJSONParam(target.Param);
+                    if (chooser == null) continue;
+                    chooser.val = target.Anim;
+                    moved = true;
+                }
+                if (!moved) throw new InvalidOperationException("原场景动画选择已变化");
+            }
+            _cursor = selected;
+            status("播放：已切到 " + target.Segment + " / " + target.Anim +
+                "（第 " + (selected + 1) + "/" + Stages.Count + " 个动画）。");
+        }
+
+        // The numbered stage keeps the authored segment entry chain (its own
+        // button, or the Timeline "Play Segment" action when the scene only
+        // authored the animation buttons).
+        private void EnterPhase(SuperController sc, Stage target)
+        {
+            NumberedPlayback.Stage phase = _phases.Stages[target.PhaseIndex];
+            Atom atom = sc.GetAtomByUid(phase.ButtonId);
+            JSONStorable button = atom == null ? null : atom.GetStorableByID(phase.ButtonStorable);
+            if (button != null && string.IsNullOrEmpty(phase.ButtonAction) &&
+                button.GetType().GetMethod("OnButtonClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic) != null)
+            {
+                button.GetType().GetMethod("OnButtonClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Invoke(button, null);
+                return;
+            }
+            if (button != null && !string.IsNullOrEmpty(phase.ButtonAction) &&
+                (phase.ButtonAction ?? "").IndexOf("story:", StringComparison.Ordinal) != 0)
+            {
+                Invoke(button, phase.ButtonAction);
+                return;
+            }
+            foreach (JSONStorable player in Players) Invoke(player, target.PhaseAction);
+        }
+
+        private bool HasAction(string name)
+        {
+            foreach (JSONStorable player in Players) if (player.GetAction(name) != null) return true;
+            return false;
+        }
+
+        private static void Invoke(JSONStorable storable, string actionName)
+        {
+            JSONStorableAction action = storable.GetAction(actionName);
+            if (action == null || action.actionCallback == null) return;
+            action.actionCallback();
+        }
+
+        private static void Click(JSONStorable button, Source source)
+        {
+            if (!string.IsNullOrEmpty(source.ButtonAction))
+            {
+                JSONStorableAction action = button.GetAction(source.ButtonAction);
+                if (action == null || action.actionCallback == null) throw new InvalidOperationException("原插件按钮动作已变化");
+                action.actionCallback();
+                return;
+            }
+            MethodInfo click = button.GetType().GetMethod("OnButtonClick", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (click == null) throw new InvalidOperationException("原场景按钮已变化");
+            click.Invoke(button, null);
+        }
+
+        private void ResolveCurrent(out string segment, out string anim)
+        {
+            segment = null; anim = null;
+            foreach (JSONStorable player in Players)
+            {
+                string current = player.GetStringChooserParamValue("Segment");
+                if (string.IsNullOrEmpty(current)) continue;
+                string param, currentAnim = null;
+                if (_params.TryGetValue(current, out param))
+                    currentAnim = player.GetStringChooserParamValue(param);
+                if (segment != null && (segment != current || anim != currentAnim))
+                    throw new InvalidOperationException("各角色阶段或动画不同，请待转场结束后重新初始化");
+                segment = current; anim = currentAnim;
+            }
+        }
+
+        private int IndexOf(string segment, string anim)
+        {
+            if (string.IsNullOrEmpty(segment) || string.IsNullOrEmpty(anim)) return -1;
+            return Stages.FindIndex(delegate(Stage s) { return s.Segment == segment && s.Anim == anim; });
+        }
+
+        private int HeadOf(string segment)
+        {
+            if (string.IsNullOrEmpty(segment)) return -1;
+            return Stages.FindIndex(delegate(Stage s) { return s.Segment == segment; });
+        }
+    }
     internal sealed class NumberedPlayback
     {
         internal sealed class Stage
@@ -1008,6 +1496,19 @@ namespace Quest3TriggerUI
         }
         internal readonly List<Stage> Stages = new List<Stage>();
         internal bool DirectMode;
+        // Read-only view for the two-level walk: same players, same authored
+        // segment buttons, without re-deriving the numbered group.
+        internal List<string> Targets { get { return _targets; } }
+        internal bool SegmentStages
+        {
+            get
+            {
+                if (DirectMode || Stages.Count == 0) return false;
+                foreach (Stage stage in Stages)
+                    if (string.IsNullOrEmpty(stage.SegmentName)) return false;
+                return true;
+            }
+        }
         private List<int> _directNumbers;
         private readonly List<string> _targets = new List<string>();
         private readonly List<JSONStorable> _players = new List<JSONStorable>();
@@ -1444,7 +1945,7 @@ namespace Quest3TriggerUI
 
         // Normalize explicit widget-to-trigger mappings, not arbitrary numeric actions.
         // The original registered action remains the execution endpoint.
-        private static IEnumerable<JSONNode> ButtonEntries(JSONArray atoms)
+        internal static IEnumerable<JSONNode> ButtonEntries(JSONArray atoms)
         {
             foreach (JSONNode atom in atoms.Childs)
             {

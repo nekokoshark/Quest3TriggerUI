@@ -54,7 +54,7 @@ namespace Quest3TriggerUI
             if (q == null || q.finished || q.hadError || q.isThumbnail ||
                 q.isPreload || q.skipCache || q.tex != null ||
                 q.rawImageToLoad != null || q.callback == null) return false;
-            foreach (Delegate cb in q.callback.GetInvocationList())
+            foreach (Delegate cb in DelegateSnapshot.GetInvocationList(q.callback))
             {
                 MethodInfo method = cb.Method;
                 if (method.DeclaringType == typeof(DAZCharacterTextureControl) &&

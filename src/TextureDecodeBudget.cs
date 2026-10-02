@@ -384,7 +384,12 @@ namespace Quest3TriggerUI
             }
             // Finish has consumed and nulled raw; the request-private array is
             // dead now, so park it for the next decode of the same size class.
-            if (__state != null) DecodedBufferPool.ReturnArray(__state);
+            if (__state != null)
+            {
+                if (__exception == null && __instance != null &&
+                    !ReferenceEquals(__instance.raw, __state)) DecodedBufferPool.ReturnArray(__state);
+                else DecodedBufferPool.AbandonArray(__state);
+            }
             return __exception; // Preserve native exceptions; release even on failure.
         }
 
@@ -435,6 +440,7 @@ namespace Quest3TriggerUI
                     (_probeSuspended == 0 ? "" : " probeWorst=" + Tail(_probeWorstPath)) +
                     " gc0InCycle=" + (Gc0() - _gcStart0) +
                     " (estimate, not actual memory; not a preset completion signal)");
+                TextureCacheWriteBudget.ReportCycle();
                 _batch = false;
                 _admitted = _deferred = _discarded = 0;
                 _peak = _probeTicks = 0;

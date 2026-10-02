@@ -89,6 +89,7 @@ namespace Quest3TriggerUI
             InstanceAssetLedger.Tick();
             GpuResourceProbe.Tick();
             DecodedBufferPool.SweepIdle();
+            NativeCacheBuffer.SweepIdle();
             if (Enabled == null || !Enabled.Value)
             {
                 Pending.Clear(); PendingSet.Clear();

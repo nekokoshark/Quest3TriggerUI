@@ -59,11 +59,11 @@ namespace Quest3TriggerUI
             internal string tag;
             internal int live, nativeLive, nativeDead, rows, materials, meshes, gone, unknown, repeated, arraySkipped;
             internal long bytes, nativeDeadBytes;
-            internal int rootSelectors, rootNodes, rootMissing, rootRows, rootUntrackedDead, rootSeeds;
+            internal int rootSelectors, rootNodes, rootMissing, rootRows, rootRowsSkipped, rootUntrackedDead, rootSeeds;
             internal long rootDeadBytes, rootDeadSkinBytes, rootTotalDeadBytes;
             internal long skinWeightSlots, skinGeneralWeightSlots;
             internal readonly Dictionary<string,long> skinFieldAliasBytes = new Dictionary<string,long>();
-            internal int rootDeadSkins, rootDeadWraps, retiredFields;
+            internal int rootDeadSkins, rootDeadWraps, retiredFields, cacheCandidatesSkipped, dynamicCandidatesSkipped, controlCandidatesSkipped;
             internal long rootDeadWrapBytes;
             internal readonly HashSet<object> rootWrapSeen = new HashSet<object>(new Identity());
             internal readonly HashSet<object> rootWrapArrays = new HashSet<object>(new Identity());
@@ -259,7 +259,7 @@ namespace Quest3TriggerUI
             }
             foreach (int step in ScanKnownRoots(s)) yield return step;
         }
-        private sealed class RootNode
+        private struct RootNode
         {
             internal object value;
             internal string path;
@@ -272,42 +272,66 @@ namespace Quest3TriggerUI
             "_selectedCharacter", "_loadedCharacter", "_characters", "_characterByName",
             "_clothingItemById", "_hairItemById", "_clothingItemByBackupId", "_hairItemByBackupId", "_materialOptions", "femaleEyelashMaterialOptions", "maleEyelashMaterialOptions", "copyUIFrom"
         };
+        // Fixed metadata names only; no Type keys or scene-object references.
+        private static readonly string[] DAZMeshReferenceFields = { "copyMaterialsFrom", "graftTo" };
+        private static readonly string[] DAZMergedMeshReferenceFields = { "targetMesh", "graftMesh", "graft2Mesh", "copyMaterialsFrom", "graftTo" };
+        private static readonly string[] AtomReferenceFields = { "_storables", "_storableById", "<presetManagerControls>k__BackingField" };
+        private static readonly string[] DAZSkinWrapControlReferenceFields = { "_wrap", "_wrap2" };
+        private static readonly string[] ClothSimControlReferenceFields = { "skinWrap" };
+        private static readonly string[] DAZSkinControlReferenceFields = { "_skin" };
+        private static readonly string[] AutoColliderBatchUpdaterReferenceFields = { "skin" };
+        private static readonly string[] DAZMorphBankReferenceFields = { "_connectedMesh" };
+        private static readonly string[] DAZCharacterRunReferenceFields = { "mergedMesh", "mesh1", "mesh2", "mesh3", "skin", "skinForThread" };
+        private static readonly string[] DAZCharacterReferenceFields = { "_skin", "_skinForClothes" };
+        private static readonly string[] DAZClothingItemReferenceFields = { "_skin", "clothingItemControls" };
+        private static readonly string[] DAZHairGroupReferenceFields = { "_skin", "hairGroupControls" };
+        private static readonly string[] DAZClothingItemControlReferenceFields = { "presetManagerControl" };
+        private static readonly string[] PresetManagerControlReferenceFields = { "pm" };
+        private static readonly string[] PresetManagerReferenceFields = { "storables", "optionalStorables", "optionalStorables2", "optionalStorables3", "dynamicStorables", "regularStorables" };
+        private static readonly string[] StorableReferenceFields = { "storable" };
+        private static readonly string[] DAZCharacterMaterialOptionsReferenceFields = { "_skin", "copyUIFrom", "otherMaterialOptionsList" };
+        private static readonly string[] DAZMeshMaterialOptionsReferenceFields = { "_mesh", "copyUIFrom", "otherMaterialOptionsList" };
+        private static readonly string[] DAZSkinWrapMaterialOptionsReferenceFields = { "_skinWrap", "_skinWrap2", "copyUIFrom", "otherMaterialOptionsList" };
+        private static readonly string[] MaterialOptionsReferenceFields = { "copyUIFrom", "otherMaterialOptionsList" };
+        private static readonly string[] DAZSkinV2ReferenceFields = { "dazMesh" };
+        private static readonly string[] DAZSkinWrapReferenceFields = { "dazMesh", "skin", "morphCopyFrom" };
+        private static readonly string[] EmptyReferenceFields = new string[0];
         private static string[] ReferenceFields(Type type)
         {
             for (Type t = type; t != null; t = t.BaseType)
             {
-                if (t == typeof(DAZMesh)) return new[] { "copyMaterialsFrom", "graftTo" };
+                if (t == typeof(DAZMesh)) return DAZMeshReferenceFields;
                 switch (t.Name)
                 {
-                    case "DAZMergedMesh": return new[] { "targetMesh", "graftMesh", "graft2Mesh", "copyMaterialsFrom", "graftTo" };
+                    case "DAZMergedMesh": return DAZMergedMeshReferenceFields;
                     case "DAZCharacterSelector": return SelectorFields;
-                    case "Atom": return new[] { "_storables", "_storableById", "<presetManagerControls>k__BackingField" };
-                    case "DAZSkinWrapControl": return new[] { "_wrap", "_wrap2" };
-                    case "ClothSimControl": return new[] { "skinWrap" };
-                    case "DAZSkinControl": return new[] { "_skin" };
-                    case "AutoCollider": return new[] { "_skin" };
-                    case "AutoColliderBatchUpdater": return new[] { "skin" };
-                    case "DAZPhysicsMesh": return new[] { "_skin" };
-                    case "DAZMorphBank": return new[] { "_connectedMesh" };
-                    case "DAZCharacterRun": return new[] { "mergedMesh", "mesh1", "mesh2", "mesh3", "skin", "skinForThread" };
-                    case "DAZCharacter": return new[] { "_skin", "_skinForClothes" };
-                    case "DAZClothingItem": return new[] { "_skin", "clothingItemControls" };
-                    case "DAZHairGroup": return new[] { "_skin", "hairGroupControls" };
-                    case "DAZDynamicItem": return new[] { "_skin" };
-                    case "DAZClothingItemControl": return new[] { "presetManagerControl" };
-                    case "DAZHairGroupControl": return new[] { "presetManagerControl" };
-                    case "PresetManagerControl": return new[] { "pm" };
-                    case "PresetManager": return new[] { "storables", "optionalStorables", "optionalStorables2", "optionalStorables3", "dynamicStorables", "regularStorables" };
-                    case "Storable": return new[] { "storable" };
-                    case "DAZCharacterMaterialOptions": return new[] { "_skin", "copyUIFrom", "otherMaterialOptionsList" };
-                    case "DAZMeshMaterialOptions": return new[] { "_mesh", "copyUIFrom", "otherMaterialOptionsList" };
-                    case "DAZSkinWrapMaterialOptions": return new[] { "_skinWrap", "_skinWrap2", "copyUIFrom", "otherMaterialOptionsList" };
-                    case "MaterialOptions": return new[] { "copyUIFrom", "otherMaterialOptionsList" };
-                    case "DAZSkinV2": return new[] { "dazMesh" };
-                    case "DAZSkinWrap": return new[] { "dazMesh", "skin", "morphCopyFrom" };
+                    case "Atom": return AtomReferenceFields;
+                    case "DAZSkinWrapControl": return DAZSkinWrapControlReferenceFields;
+                    case "ClothSimControl": return ClothSimControlReferenceFields;
+                    case "DAZSkinControl": return DAZSkinControlReferenceFields;
+                    case "AutoCollider": return DAZSkinControlReferenceFields;
+                    case "AutoColliderBatchUpdater": return AutoColliderBatchUpdaterReferenceFields;
+                    case "DAZPhysicsMesh": return DAZSkinControlReferenceFields;
+                    case "DAZMorphBank": return DAZMorphBankReferenceFields;
+                    case "DAZCharacterRun": return DAZCharacterRunReferenceFields;
+                    case "DAZCharacter": return DAZCharacterReferenceFields;
+                    case "DAZClothingItem": return DAZClothingItemReferenceFields;
+                    case "DAZHairGroup": return DAZHairGroupReferenceFields;
+                    case "DAZDynamicItem": return DAZSkinControlReferenceFields;
+                    case "DAZClothingItemControl": return DAZClothingItemControlReferenceFields;
+                    case "DAZHairGroupControl": return DAZClothingItemControlReferenceFields;
+                    case "PresetManagerControl": return PresetManagerControlReferenceFields;
+                    case "PresetManager": return PresetManagerReferenceFields;
+                    case "Storable": return StorableReferenceFields;
+                    case "DAZCharacterMaterialOptions": return DAZCharacterMaterialOptionsReferenceFields;
+                    case "DAZMeshMaterialOptions": return DAZMeshMaterialOptionsReferenceFields;
+                    case "DAZSkinWrapMaterialOptions": return DAZSkinWrapMaterialOptionsReferenceFields;
+                    case "MaterialOptions": return MaterialOptionsReferenceFields;
+                    case "DAZSkinV2": return DAZSkinV2ReferenceFields;
+                    case "DAZSkinWrap": return DAZSkinWrapReferenceFields;
                 }
             }
-            return new string[0];
+            return EmptyReferenceFields;
         }
         private static FieldInfo FindField(Type type, string name)
         {
@@ -317,6 +341,12 @@ namespace Quest3TriggerUI
                 if (f != null) return f;
             }
             return null;
+        }
+        // Detail output is bounded independently of graph traversal and byte totals.
+        private static bool TakeRootRow(Stats s)
+        {
+            if (s.rootRows < OwnerCap) { s.rootRows++; return true; }
+            s.rootRowsSkipped++; return false;
         }
         // Fixed Person selector roots and metadata-verified fields only.
         // This establishes an observed reference path, not every GC root.
@@ -353,21 +383,21 @@ namespace Quest3TriggerUI
                         var character = value as DAZCharacter;
                         if (!ReferenceEquals(character, null))
                         {
-                            context = " descriptorNativeAlive=" + (character != null) +
-                                " selected=" + ReferenceEquals(character, selected) + " loaded=" + ReferenceEquals(character, loaded);
+                            context = (character != null ? " descriptorNativeAlive=True" : " descriptorNativeAlive=False") +
+                                (ReferenceEquals(character, selected) ? " selected=True" : " selected=False") +
+                                (ReferenceEquals(character, loaded) ? " loaded=True" : " loaded=False");
                         }
                         var skin = value as DAZSkinV2;
                         if (!ReferenceEquals(skin, null))
                         {
-                            context += " skinNativeAlive=" + (skin != null);
+                            context += (skin != null ? " skinNativeAlive=True" : " skinNativeAlive=False");
                             if (skin == null && s.rootSkinSeen.Add(skin))
                             {
                                 s.rootDeadSkins++;
                                 foreach (int step in MeasureDeadSkinArrays(skin, s)) yield return step;
-                                if (s.rootRows < OwnerCap)
+                                if (TakeRootRow(s))
                                 {
                                     Log(s.tag + " dead-skin path=" + node.path + context + " nativeDead=True (managed fields only; not exclusive bytes)");
-                                    s.rootRows++;
                                 }
                             }
                         }
@@ -376,16 +406,19 @@ namespace Quest3TriggerUI
                         {
                             s.rootDeadWraps++;
                             foreach (int step in MeasureDeadWrapArrays(wrap, s)) yield return step;
-                            if (s.rootRows < OwnerCap)
+                            if (TakeRootRow(s))
                             {
                                 Log(s.tag + " dead-wrap path=" + node.path + " nativeDead=True (managed fields only; not exclusive bytes)");
-                                s.rootRows++;
                             }
                         }
                         if (!ReferenceEquals(character, null) && character != null &&
                             !ReferenceEquals(character, selected) && !ReferenceEquals(character, loaded) &&
-                            !s.rootSeen.Contains(character) && s.cacheCandidates.Count < OwnerCap)
-                            s.cacheCandidates.Add(new CacheCandidate { character = new WeakReference(character), selector = new WeakReference(selector) });
+                            !s.rootSeen.Contains(character))
+                        {
+                            if (s.cacheCandidates.Count < OwnerCap)
+                                s.cacheCandidates.Add(new CacheCandidate { character = new WeakReference(character), selector = new WeakReference(selector) });
+                            else { s.cacheCandidatesSkipped++; s.rootPartial = true; s.rootBudgetClipped = true; }
+                        }
                         var mesh = value as DAZMesh;
                         if (!ReferenceEquals(mesh, null))
                         {
@@ -409,11 +442,10 @@ namespace Quest3TriggerUI
                                     if (s.rootArrays.Add(array)) s.rootTotalDeadBytes += array.LongLength * width;
                                     yield return 0;
                                 }
-                                if (s.rootRows < OwnerCap)
+                                if (TakeRootRow(s))
                                 {
                                     Log(s.tag + " root-match recordId=" + (e == null ? "unobserved" : e.recordId.ToString()) +
                                         " path=" + node.path + context + " nativeDead=True (observed strong field path; not exclusive bytes)");
-                                    s.rootRows++;
                                 }
                             }
                         }
@@ -423,7 +455,7 @@ namespace Quest3TriggerUI
                         {
                             if (s.dynamicCandidates.Count < OwnerCap)
                                 s.dynamicCandidates.Add(new KeyValuePair<WeakReference,string>(new WeakReference(value), node.path));
-                            else { s.rootPartial = true; s.rootBudgetClipped = true; }
+                            else { s.dynamicCandidatesSkipped++; s.rootPartial = true; s.rootBudgetClipped = true; }
                         }
                         var dynamicItem = value as DAZDynamicItem;
                         if (dynamicItem != null && !dynamicItem.ready &&
@@ -435,7 +467,7 @@ namespace Quest3TriggerUI
                             if (controls != null && controls.Length > 0)
                             {
                                 if (s.controlCandidates.Count < OwnerCap) s.controlCandidates.Add(new WeakReference(dynamicItem));
-                                else s.rootPartial = true;
+                                else { s.controlCandidatesSkipped++; s.rootPartial = true; s.rootBudgetClipped = true; }
                             }
                         }
                         if (node.depth >= DepthLimit) { s.rootPartial = true; s.rootBudgetClipped = true; yield return 0; continue; }
@@ -463,16 +495,16 @@ namespace Quest3TriggerUI
                                 {
                                     if (n < offset) { n++; yield return 0; continue; }
                                     if (n >= offset + take) break;
-                                    stack.Push(new RootNode { value = entry.Value, path = node.path + ".values[" + n + "]", depth = node.depth + 1, context = context });
+                                    stack.Push(new RootNode { value = entry.Value, path = node.path + ".values[" + n.ToString() + "]", depth = node.depth + 1, context = context });
                                     if (entry.Key is UnityEngine.Object)
-                                        stack.Push(new RootNode { value = entry.Key, path = node.path + ".keys[" + n + "]", depth = node.depth + 1, context = context });
+                                        stack.Push(new RootNode { value = entry.Key, path = node.path + ".keys[" + n.ToString() + "]", depth = node.depth + 1, context = context });
                                     n++; yield return 0;
                                 }
                             }
                             else
                                 for (int n = take - 1; n >= 0; n--)
                                 {
-                                    stack.Push(new RootNode { value = list[n], path = node.path + "[" + n + "]", depth = node.depth + 1, context = context });
+                                    stack.Push(new RootNode { value = list[n], path = node.path + "[" + n.ToString() + "]", depth = node.depth + 1, context = context });
                                     yield return 0;
                                 }
                         }
@@ -489,7 +521,7 @@ namespace Quest3TriggerUI
                                     var registry = nextValue as ICollection;
                                     Log(s.tag + " atom-registry path=" + node.path + "." + names[n] + " count=" + (registry == null ? -1 : registry.Count));
                                 }
-                                stack.Push(new RootNode { value = nextValue, path = node.path + "." + names[n], depth = node.depth + 1, context = context });
+                                stack.Push(new RootNode { value = nextValue, path = ReferenceEquals(nextValue, null) ? null : node.path + "." + names[n], depth = node.depth + 1, context = context });
                                 yield return 0;
                             }
                         }
@@ -668,7 +700,7 @@ namespace Quest3TriggerUI
                 if (RetiredSkins[i].IsAlive) retiredStillAlive++; else RetiredSkins.RemoveAt(i);
             Log(s.tag + " stale-skin retiredFields=" + s.retiredFields + " retiredFieldsTotal=" + _skinFieldsRetired +
                 " retiredSkinWeakAlive=" + retiredStillAlive + " (weak observations, not proof of released bytes)");
-            Log(s.tag + " known-roots page=" + _rootPage + " morePages=" + s.rootMorePages + " selectors=" + s.rootSelectors + " nodes=" + s.rootNodes + " matchedDeadOwners=" + s.matchedDead.Count + " rootSeeds=" + s.rootSeeds + " rootUntrackedDead=" + s.rootUntrackedDead + " rootDeadDirectArrayBytes=" + s.rootDeadBytes + " rootDeadSkins=" + s.rootDeadSkins + " rootDeadSkinDirectArrayBytes=" + s.rootDeadSkinBytes + " rootDeadWraps=" + s.rootDeadWraps + " rootDeadWrapDirectArrayBytes=" + s.rootDeadWrapBytes + " rootTotalDeadDirectArrayBytes=" + s.rootTotalDeadBytes + " partial=" + s.rootPartial + " budgetClipped=" + s.rootBudgetClipped + " missingFields=" + s.rootMissing + " rowCap=256 nodeCap=16384 directoryPageCap=256 nestedContainerCap=4096 (fixed selector and page-zero Atom registry paths; unmatched is not proof of no root)");
+            Log(s.tag + " known-roots page=" + _rootPage + " morePages=" + s.rootMorePages + " selectors=" + s.rootSelectors + " nodes=" + s.rootNodes + " matchedDeadOwners=" + s.matchedDead.Count + " rootSeeds=" + s.rootSeeds + " rootUntrackedDead=" + s.rootUntrackedDead + " rootDeadDirectArrayBytes=" + s.rootDeadBytes + " rootDeadSkins=" + s.rootDeadSkins + " rootDeadSkinDirectArrayBytes=" + s.rootDeadSkinBytes + " rootDeadWraps=" + s.rootDeadWraps + " rootDeadWrapDirectArrayBytes=" + s.rootDeadWrapBytes + " rootTotalDeadDirectArrayBytes=" + s.rootTotalDeadBytes + " rootRows=" + s.rootRows + " rootRowsSkipped=" + s.rootRowsSkipped + " rootRowsTruncated=" + (s.rootRowsSkipped > 0) + " dynamicCandidates=" + s.dynamicCandidates.Count + " dynamicCandidatesSkipped=" + s.dynamicCandidatesSkipped + " controlCandidates=" + s.controlCandidates.Count + " controlCandidatesSkipped=" + s.controlCandidatesSkipped + " cacheCandidates=" + s.cacheCandidates.Count + " cacheCandidatesSkipped=" + s.cacheCandidatesSkipped + " partial=" + s.rootPartial + " budgetClipped=" + s.rootBudgetClipped + " missingFields=" + s.rootMissing + " rowCap=256 nodeCap=16384 directoryPageCap=256 nestedContainerCap=4096 (fixed selector and page-zero Atom registry paths; unmatched is not proof of no root)");
             for (int i = 0; i < 8 && ExitRows.Count != 0; i++) Log(s.tag + " " + ExitRows.Dequeue());
             Log(s.tag + " status=" + status + " scope=hook-observed-DAZMesh+fixed-root owners=" + s.live + " tracked=" + Owners.Count + " nativeLiveOwners=" + s.nativeLive + " nativeDeadManagedOwners=" + s.nativeDead +
                 " repeatedDeriveOwners=" + s.repeated + " registeredMesh=" + s.meshes + " registeredMaterial=" + s.materials +
@@ -710,7 +742,7 @@ namespace Quest3TriggerUI
             Cancel(); _request = null;
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null; _installTried = false; Owners.Clear(); ExitRows.Clear();
-            _registers = _exits = _skipped = _retired = _exitDropped = 0; _nextRecord = 0; RetiredSkins.Clear(); _skinFieldsRetired = 0; _controlFieldsRetired = 0; _rootPage = 0; _rootPageAfter = 0f;
+            _registers = _exits = _skipped = _retired = _exitDropped = 0; _nextRecord = 0; RetiredSkins.Clear(); _skinFieldsRetired = 0; _controlFieldsRetired = 0; _dynamicEntriesRetired = 0; _rootPage = 0; _rootPageAfter = 0f;
         }
         private static void Log(string text)
         { if (Quest3TriggerUIPlugin.Log != null) Quest3TriggerUIPlugin.Log.LogInfo("[mesh-owner-ret] " + text); }

@@ -45,9 +45,11 @@ namespace Quest3TriggerUI
         // it refuses keeps the pooled managed read that was there before.
         private static void Acquire(ImageLoaderThreaded.QueuedImage q, string path, bool onlySystem)
         {
+            // A second read for the same request replaces the first payload,
+            // including when the second read must use the managed path.
+            NativeCacheBuffer.Release(q);
             if (q != null && NativeCacheBuffer.TryStage(q, path))
             {
-                q.raw = null;
                 return;
             }
             q.raw = ReadCachedBytes(path, onlySystem);
@@ -60,6 +62,7 @@ namespace Quest3TriggerUI
         {
             if (!Active() || string.IsNullOrEmpty(path))
                 return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
+            byte[] buffer = null;
             try
             {
                 var info = new FileInfo(path);
@@ -70,10 +73,10 @@ namespace Quest3TriggerUI
                     Fallbacks++;
                     return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
                 }
-                byte[] buffer = DecodedBufferPool.RentByteArray((int)length);
+                buffer = DecodedBufferPool.RentByteArray((int)length);
                 if (buffer == null || buffer.Length != (int)length)
                 {
-                    if (buffer != null) DecodedBufferPool.ReturnArray(buffer);
+                    if (buffer != null) { DecodedBufferPool.ReturnArray(buffer); buffer = null; }
                     Fallbacks++;
                     return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
                 }
@@ -94,17 +97,22 @@ namespace Quest3TriggerUI
                     // native reader produce a complete result.
                     Fallbacks++;
                     DecodedBufferPool.ReturnArray(buffer);
+                    buffer = null;
                     return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
                 }
                 Hits++;
                 Bytes += buffer.Length;
-                return buffer;
+                byte[] result = buffer;
+                buffer = null; // The request owns the loan now.
+                return result;
             }
             catch (Exception)
             {
                 Fallbacks++;
+                if (buffer != null) { DecodedBufferPool.ReturnArray(buffer); buffer = null; }
                 return MVR.FileManagement.FileManager.ReadAllBytes(path, onlySystem);
             }
+            finally { if (buffer != null) DecodedBufferPool.ReturnArray(buffer); }
         }
 
         // Process() has exactly two cache reads: the web-cache path and the

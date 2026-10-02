@@ -7,12 +7,12 @@ namespace Quest3TriggerUI
     // Exact-length byte[] pool for QueuedImage.raw decode buffers. IL shows
     // every raw write site holds a request-private array (newarr decode
     // output or FileManager.ReadAllBytes result — never rawImageToLoad),
-    // so any array present at Finish entry is safe to harvest. Decode-path
+    // Only tracked loans may return to the small idle pool. Decode-path
     // allocation is diverted via transpiler to RentByteArray, and the cached
     // texture read (QueuedImage.Process reading a completed .vamcache) goes
     // through the same pool, so a cache-served preset switch stops allocating
     // 0.4-1.4GB of throwaway managed bytes per cycle. Arrays join the pool
-    // only when returned after Finish. Exact-length
+    // only when returned after a successful Finish has detached raw. Exact-length
     // buckets are mandatory: Finish passes raw straight to
     // LoadRawTextureData, so an oversized pooled array would corrupt upload.
     // Idle expiry removes pool ownership. OS page return is runtime-dependent;
@@ -23,7 +23,11 @@ namespace Quest3TriggerUI
         internal static ConfigEntry<int> BudgetMiB;
 
         private const int PerBucketCap = 8;
-        private const int IdleSeconds = 120;
+        private const int IdleSeconds = 30;
+        private const long MaxIdleBytes = 64L * 1048576;
+        private const int MaxIdleArray = 16 * 1048576;
+        private static readonly List<WeakReference> Loans = new List<WeakReference>();
+        private const int MaxLoans = 256;
         // Ceiling on live multi-request reservations. At the limit sharing is
         // refused and the sharer decodes natively instead of letting the
         // registry grow without bound; a full registry means torn-down
@@ -39,6 +43,27 @@ namespace Quest3TriggerUI
         // unpatched during hot reload. QueuedImage.raw owns the actual data.
         private sealed class SharedRef { internal WeakReference A; internal int N; }
         private static readonly List<SharedRef> Shared = new List<SharedRef>();
+
+        // Weak loan tags never retain cancelled requests' arrays.
+        private static bool RemoveLoan(byte[] a)
+        {
+            bool found = false;
+            for (int i = Loans.Count - 1; i >= 0; i--)
+            {
+                object target = Loans[i].Target;
+                if (target == null || ReferenceEquals(target, a))
+                {
+                    found |= target != null;
+                    Loans.RemoveAt(i);
+                }
+            }
+            return found;
+        }
+        private static void TrackLoan(byte[] a)
+        {
+            RemoveLoan(a);
+            if (Loans.Count < MaxLoans) Loans.Add(new WeakReference(a));
+        }
 
         // Caller holds Gate. A strong local keeps a found array alive while
         // checking identity; expired bookkeeping never accumulates past MaxShared.
@@ -93,19 +118,20 @@ namespace Quest3TriggerUI
                 foreach (object p in stack)
                 {
                     if (p == null) continue;
-                    var f = p.GetType().GetField("A");
+                    var f = p.GetType().GetField("A", System.Reflection.BindingFlags.Instance |
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
                     var arr = f == null ? null : f.GetValue(p) as byte[];
                     if (arr == null) continue;
                     long dropsBefore = Drops;
+                    lock (Gate) { TrackLoan(arr); }
                     ReturnArray(arr);
                     if (Drops == dropsBefore) adopted++;
                 }
             }
+            // Drop rejected old arrays as well as accepted ones.
+            dict.Clear();
             if (adopted > 0)
             {
-                // The old gen's stacks are now empty shells — clear its dict
-                // so the shells do not pin the pool bookkeeping alive.
-                try { dict.Clear(); } catch { }
                 WardrobeJanitor.Log("decoded pool adopted " + adopted +
                     " buffers / " + (PooledBytes / 1048576) + "MiB from previous generation");
             }
@@ -155,23 +181,27 @@ namespace Quest3TriggerUI
                 Rents++;
                 _borrowed = true;
                 _lastRent = Environment.TickCount;
+                byte[] a;
                 Stack<Pooled> s;
                 if (Buckets.TryGetValue(length, out s) && s.Count > 0)
                 {
                     Hits++;
                     Pooled p = s.Pop();
                     _pooledBytes -= p.A.LongLength;
-                    return p.A;
+                    a = p.A;
+                    if (s.Count == 0) Buckets.Remove(length);
                 }
+                else a = new byte[length];
+                TrackLoan(a);
+                return a;
             }
-            return new byte[length];
         }
 
         // Called on the main thread after Finish; raw has been nulled by then.
         internal static void ReturnArray(byte[] a)
         {
             if (a == null) return;
-            long cap = (BudgetMiB == null ? 1536 : Math.Max(64, BudgetMiB.Value)) * 1048576L;
+            long cap = Math.Min(MaxIdleBytes, (BudgetMiB == null ? 1536 : Math.Max(0, BudgetMiB.Value)) * 1048576L);
             int now = Environment.TickCount;
             lock (Gate)
             {
@@ -184,6 +214,8 @@ namespace Quest3TriggerUI
                     if (--shared.N > 0) { Held++; return; }
                     Shared.Remove(shared);
                 }
+                if (!RemoveLoan(a)) { Drops++; return; }
+                if (a.Length > MaxIdleArray) { Drops++; return; }
                 // A retired generation has no safe pool owner. The last
                 // shared holder was accounted above; dropping here lets the
                 // array become collectable without reintroducing a stale pool.
@@ -203,6 +235,18 @@ namespace Quest3TriggerUI
             }
         }
 
+        internal static void AbandonArray(byte[] a)
+        {
+            if (a == null) return;
+            lock (Gate)
+            {
+                RemoveLoan(a);
+                SharedRef shared = FindShared(a);
+                if (shared != null && --shared.N <= 0) Shared.Remove(shared);
+                Drops++;
+            }
+        }
+
         // Drop entries not rented for IdleSeconds; runs at most every 30s so
         // the per-frame Tick caller stays cheap. An idle pool shrinks back
         // toward zero instead of holding the whole burst footprint until the
@@ -212,8 +256,8 @@ namespace Quest3TriggerUI
         internal static void SweepIdle()
         {
             int now = Environment.TickCount;
-            if (now - _nextSweep < 0) return;
-            _nextSweep = now + 30000;
+            if (_nextSweep != 0 && unchecked(now - _nextSweep) < 0) return;
+            _nextSweep = now + 1000;
             int maxAge = IdleSeconds * 1000;
             lock (Gate)
             {
@@ -259,6 +303,7 @@ namespace Quest3TriggerUI
             lock (Gate)
             {
                 _retired = true;
+                Loans.Clear();
                 Buckets.Clear();
                 _pooledBytes = 0;
                 _borrowed = false;

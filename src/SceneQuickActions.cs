@@ -36,6 +36,7 @@ namespace Quest3TriggerUI
         private bool _expressionBusy;
         private bool _neutralExpressionSelected;
         private int _lastExpressionIndex;
+        private readonly DirectMorphControls _faceMorphs = new DirectMorphControls();
         private Atom _eyeGapTarget;
         private DAZMeshEyelidControl _eyeGapControl;
         private float _eyeGapSliderValue = 0.5f;
@@ -1480,6 +1481,20 @@ internal void OpenPersonPreset()
             _standby.ThrottleFrame();
         }
 
+        internal DirectMorphControls.Slot GetFaceMorph(int index) { return _faceMorphs.Get(index); }
+        internal void PrepareFaceMorphs() { _faceMorphs.Prepare(FindClosestPerson(PersonGenderFilter.Female)); }
+        internal bool SetFaceMorph(int index, float value, out string message) {
+            PrepareFaceMorphs();
+            var slot = GetFaceMorph(index);
+            if (slot.Morph == null) {
+                message = DirectMorphControls.Labels[index] + "形变未加载。";
+                return false;
+            }
+            return _faceMorphs.Set(index, value, out message);
+        }
+        internal void TickFaceMorphs() { _faceMorphs.Tick(); }
+        internal void RestoreFaceMorph(int index) { _faceMorphs.Clear(index); }
+
         internal float EyeGapSliderValue
         {
             get { return _eyeGapSliderValue; }
@@ -1730,6 +1745,7 @@ internal void OpenPersonPreset()
 
         internal void Dispose()
         {
+            _faceMorphs.Dispose();
             _lightLinker.Dispose();
             RestoreEyeLookMorphs(true);
             _eyeGapSliderValue = 0.5f;

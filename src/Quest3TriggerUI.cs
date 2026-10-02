@@ -14,7 +14,7 @@ namespace Quest3TriggerUI
     {
         public const string PluginGuid = "local.vam.quest3-trigger-ui";
         public const string PluginName = "Quest 3 Trigger UI";
-        public const string PluginVersion = "4.6.293";
+        public const string PluginVersion = "4.6.294";
 
         internal static Quest3TriggerUIPlugin Instance;
         internal static TriggerStateMachine Trigger;
@@ -502,7 +502,7 @@ namespace Quest3TriggerUI
                 "Pool QueuedImage.raw decode buffers by exact size — reuses the arrays instead of allocating ~1.5GB of throwaway managed bytes per person preset load.");
             DecodedBufferPool.BudgetMiB = Config.Bind(
                 "Wardrobe", "DecodedBufferPoolBudgetMiB", 1536,
-                "Total byte cap for pooled decode buffers; excess arrays are left to GC.");
+                "Configured ceiling for idle decode buffers; effective maximum is 64MiB, individual arrays up to 16MiB, idle expiry 30s. Larger or untracked arrays are not retained.");
             TextureCacheByteReuse.Enabled = Config.Bind(
                 "TextureLoading", "ReuseCachedTextureBytes", true,
                 "Read a completed .vamcache through the exact-length decode pool instead of a fresh allocation. A preset switch served entirely from the texture cache still allocated 0.4-1.4GB of throwaway managed bytes per cycle (texture-budget managedDecodeMiB). Any deviation from the native read falls back to the native read.");
@@ -511,13 +511,13 @@ namespace Quest3TriggerUI
                 "Smallest cached texture (KB) worth pooling; thumbnails, meta files and other small reads stay on the native path.");
             NativeCacheBuffer.Enabled = Config.Bind(
                 "TextureLoading", "NativeCacheReadBuffers", true,
-                "Stage a completed .vamcache read in a native block (VirtualAlloc) and upload it with Texture2D.LoadRawTextureData(IntPtr,int); the block is released as soon as the upload consumed it, so its pages go back to the OS instead of joining Boehm's free lists for the rest of the session. Small files, oversize files, budget and every read failure fall back to the pooled managed read, so the request always uploads the same bytes.");
+                "Stage a completed .vamcache read in a native block (VirtualAlloc) and upload it with Texture2D.LoadRawTextureData(IntPtr,int); large blocks are released as soon as the upload consumed them; small blocks use a bounded 10s reuse window. These pages do not join Boehm's free lists. Small files, oversize files, budget and every read failure fall back to the pooled managed read, so the request always uploads the same bytes.");
             NativeCacheBuffer.BudgetMiB = Config.Bind(
                 "TextureLoading", "NativeCacheReadBudgetMiB", 1024,
-                "Total bytes that may be staged natively at once; above it a request falls back to the pooled managed read.");
+                "Total rounded native capacity, including filling, uploading and idle blocks. At most 16 reservations; budget refusal keeps the managed compatibility path.");
             NativeCacheBuffer.IdleMiB = Config.Bind(
                 "TextureLoading", "NativeCacheReadReuseMiB", 192,
-                "Committed native bytes kept for reuse after an upload. Above the cap blocks are released to the OS instead of being held; larger keeps more reuse, smaller holds less.");
+                "Configured ceiling for committed native reuse; effective maximum is 64MiB, individual blocks up to 16MiB, idle expiry 10s. Larger blocks are VirtualFree-d immediately.");
             NativeCacheBuffer.MaxFileMiB = Config.Bind(
                 "TextureLoading", "NativeCacheReadMaxFileMiB", 512,
                 "Largest single cache file staged natively; anything bigger keeps the pooled managed read.");
@@ -541,6 +541,8 @@ namespace Quest3TriggerUI
                 "One-shot memory breakdown: set true (the cfg reloads live) and the plugin logs process/managed/texture/mesh/audio/atom numbers to the BepInEx log, then resets itself to false.");
             Config.Bind("Diagnostics", "EyeMaterialSnapshot", false,
                 "Read-only one-shot eye/lash material bindings in the log; auto-resets, no scene changes.");
+            Config.Bind("Diagnostics", "Bc7MaterialSnapshot", false,
+                "One-shot existing clothing bindings and bounded distant BC7 GPU readbacks; auto-resets; no scene changes.");
             Config.Bind("Diagnostics", "MemoryRetentionReport", false,
                 "One-shot read-only retention report: set true (the cfg reloads live) and the plugin logs the collection-field inventory of this plugin and of Assembly-CSharp, then resets itself to false. Measurement only: it never releases anything.");
             Config.Bind("Diagnostics", "MemoryRetentionReportDeep", false,
@@ -555,6 +557,18 @@ namespace Quest3TriggerUI
             Log = Logger;
             BodySmootherCompatibility.Install();
             ClothingScriptAssemblyReuse.Install();
+            PackageJsonWeakRetention.Install();
+            JointLifetimeRetirement.Install();
+            AtomPoolHairRetirement.Install();
+            AssetCallbackRetirement.Install();
+            AllocatedObjectRetirement.Install();
+            FailedAssetOperationRetirement.Install();
+            CancelledBundleDependencyRetirement.Install();
+            FailedDynamicBundleLeaseRetirement.Install();
+            DependencyErrorPropagation.Install();
+            ScenePrefabPresence.Install();
+            ScenePreloadLease.Install();
+            RefreshDelegateRetirement.Install();
             PresetDeltaApply.Install();
             PresetHairRenderBatch.Install();
             PresetSweepGate.Install();
@@ -1046,6 +1060,8 @@ namespace Quest3TriggerUI
             PresetSweepGate.Tick();
             MemoryRetentionReport.Tick();
             MeshOwnerRetentionProbe.Tick();
+            AtomPoolHairRetirement.Tick();
+            GpuPhysicsRetentionProbe.Tick();
             UnloadCoverageProbe.Tick();
             UuaTypeCensus.Tick();
             SceneLoadAccelerator.RetryPendingBrackets();
@@ -1181,6 +1197,7 @@ namespace Quest3TriggerUI
                 string text = System.Text.Encoding.UTF8.GetString(raw);
                 bool snap = text.Contains("MemorySnapshot = true");
                 bool eye = text.Contains("EyeMaterialSnapshot = true");
+                bool bc7 = text.Contains("Bc7MaterialSnapshot = true");
                 bool evict = text.Contains("AudioCacheEvictNow = true");
                 bool ucov = text.Contains("UnloadCoverageProbeOnce = true");
                 bool uip = text.Contains("UiRaycastCensusOnce = true");
@@ -1188,7 +1205,7 @@ namespace Quest3TriggerUI
                 bool mrd = text.Contains("MemoryRetentionReportDeep = true");
                 MemoryRetentionReport.GameScan =
                     !text.Contains("MemoryRetentionReportGameScan = false");
-                if (!snap && !evict && !eye && !ucov && !uip && !mrr && !mrd)
+                if (!snap && !evict && !eye && !bc7 && !ucov && !uip && !mrr && !mrd)
                 {
                     Logger.LogInfo("[MemProbe] flag not set in cfg");
                     return;
@@ -1198,6 +1215,7 @@ namespace Quest3TriggerUI
                 text = text.Replace(
                     "AudioCacheEvictNow = true", "AudioCacheEvictNow = false");
                 text = text.Replace("EyeMaterialSnapshot = true", "EyeMaterialSnapshot = false");
+                text = text.Replace("Bc7MaterialSnapshot = true", "Bc7MaterialSnapshot = false");
                 text = text.Replace(
                     "UnloadCoverageProbeOnce = true",
                     "UnloadCoverageProbeOnce = false");
@@ -1218,6 +1236,7 @@ namespace Quest3TriggerUI
                     System.IO.File.GetLastWriteTimeUtc(path);
                 if (snap) MemoryProbe.Dump();
                 if (eye) CharacterMaterialProbe.Dump();
+                if (bc7) Bc7MaterialProbe.Dump();
                 if (evict) AudioCacheJanitor.SweepNow();
                 if (ucov) UnloadCoverageProbe.Arm();
                 if (uip) UiRaycastProbe.Dump();
@@ -1432,10 +1451,23 @@ namespace Quest3TriggerUI
             VrShotCameras.Shutdown();
             ClothingRegionMode.Shutdown();
             PluginListMode.Shutdown();
+            GpuPhysicsRetentionProbe.Shutdown();
             MeshOwnerRetentionProbe.Shutdown();
             WardrobeJanitor.Shutdown();
             FaceDetailDistanceGuard.Shutdown();
             BodySmootherCompatibility.Shutdown();
+            AssetCallbackRetirement.Shutdown();
+            AllocatedObjectRetirement.Shutdown();
+            FailedAssetOperationRetirement.Shutdown();
+            CancelledBundleDependencyRetirement.Shutdown();
+            FailedDynamicBundleLeaseRetirement.Shutdown();
+            DependencyErrorPropagation.Shutdown();
+            ScenePrefabPresence.Shutdown();
+            ScenePreloadLease.Shutdown();
+            RefreshDelegateRetirement.Shutdown();
+            AtomPoolHairRetirement.Shutdown();
+            JointLifetimeRetirement.Shutdown();
+            PackageJsonWeakRetention.Shutdown();
             ClothingScriptAssemblyReuse.Shutdown();
             PresetDeltaApply.Shutdown();
             PresetHairRenderBatch.Shutdown();
