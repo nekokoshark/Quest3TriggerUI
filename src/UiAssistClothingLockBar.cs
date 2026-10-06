@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using BepInEx;
@@ -103,6 +103,7 @@ namespace Quest3TriggerUI
         internal static bool IsClothingLocked(Atom atom, string uid)
         {
             if (atom == null || string.IsNullOrEmpty(atom.uid)) return false;
+            if (IsOutfitLocked(atom, uid)) return true;
             List<string[]> entries = LockEntriesFor(atom.uid);
             if (entries == null || entries.Count == 0) return false;
             string path = BanKey(uid);
@@ -139,6 +140,7 @@ namespace Quest3TriggerUI
             _lockList = null;
             _lockAtom = null;
             _lockPanel = null;
+            _outfitLockRect = null; _outfitLockToggle = null;
             _lockPositionLogged = false;
         }
 
@@ -165,6 +167,7 @@ namespace Quest3TriggerUI
                 _lockAtom = state.Target;
                 _lockDirty = true; // lock list is per-character
             }
+            UpdateOutfitLockOption();
             if (_lockDirty)
             {
                 _lockDirty = false;
@@ -241,6 +244,7 @@ namespace Quest3TriggerUI
             RectTransform list = (RectTransform)_lockList.transform;
             _lockDock.rotation = list.rotation;
             _lockDock.localScale = list.lossyScale;
+
             // Stack directly above the ban bar's top edge. If the ban bar is
             // missing, fall back to the same panel-top anchor it would use.
             Vector3 baseTop;
@@ -268,6 +272,7 @@ namespace Quest3TriggerUI
                 (8f * list.lossyScale.x);
             _lockDock.position -= list.forward *
                 (12f * list.lossyScale.x);
+            PositionOutfitLockOption(list);
         }
 
         private static void RebuildLockCells()

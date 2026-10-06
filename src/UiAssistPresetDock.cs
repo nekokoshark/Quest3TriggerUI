@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using BepInEx;
@@ -680,6 +680,8 @@ namespace Quest3TriggerUI
             y += FavTagRowH + FavTagGap;
             CreatePdIoRow("场 景", y, new Color(0.30f, 0.20f, 0.34f, 1f),
                 delegate { SetDockMode(2); });
+            y += FavTagRowH + FavTagGap;
+            CreatePdIoRow("表 情", y, new Color(0.25f,0.20f,0.32f,1f), delegate { SetDockMode(3); });
             y += FavTagRowH;
             _pdTabStrip.sizeDelta = new Vector2(PdStripW, y);
             PdPaintTabs();
@@ -868,6 +870,11 @@ namespace Quest3TriggerUI
         // cells/thumbs/state all stay put for the instant flip back.
         private static void SetDockMode(int mode)
         {
+            if (mode == 3 && _expressionDock == null)
+            {
+                if(Quest3TriggerUIPlugin.Instance!=null)Quest3TriggerUIPlugin.Instance.ShowExpressionDock();
+                return;
+            }
             if (_dockMode == mode) return;
             _dockMode = mode;
             ClearPdReorder();

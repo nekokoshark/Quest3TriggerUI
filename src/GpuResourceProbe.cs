@@ -16,6 +16,7 @@ namespace Quest3TriggerUI
     {
         private const float CensusEvery = 60f;
         private static float _nextCensus;
+        private static bool _rootSampleReported;
         private static bool _installTried;
         private static Harmony _harmony;
 
@@ -208,7 +209,9 @@ namespace Quest3TriggerUI
                 audioN++;
                 audioSec += (long)c.length;
             }
-            goN = Resources.FindObjectsOfTypeAll<GameObject>().Length;
+            GameObject[] allObjects = Resources.FindObjectsOfTypeAll<GameObject>();
+            goN = allObjects.Length;
+            if (!_rootSampleReported) RootSample(allObjects);
 
             // Top three of our own thumbnail populations: the cap on decoded
             // dock thumbs is only provable from the size in the name, and the
@@ -296,6 +299,78 @@ namespace Quest3TriggerUI
         {
             // PagefileUsage == commit charge (private bytes) for the process.
             return ReadProcMem() ? (long)_procMem.PagefileUsage.ToUInt64() : 0;
+        }
+
+        // One bounded attribution sample from the array the existing census
+        // already creates. No retained Unity references or hierarchy mutation.
+        internal static int RootSampleIndex(int slot, int length)
+        {
+            int limit = Math.Min(1024, length);
+            if (slot < 0 || slot >= limit) return -1;
+            return (int)((long)slot * length / limit);
+        }
+
+        private static void RootSample(GameObject[] objects)
+        {
+            _rootSampleReported = true;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var counts = new Dictionary<int, int>();
+            var labels = new Dictionary<int, string>();
+            int sampled = 0, sceneObjects = 0, assetObjects = 0, active = 0, errors = 0;
+            int limit = Math.Min(1024, objects.Length);
+            for (int slot = 0; slot < limit; slot++)
+            {
+                // Budget checked between native queries, not a hard deadline.
+                if (clock.ElapsedMilliseconds >= 25) break;
+                GameObject obj = objects[RootSampleIndex(slot, objects.Length)];
+                if (obj == null) continue;
+                try
+                {
+                    bool inScene = obj.scene.IsValid();
+                    if (inScene) sceneObjects++; else assetObjects++;
+                    if (obj.activeInHierarchy) active++;
+                    Transform root = obj.transform.root;
+                    Transform group = root;
+                    string branch = "";
+                    if (root.name == "SceneAtoms")
+                    {
+                        Transform first = null, second = null;
+                        Transform node = obj.transform;
+                        int depth = 0;
+                        while (node != null && node != root && depth++ < 128)
+                        {
+                            second = first;
+                            first = node;
+                            node = node.parent;
+                        }
+                        if (node != root) { errors++; continue; }
+                        group = second != null ? second : (first != null ? first : root);
+                        if (first != null) branch += "/" + first.name;
+                        if (second != null) branch += "/" + second.name;
+                    }
+                    int id = group.GetInstanceID();
+                    int count;
+                    counts[id] = counts.TryGetValue(id, out count) ? count + 1 : 1;
+                    if (!labels.ContainsKey(id))
+                    {
+                        string name = (root.name ?? "") + branch;
+                        name = name.Replace('\r', ' ').Replace('\n', ' ');
+                        if (name.Length > 80) name = name.Substring(0, 80);
+                        labels[id] = (inScene ? "scene:" : "asset:") + name;
+                    }
+                    sampled++;
+                }
+                catch { errors++; }
+            }
+            var ranked = new List<KeyValuePair<int, int>>(counts);
+            ranked.Sort(delegate(KeyValuePair<int, int> a, KeyValuePair<int, int> b) { return b.Value.CompareTo(a.Value); });
+            var top = new System.Text.StringBuilder();
+            for (int i = 0; i < ranked.Count && i < 8; i++)
+                top.Append(" [").Append(ranked[i].Key).Append(' ').Append(labels[ranked[i].Key]).Append(" sampled=").Append(ranked[i].Value).Append(']');
+            WardrobeJanitor.Log("go-root-sample total=" + objects.Length + " sampled=" + sampled +
+                " planned=" + limit + " scene=" + sceneObjects + " asset=" + assetObjects + " active=" + active +
+                " errors=" + errors + " ms=" + clock.ElapsedMilliseconds + " top=" + top +
+                " (evenly spaced sample; not exact root counts/bytes or proof of leaks; no objects destroyed)");
         }
 
         internal static long TexBytes(Texture t)

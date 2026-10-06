@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using BepInEx;
@@ -548,6 +548,11 @@ namespace Quest3TriggerUI
             Atom atom = __instance != null ? __instance.containingAtom : null;
             if (active)
             {
+                if (!item.active && UiAssistHudLink.IsOutfitWearBlocked(atom, item.uid))
+                {
+                    UiAssistHudLink.ReportOutfitAdditionBlocked(atom, item);
+                    return false;
+                }
                 if (!UiAssistHudLink.IsClothingBanned(atom, item.uid)) return true;
                 UiAssistHudLink.ReportBlockedWear(atom, item);
                 return false;
@@ -569,6 +574,11 @@ namespace Quest3TriggerUI
             if (value)
             {
                 if (__instance.active) return true;
+                if (UiAssistHudLink.IsOutfitWearBlocked(atom, item.uid))
+                {
+                    UiAssistHudLink.ReportOutfitAdditionBlocked(atom, item);
+                    return false;
+                }
                 if (!UiAssistHudLink.IsClothingBanned(atom, item.uid)) return true;
                 UiAssistHudLink.ReportBlockedWear(atom, item);
                 return false;

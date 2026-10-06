@@ -22,6 +22,8 @@ namespace Quest3TriggerUI
             new Dictionary<ImageLoaderThreaded.QueuedImage, long>();
         private static Harmony _harmony;
         private static long _reserved, _peak;
+        // Main-thread scheduler receipt; worker bytes stay charged until Finish.
+        internal static int PendingCount { get { return Held.Count; } }
         private static int _admitted, _deferred, _discarded;
         private static long _managedBytes, _bumpBytes;
         private static int _headerSized;

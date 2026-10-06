@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
@@ -11,6 +11,9 @@ namespace Quest3TriggerUI
     internal static class VrTextInputBridge
     {
         private static InputField _target;
+        private static Transform _dockHost;
+        internal static bool FollowTextKeyboard { get; private set; }
+        internal static Transform KeyboardDock { get { return _target != null ? _dockHost : null; } }
         private static int _anchor, _focus;
         private static bool _voiceActive;
         private static readonly FieldInfo NativeKeyboard = Field("currentKeyboardTransform");
@@ -28,6 +31,7 @@ namespace Quest3TriggerUI
         {
             if (!Quest3TriggerUIPlugin.InputRuntimeActive || target == null ||
                 target.readOnly || !target.IsInteractable()) return;
+            if (_target != target) { _dockHost = null; FollowTextKeyboard = false; }
             _target = target;
             CaptureSelection(target);
             PinyinEngine.Reset();
@@ -35,6 +39,22 @@ namespace Quest3TriggerUI
             SuppressNativeKeyboard();
             if (Quest3TriggerUIPlugin.Instance != null)
                 Quest3TriggerUIPlugin.Instance.ShowTextKeyboard();
+        }
+
+        internal static void SelectFollowing(InputField target)
+        {
+            Select(target);
+            if(_target!=target)return;
+            _dockHost=null;FollowTextKeyboard=true;
+            if(Quest3TriggerUIPlugin.Instance!=null)Quest3TriggerUIPlugin.Instance.ShowPlainFollowingKeyboard();
+        }
+        internal static void SelectDocked(InputField target, Transform host)
+        {
+            Select(target);
+            if (_target != target) return;
+            _dockHost = host;
+            if (host != null && Quest3TriggerUIPlugin.Instance != null)
+                Quest3TriggerUIPlugin.Instance.DockPlainTextKeyboard(host);
         }
 
         internal static void Deselect(InputField target)
@@ -50,7 +70,7 @@ namespace Quest3TriggerUI
             DoubaoImeBridge.Reset();
             DoubaoImeBridge.ReleaseAll();
             WindowsImeBridge.Detach();
-            _target = null;
+            _target = null; _dockHost = null; FollowTextKeyboard = false;
         }
 
         internal static void Shutdown()

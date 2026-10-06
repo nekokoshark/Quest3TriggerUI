@@ -28,6 +28,7 @@ namespace Quest3TriggerUI
         private static long _released, _covered = -1, _deferred;
         private static AsyncOperation _operation;
         private static float _coveredAt = -1f;
+        internal static bool OperationPending { get { return _operation != null && !_operation.isDone; } }
 
         internal static void Install()
         {

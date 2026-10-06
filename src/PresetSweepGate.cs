@@ -65,6 +65,15 @@ namespace Quest3TriggerUI
         private static float _gcRequestedAt, _gcQuietSince, _gcNextCheck;
         private static long _gcSeenActivity;
         private static bool _gcYieldStretchLogged;
+        // Optional cold-host scheduler. UI-only builds keep their existing policy.
+        internal static Func<bool, bool, string, bool> ManagedRequest;
+        internal static Func<bool> CompletionReady, ManagedPending;
+        internal static bool IsInstalled { get { return _harmony != null; } }
+        internal static bool TransactionActive { get { return _active != null; } }
+        internal static long ActivityEpoch { get { return Interlocked.Read(ref _activity); } }
+        internal static bool SweepSettled { get { return _lastSweep == null || _lastSweep.isDone; } }
+        internal static AsyncOperation SubmitLoadTailSweep(string reason) { return SubmitSweep("load-tail:" + reason); }
+        internal static void CollectLoadTail(string reason) { RunGc(reason); }
 
         // Idle growth watchdog (see 问题与证据索引 11.11). Measured: an idle
         // session - nobody touching anything - allocates 0.28-0.34GB/min of
@@ -253,6 +262,7 @@ namespace Quest3TriggerUI
             internal Ticket ticket;
             internal float created;
             internal bool sweepSkipped;
+            internal bool automatic;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -480,6 +490,9 @@ namespace Quest3TriggerUI
             __state.clock.Stop();
             if (__state.owner != null && __state.success)
                 MemoryRetentionReport.Request("preset-completion:" + __state.kind);
+            if (__state.owner != null && __state.success && ManagedRequest != null &&
+                (__state.released != Interlocked.Read(ref _released) || __state.images != Interlocked.Read(ref _imageEvents)))
+                ManagedRequest(false, true, "preset-completion");
             return __exception;
         }
 
@@ -496,6 +509,14 @@ namespace Quest3TriggerUI
         {
             IEnumerator iterator = _factory(owner);
             TagIterator(owner, iterator);
+            if (ManagedRequest != null && (Enabled == null || Enabled.Value) && origin == "OnCharacterLoaded" && iterator != null)
+            {
+                Pending pending = FindPending(iterator, false);
+                if (pending != null) pending.automatic = true;
+                else if (Tickets.Count < 64)
+                    Tickets.Add(new Pending { iterator = new WeakReference(iterator), automatic = true,
+                        created = Time.realtimeSinceStartup });
+            }
             Log("request=" + origin + " presetScope=" + (_active != null && _active.valid));
             return iterator;
         }
@@ -526,7 +547,7 @@ namespace Quest3TriggerUI
         {
             float now = Time.realtimeSinceStartup;
             for (int i = Tickets.Count - 1; i >= 0; i--)
-                if (!Tickets[i].iterator.IsAlive || now - Tickets[i].created >= 30f) Tickets.RemoveAt(i);
+                if (!Tickets[i].iterator.IsAlive || (!Tickets[i].automatic && now - Tickets[i].created >= 30f)) Tickets.RemoveAt(i);
         }
 
         private static IEnumerable<CodeInstruction> RouteSweep(IEnumerable<CodeInstruction> instructions)
@@ -620,7 +641,18 @@ namespace Quest3TriggerUI
             {
                 bool headroom = MemoryHeadroom();
                 reason = GcReason(pending, Time.realtimeSinceStartup, headroom, GC.GetTotalMemory(false));
-                if (reason == null) { Log("skip redundant preset GC: kind=" + pending.ticket.kind); return; }
+                if (reason == null)
+                {
+                    if (pending != null && pending.ticket != null)
+                    { Log("skip redundant preset GC: kind=" + pending.ticket.kind); return; }
+                    if (pending != null && pending.automatic)
+                    { Log("skip redundant automatic GC: request already tracked at load tail"); return; }
+                    // Preserve the previous unscoped/manual collection behavior,
+                    // without depending on a null-ticket logging exception.
+                    reason = "native sweep/unscoped";
+                }
+                if (ManagedRequest != null && pending != null && pending.automatic &&
+                    ManagedRequest(false, true, "character-cleanup")) return;
                 // A full mark inside the click window is the cost the user
                 // still feels: 20 consecutive swaps each paid 4.0s here
                 // (measured 3.9-4.1s, freeing 0.4-0.9GiB) while the 1.5GiB/60s
@@ -733,7 +765,9 @@ namespace Quest3TriggerUI
             // wall time - the figure the long frames are made of - is lost.
             NoteSweepSettled();
             float now = Time.realtimeSinceStartup;
+            if (ManagedPending != null && ManagedPending()) return;
             if (_active != null || now < _gcNextCheck) return;
+            if (CompletionReady != null && !CompletionReady()) return;
             // A submitted sweep owns the frame's mark work; do not stack the
             // idle GC on top of the same frame.
             if (_sweepPending && RunDeferredSweep(now)) return;
@@ -819,6 +853,8 @@ namespace Quest3TriggerUI
                     Log("skip unchanged preset UUA: kind=" + ticket.kind + " count=" + _skipped + "; GC budget checked separately");
                     return null;
                 }
+                if (ManagedRequest != null && pending != null && pending.automatic &&
+                    ManagedRequest(true, true, "character-cleanup")) return null;
                 // The mark this call would run is global: its price does not
                 // depend on when it runs, only on whether the user is waiting.
                 // Native fires it from inside the restore, which is where the
@@ -1008,6 +1044,7 @@ namespace Quest3TriggerUI
             _sweepPendingReason = null;
             _sweepPendingAt = 0f;
             _presetEndedAt = 0f;
+            ManagedRequest = null; CompletionReady = null; ManagedPending = null;
         }
 
         private static void Log(string message)

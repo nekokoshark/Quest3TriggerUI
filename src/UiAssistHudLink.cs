@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
@@ -177,6 +177,7 @@ namespace Quest3TriggerUI
             TickPresetDock();
             TickFavoritesBar();
             TickSceneDock();
+            TickExpressionDock();
             TickBanBar();
             TickLockBar();
             NotePanelDockLayout();

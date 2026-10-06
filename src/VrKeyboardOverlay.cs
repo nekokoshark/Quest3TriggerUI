@@ -23,6 +23,45 @@ namespace Quest3TriggerUI
         private readonly SceneQuickActions _quickActions;
         private readonly ScenePlaybackFlow _playback = new ScenePlaybackFlow();
         private GameObject _playbackPanel;
+        private bool _plainTextKeyboard;
+        private readonly Dictionary<GameObject,bool> _textKeyboardExtensions=new Dictionary<GameObject,bool>();
+        private readonly List<GameObject> _extensionRoots=new List<GameObject>();
+        private Text _headerCaption;
+        private string _normalHeaderCaption;
+        private void CaptureExtensionChildren(RectTransform parent,int first)
+        {
+            for(int i=first;i<parent.childCount;i++)_extensionRoots.Add(parent.GetChild(i).gameObject);
+        }
+        internal void SetPlainTextKeyboard(bool plain)
+        {
+            if(_canvas==null)Build();
+            if(_plainTextKeyboard==plain)return;
+            _plainTextKeyboard=plain;
+            if(plain)
+            {
+                SetBindingMode(false);HideActionSubmenus();_textKeyboardExtensions.Clear();
+                foreach(var go in _extensionRoots)if(go!=null){_textKeyboardExtensions[go]=go.activeSelf;go.SetActive(false);}
+                if(_headerCaption!=null)_headerCaption.text="全功能键盘";
+            }
+            else
+            {
+                foreach(var pair in _textKeyboardExtensions)if(pair.Key!=null)pair.Key.SetActive(pair.Value);
+                _textKeyboardExtensions.Clear();if(_headerCaption!=null)_headerCaption.text=_normalHeaderCaption;
+            }
+            RectTransform rect=(RectTransform)_canvas.transform;
+            rect.sizeDelta=plain?new Vector2(1840f,676f):new Vector2(CanvasWidth,CanvasHeight);
+        }
+        internal void DockPlainAbove(Transform panel)
+        {
+            if(panel==null)return;
+            SetPlainTextKeyboard(true);EndDrag();
+            RectTransform hr=panel as RectTransform;
+            Vector3 top=hr!=null?panel.TransformPoint(new Vector3(hr.rect.center.x,hr.rect.yMax,0f)):panel.position;
+            _canvas.transform.SetParent(panel,false);
+            _canvas.transform.rotation=panel.rotation;
+            float hs=panel.lossyScale.x;_canvas.transform.localScale=Vector3.one*(hs>1e-6f?_scale/hs:_scale);
+            _canvas.transform.position=top+panel.up*(676f*0.5f*_scale+0.02f)+panel.forward*0.025f;
+        }
         private QuickActionDefinition _personDefinition;
         private QuickActionDefinition _playbackDefinition;
         private bool _playbackCatalogHierarchical;
@@ -191,7 +230,7 @@ namespace Quest3TriggerUI
             if (_pendingShortcutKeys.Count > 0 && Time.frameCount >= _shortcutReleaseFrame)
                 ReleasePendingShortcut();
 
-            if (Visible && Time.unscaledTime >= _nextEmbodySync)
+            if (Visible && !_plainTextKeyboard && Time.unscaledTime >= _nextEmbodySync)
             {
                 _nextEmbodySync = Time.unscaledTime + 0.25f;
                 SetEmbodyButtonActive(_quickActions.EmbodyActive);
@@ -302,7 +341,7 @@ namespace Quest3TriggerUI
             if (_canvas == null || SuperController.singleton == null)
                 return;
 
-            EndDrag();
+            EndDrag();SetPlainTextKeyboard(false);
             Transform anchor = SuperController.singleton.centerCameraTarget.transform;
             _canvas.transform.SetParent(anchor, false);
             _canvas.transform.localPosition = new Vector3(0f, -0.20f, _distance);
@@ -621,6 +660,7 @@ namespace Quest3TriggerUI
 
         internal void Dispose()
         {
+            if (_expressionBrowser != null) { _expressionBrowser.Dispose(); _expressionBrowser = null; }
             HideActionSubmenus();
             _quickActions.Dispose();
             VrTextInputBridge.Shutdown();
@@ -632,7 +672,7 @@ namespace Quest3TriggerUI
                 SuperController.singleton.RemoveCanvas(_canvas);
             KeyboardRaycastPriority.Canvas = null;
             UnityEngine.Object.Destroy(_canvas.gameObject);
-            _canvas = null;
+            _canvas = null;_extensionRoots.Clear();_textKeyboardExtensions.Clear();
         }
 
         private void Build()
@@ -656,12 +696,13 @@ namespace Quest3TriggerUI
             _font = (Font)Resources.GetBuiltinResource(typeof(Font), "Arial.ttf");
 
             CreatePanelBackground(canvasRect);
-            CreateQuickActions(canvasRect);
+            int extraStart=canvasRect.childCount;
+            CreateQuickActions(canvasRect);CaptureExtensionChildren(canvasRect,extraStart);
             CreateHeader(canvasRect);
             CreateKeyboardRows(canvasRect);
             CreateImeUi(canvasRect);
-            CreateShortcutPanel(canvasRect);
-            CreateFaceAdjustmentRows(canvasRect);
+            extraStart=canvasRect.childCount;CreateShortcutPanel(canvasRect);CaptureExtensionChildren(canvasRect,extraStart);
+            extraStart=canvasRect.childCount;CreateFaceAdjustmentRows(canvasRect);CaptureExtensionChildren(canvasRect,extraStart);
             SetLayerRecursively(canvasObject, ResolveUiLayer());
             Recenter();
             canvasObject.SetActive(false);
@@ -733,9 +774,10 @@ namespace Quest3TriggerUI
             image.color = new Color(0.08f, 0.24f, 0.34f, 1f);
             KeyboardDragHandle drag = header.AddComponent<KeyboardDragHandle>();
             drag.Configure(this, _canvas.transform);
-			AddText(header.transform,
+			_headerCaption=AddText(header.transform,
 				"全功能键盘  |  标题栏拖动  |  左右握把短按：归位  |  右食指长按：圆盘  |  右食指+握把短按：显示/隐藏，长按：抓取",
                 26, TextAnchor.MiddleLeft, new Color(0.93f, 0.98f, 1f, 1f), 18f);
+            _normalHeaderCaption=_headerCaption.text;
 
             CreateActionButton(parent, "归位", 1500f, 80f, 145f, 58f, Recenter);
             CreateActionButton(parent, "关闭", 1655f, 80f, 175f, 58f, Toggle);
@@ -825,11 +867,8 @@ namespace Quest3TriggerUI
                         new QuickActionDefinition("shots.prev", "上一镜", VrShotCameras.Prev),
                         new QuickActionDefinition("shots.next", "下一镜", VrShotCameras.Next)
                     }),
-                new QuickActionDefinition("optimize-memory", "优化内存", _quickActions.OptimizeMemory, null,
-                    new List<QuickActionDefinition> {
-                        new QuickActionDefinition("optimize-memory.vram", "显存报告",
-                            delegate { MemoryProbe.Snapshot("manual"); })
-                    }),
+                new QuickActionDefinition("male-transparent", "男人透明", _quickActions.ToggleMaleTransparency,
+                    delegate { return _quickActions.MaleTransparentActive; }),
                 new QuickActionDefinition("standby", "待机/恢复", ToggleStandby,
                     delegate { return _quickActions.StandbyActive; })
             };
@@ -845,32 +884,17 @@ namespace Quest3TriggerUI
             return _personDefinition;
         }
 
+        private ExpressionBrowserPanel _expressionBrowser;
+        internal void ShowExpressionDock()
+        {
+            if (_expressionBrowser == null) _expressionBrowser = new ExpressionBrowserPanel(_plugin, _quickActions);
+            if(!UiAssistHudLink.ExpressionDockEditorAvailable)_quickActions.OpenUiAssistClothingEditor();
+            UiAssistHudLink.OpenExpressionDock(_expressionBrowser);
+        }
         private QuickActionDefinition BuildExpressionAction()
         {
-            List<QuickActionDefinition> children = new List<QuickActionDefinition>();
-            children.Add(new QuickActionDefinition(
-                "expression.initialize", "表情初始化",
-                delegate { _quickActions.InitializeExpressions(UpdateHelpText); },
-                delegate { return _quickActions.ExpressionTimelinesInitialized; }));
-            ExpressionDefinition[] expressions = SevenSeasonExpressionLibrary.All;
-            for (int i = 0; i < expressions.Length; i++)
-            {
-                int expressionIndex = i;
-                ExpressionDefinition expression = expressions[i];
-                children.Add(new QuickActionDefinition(
-                    "expression." + expressionIndex, expression.Label,
-                    delegate {
-                        _quickActions.PlayExpression(expressionIndex, UpdateHelpText);
-                    },
-                    delegate {
-                        return _quickActions.IsExpressionActive(expressionIndex);
-                    }));
-            }
-            return new QuickActionDefinition(
-                "expression", "表情",
-                delegate { _quickActions.ReplayActiveExpression(UpdateHelpText); },
-                delegate { return _quickActions.ExpressionActive; },
-                children);
+            return new QuickActionDefinition("expression", "表情", ShowExpressionDock,
+                delegate { return _expressionBrowser != null && _expressionBrowser.Visible; });
         }
 
         private QuickActionDefinition BuildPlaybackAction()

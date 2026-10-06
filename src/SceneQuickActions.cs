@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -16,6 +16,13 @@ namespace Quest3TriggerUI
             "AcidBubbles.Embody.latest:/Custom/Scripts/AcidBubbles/Embody/Embody.cslist";
         private const string EmbodyPreset = "Passenger (Free Look)";
         private readonly MonoBehaviour _host;
+        private MaleTransparency _maleTransparency;
+        internal bool MaleTransparentActive { get { return _maleTransparency != null && _maleTransparency.Active; } }
+        internal void ToggleMaleTransparency()
+        {
+            if (_maleTransparency == null) _maleTransparency = new MaleTransparency(_host);
+            _maleTransparency.Toggle();
+        }
         private readonly FastStandbyController _standby;
         private readonly SoftRestartController _softRestart;
         private Atom _embodyTarget;
@@ -91,6 +98,18 @@ namespace Quest3TriggerUI
                 LogInfo(message);
                 if (completed != null) completed(message);
             });
+        }
+
+        private Coroutine _expressionOperation;
+        internal void StopPanelExpressions()
+        {
+            if (_expressionOperation != null) _host.StopCoroutine(_expressionOperation);
+            _expressionOperation = null; _expressionBusy = false;
+            StopAllExpressionTimelines(_expressionTimelines.Values);
+            ResetAllExpressionsToNeutral(_expressionTarget);
+            RestoreInitialTongueState(_expressionTarget);
+            SetAllExpressionTimelinesEnabled(false);
+            _activeExpressionIndices.Clear(); _neutralExpressionSelected = false;
         }
 
         internal bool IsExpressionActive(int index)
@@ -1723,7 +1742,7 @@ internal void OpenPersonPreset()
             }
 
             _expressionBusy = true;
-            _host.StartCoroutine(PlayExpressionRoutine(target, index, completed));
+            _expressionOperation = _host.StartCoroutine(PlayExpressionRoutine(target, index, completed));
         }
 
         internal void InitializeExpressions(Action<string> completed)
@@ -1740,11 +1759,12 @@ internal void OpenPersonPreset()
                 return;
             }
             _expressionBusy = true;
-            _host.StartCoroutine(InitializeExpressionsRoutine(target, completed));
+            _expressionOperation = _host.StartCoroutine(InitializeExpressionsRoutine(target, completed));
         }
 
         internal void Dispose()
         {
+            if (_maleTransparency != null) _maleTransparency.Dispose();
             _faceMorphs.Dispose();
             _lightLinker.Dispose();
             RestoreEyeLookMorphs(true);
@@ -2228,7 +2248,7 @@ internal void OpenPersonPreset()
                        "mouth lick", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private static void LoadExpressionTimeline(
+        internal static void LoadExpressionTimeline(
             JSONStorable timeline, JSONClass config)
         {
             MethodInfo load = timeline.GetType().GetMethod(

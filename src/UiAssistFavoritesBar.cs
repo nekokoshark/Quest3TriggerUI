@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -29,6 +29,9 @@ namespace Quest3TriggerUI
 
     internal sealed class AceFavDragSource
     {
+        internal string SceneTagName;
+        internal string ExpressionKey;
+        internal ExpressionBrowserPanel ExpressionOwner;
         internal bool FromBar;
         internal bool FromBan;
         internal bool FromLock;
@@ -492,7 +495,7 @@ namespace Quest3TriggerUI
 
         private static float RequiredTagStripHeight()
         {
-            int rows = 1 + FavTagVisibleCount + 1 + (FavTagPager ? 1 : 0) + 5;
+            int rows = 1 + FavTagVisibleCount + 1 + (FavTagPager ? 1 : 0) + 6;
             return FavPad * 2f + rows * (FavTagRowH + FavTagGap) + TagCaptionH;
         }
 
@@ -655,6 +658,8 @@ namespace Quest3TriggerUI
             CreateFavModeRow(y, FavTagStripW);
             y += FavTagRowH + FavTagGap;
             CreateFavSceneRow(y, FavTagStripW);
+            y += FavTagRowH + FavTagGap;
+            CreateFavStripRow(y, FavTagStripW, "FavExpression", "表 情", new Color(0.25f,0.20f,0.32f,1f), delegate { SetDockMode(3); });
             y += FavTagRowH + FavTagGap;
             CreateFavDeleteRow(y, FavTagStripW);
             y += FavTagRowH + FavTagGap;
@@ -1567,7 +1572,14 @@ namespace Quest3TriggerUI
         internal static AceFavDragSource BeginFavoriteCandidate(
             GameObject target, bool right)
         {
-            AceFavDragSource source = ResolveFavoriteCandidate(target);
+            var expression = target == null ? null : target.GetComponentInParent<ExpressionEntryTag>();
+            var hitButton = target == null ? null : target.GetComponentInParent<UnityEngine.UI.Button>();
+            if (expression != null && hitButton != null && hitButton.gameObject != expression.gameObject) return null;
+            var header = target == null ? null : target.GetComponentInParent<ExpressionPanelDrag>();
+            AceFavDragSource source = header != null ? new AceFavDragSource { ExpressionKey = "__panel", ExpressionOwner = header.Owner } :
+                expression == null ? null : new AceFavDragSource { ExpressionKey = expression.Key, ExpressionOwner = expression.Owner };
+            if (source == null) source = target == null ? null : ResolveSdTagDrag(target);
+            if (source == null) source = ResolveFavoriteCandidate(target);
             if (source != null) source.RightPointer = right;
             return source;
         }
@@ -1845,11 +1857,13 @@ namespace Quest3TriggerUI
 
         internal static bool BeginFavoriteDrag(AceFavDragSource source)
         {
+            if (source != null && source.ExpressionOwner != null) { if (source.ExpressionKey == "__panel") source.ExpressionOwner.BeginPanelDrag(source.RightPointer); else source.ExpressionOwner.BeginItemDrag(source.ExpressionKey); return true; }
             if (source == null || (_favDock == null && _pdDock == null &&
                 _sdDock == null))
                 return false;
             if (_dockDeleteMode && (source.FromBar || source.FromPresetDock ||
                 source.FromSceneDock)) return false;
+            if (source.SceneTagName != null) return BeginSdTagDrag(source);
             BeginFavoriteReorder(source);
             BeginPdReorder(source);
             BeginSdReorder(source);
@@ -1912,6 +1926,9 @@ namespace Quest3TriggerUI
 
         internal static void TickFavoriteDrag()
         {
+            var expression = Quest3TriggerUIPlugin.ClothingDragCandidate;
+            if (expression != null && expression.ExpressionOwner != null) { expression.ExpressionOwner.TickItemDrag(expression.RightPointer); return; }
+            if (_sdDraggingTag != null) { TickSdTagDrag(); return; }
             if (_favGhost == null || _favGhostRoot == null) return;
             SuperController sc = SuperController.singleton;
             Camera viewer = sc == null ? null : sc.lookCamera;
@@ -2054,6 +2071,8 @@ namespace Quest3TriggerUI
             try
             {
                 if (source == null) return;
+                if (source.ExpressionOwner != null) { source.ExpressionOwner.EndItemDrag(); return; }
+                if (source.SceneTagName != null) { EndSdTagDrag(); return; }
                 if (source.ScenePath != null)
                 {
                     // Scene drags answer to the shared dock slot in ANY

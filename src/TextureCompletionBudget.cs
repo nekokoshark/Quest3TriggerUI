@@ -31,7 +31,8 @@ namespace Quest3TriggerUI
         }
         private static void Charge(ImageLoaderThreaded.QueuedImage q)
         {
-            if (Active() && q != null && q.raw != null) _bytes += q.raw.LongLength;
+            if (Active() && q != null)
+                _bytes += q.raw != null ? q.raw.LongLength : NativeCacheBuffer.StagedLength(q);
         }
         private static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions)
         {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -30,8 +30,8 @@ namespace Quest3TriggerUI
     internal static partial class UiAssistHudLink
     {
         private const float SdCellH = PdCellH;   // thumb + overlaid name strip
-        private const float SdGridH = PdGridH;
-        private const float SdStripW = FavTagStripW;
+        private const float SdGridH = FavGridH + 160f;
+        private const float SdStripW = FavTagStripW + 64f;
         private const int SdBuildPerTick = 12;
 
         private static RectTransform _sdDock, _sdCells;
@@ -184,6 +184,8 @@ namespace Quest3TriggerUI
 
         private static void ClearSceneDock()
         {
+            EndSdTagDrag();
+            _sdPrevPage = _sdNextPage = null;
             _sdVisibleCells.Clear();
             _sdKeptCells.Clear();
             _sdHintCell = null;
@@ -307,6 +309,9 @@ namespace Quest3TriggerUI
                     _sdDock.rotation = Quaternion.LookRotation(away, list.up);
             }
             }
+            // Preserve the previous top edge; added height grows downward.
+            _sdDock.position -= _sdDock.up *
+                (Mathf.Max(0f, _sdDock.rect.height - PdGridH) * _sdDock.lossyScale.y * 0.5f);
             ApplySdCollapsed();
             if (_sdUserHidden) return;
             if (_sdDirty || _sdPreviewDirty || _sdBuildSlots != null)

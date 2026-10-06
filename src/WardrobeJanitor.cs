@@ -46,6 +46,8 @@ namespace Quest3TriggerUI
             new HashSet<JSONStorableDynamic>();
         private static float _nextScan;
         private static bool _wasLoading;
+        // Explicit post-preset work, not catalogue scan/idle residency.
+        internal static int PendingRetirements { get { return Pending.Count + _purgeAt.Count + _purgeJobs.Count + ClothingExits.Count; } }
 
         // Resumable catalogue scan: atom index + item index + phase persist
         // across frames so one scan spreads over ~tens of frames instead of
@@ -284,6 +286,15 @@ namespace Quest3TriggerUI
         private static bool _uuaPending, _uuaRequested;
         private static float _nextUuaKick, _uuaAfter;
         private static int _runtimeGeneration;
+        // The cold host owns scheduling, not this janitor's unload decisions.
+        // False/null preserves the original standalone delayed coroutine.
+        internal static Func<bool> ManagedCleanup;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        internal static AsyncOperation SubmitManagedCleanup()
+        {
+            // Retain the coalescer and WardrobeJanitor's UuaGate exemption.
+            return PresetCleanupCoalescer.UnloadForJanitor();
+        }
         private static readonly FieldInfo RealQueuedImages = typeof(ImageLoaderThreaded)
             .GetField("numRealQueuedImages", BindingFlags.Instance |
                 BindingFlags.Public | BindingFlags.NonPublic);
@@ -291,6 +302,7 @@ namespace Quest3TriggerUI
         internal static void KickUnusedAssets()
         {
             PresetCleanupCoalescer.NoteReleased();
+            if (ManagedCleanup != null && ManagedCleanup()) return;
             _uuaRequested = true;
             _uuaAfter = Time.unscaledTime + 15f;
             if (_uuaPending) return;
@@ -821,6 +833,7 @@ namespace Quest3TriggerUI
 
         internal static void Shutdown()
         {
+            ManagedCleanup = null;
             TextureOrphanSweeper.Shutdown();
             InstanceAssetLedger.Shutdown();
             GpuResourceProbe.Shutdown();

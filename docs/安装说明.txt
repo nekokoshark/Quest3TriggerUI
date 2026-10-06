@@ -25,7 +25,7 @@ payload 文件名必须保持 "Quest3TriggerUI.payload.dll.disabled"
 二、适用条件（不满足则不要装）
 --------------------------------------------------------------------
 【必需】
-1. Virt-A-Mate，已在 VaM 1.22.0.12 上开发和验证。
+1. Virt-A-Mate，已在 VaM 1.22.0.13 上开发和验证。
    其他 1.2x 版本理论上可运行，但未实测；1.1x 大概率不兼容。
 2. 已安装 BepInEx 5.x（插件为 BepInEx 插件，非 VaM Session Plugin）。
    未装 BepInEx 的 VaM 请先自行安装。

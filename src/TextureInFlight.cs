@@ -35,6 +35,7 @@ namespace Quest3TriggerUI
             internal Key key;
             internal bool done, valid;
             internal byte[] raw;
+            internal WeakReference nativeOwner;
             internal int width, height;
             internal UnityEngine.TextureFormat format;
             internal bool preprocessed;
@@ -86,10 +87,15 @@ namespace Quest3TriggerUI
                 if (!entry.valid || !_accepting || (Enabled != null && !Enabled.Value) || q.cancel || !Eligible(q) || !key.Equals(MakeKey(q))) return true;
                 // Join the owner's reservation; a refusal means the buffer may
                 // already be back in service, so decode natively instead.
-                if (!DecodedBufferPool.ClaimForShare(entry.raw)) return true;
+                if (entry.nativeOwner != null)
+                {
+                    if (!NativeCacheBuffer.TryShare(entry.nativeOwner, q)) return true;
+                }
+                else if (!DecodedBufferPool.ClaimForShare(entry.raw)) return true;
                 q.width = entry.width; q.height = entry.height;
                 q.textureFormat = entry.format; q.preprocessed = entry.preprocessed;
-                q.raw = entry.raw; q.processed = true;
+                if (entry.nativeOwner == null) q.raw = entry.raw;
+                q.processed = true;
                 if (Interlocked.Increment(ref _hits) == 1)
                     Quest3TriggerUIPlugin.Log.LogInfo("[texture-inflight] first shared decode completed; each request retains native completion");
                 return false;
@@ -102,13 +108,18 @@ namespace Quest3TriggerUI
             lock (__state)
             {
                 var q = __instance;
-                __state.valid = _accepting && __exception == null && q.processed && !q.hadError && !q.cancel && !q.finished && q.raw != null;
+                __state.valid = _accepting && __exception == null && q.processed && !q.hadError && !q.cancel && !q.finished;
                 if (__state.valid)
                 {
                     // Reserve the buffer before it becomes visible to a sharer,
                     // otherwise the owner's Finish could already have parked it
                     // while a second request is still waiting to upload it.
-                    __state.valid = DecodedBufferPool.Reserve(q.raw);
+                    if (q.raw != null) __state.valid = DecodedBufferPool.Reserve(q.raw);
+                    else
+                    {
+                        __state.nativeOwner = NativeCacheBuffer.ShareOwner(q);
+                        __state.valid = __state.nativeOwner != null;
+                    }
                 }
                 if (__state.valid)
                 {

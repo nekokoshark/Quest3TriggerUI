@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using HarmonyLib;
 using MVR.FileManagement;
@@ -26,12 +28,16 @@ namespace Quest3TriggerUI
         private static Harmony _harmony;
         private static volatile bool _enabled;
         private static long _detached, _hotHits, _coldLoads, _unreloadable;
+        private static long _batches, _completedBatches;
 
         internal sealed class Entry
         {
             internal readonly WeakReference Owner;
             internal readonly WeakReference Tree = new WeakReference(null);
             internal int Depth;
+            // Only active, synchronous imports pin the parent. No scene-lifetime strong cache.
+            internal int Leases;
+            internal JSONClass LeasedTree;
             internal Entry(VarPackage package) { Owner = new WeakReference(package); }
         }
 
@@ -39,6 +45,58 @@ namespace Quest3TriggerUI
         {
             internal Entry Entry;
             internal bool Held;
+        }
+
+        internal struct BatchCall
+        {
+            internal Entry Entry;
+            internal bool Held;
+        }
+
+        private static void BatchPrefix(DirectoryEntry __0, out BatchCall __state)
+        {
+            __state = new BatchCall();
+            var directory = __0 as VarDirectoryEntry;
+            if (!_enabled || directory == null || directory.Package == null) return;
+            var entry = GetEntry(directory.Package, true);
+            lock (entry)
+            {
+                entry.Leases++;
+                __state.Entry = entry;
+                __state.Held = true;
+                entry.LeasedTree = Root.GetValue(directory.Package) as JSONClass ?? entry.Tree.Target as JSONClass;
+                Interlocked.Increment(ref _batches);
+            }
+        }
+
+        private static Exception BatchFinalizer(ref BatchCall __state, Exception __exception)
+        {
+            if (!__state.Held) return __exception;
+            __state.Held = false;
+            lock (__state.Entry)
+            {
+                if (--__state.Entry.Leases == 0) __state.Entry.LeasedTree = null;
+                Interlocked.Increment(ref _completedBatches);
+            }
+            return __exception;
+        }
+
+        private static void RequireBatch(MethodInfo method, string expected)
+        {
+            if (method == null) throw new MissingMethodException("DAZMorphBank package import batch changed");
+            var body = method.GetMethodBody();
+            var text = new StringBuilder(BitConverter.ToString(body.GetILAsByteArray()));
+            text.Append('|').Append(body.InitLocals);
+            foreach (var local in body.LocalVariables) text.Append('|').Append(local.LocalType.FullName).Append(':').Append(local.IsPinned);
+            foreach (var clause in body.ExceptionHandlingClauses)
+            {
+                text.Append('|').Append(clause.Flags).Append(':').Append(clause.TryOffset).Append(':').Append(clause.TryLength)
+                    .Append(':').Append(clause.HandlerOffset).Append(':').Append(clause.HandlerLength);
+                if (clause.Flags == ExceptionHandlingClauseOptions.Clause) text.Append(':').Append(clause.CatchType.FullName);
+            }
+            using (var hash = SHA256.Create())
+                if (BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(text.ToString()))).Replace("-", "") != expected)
+                    throw new InvalidDataException("Package import batch fingerprint changed");
         }
 
         private static Entry GetEntry(VarPackage package, bool create)
@@ -90,6 +148,7 @@ namespace Quest3TriggerUI
                 // Original error/disabled/invalidated states win; never revive
                 // an older tree after the native method has explicitly dropped it.
                 entry.Tree.Target = null;
+                entry.LeasedTree = null;
                 return;
             }
             string path = ReloadPath.GetValue(package) as string;
@@ -114,10 +173,12 @@ namespace Quest3TriggerUI
             {
                 // An in-memory tree without a reload source keeps native ownership.
                 entry.Tree.Target = null;
+                entry.LeasedTree = null;
                 Interlocked.Increment(ref _unreloadable);
                 return;
             }
             entry.Tree.Target = tree;
+            entry.LeasedTree = entry.Leases > 0 ? tree : null;
             // Drop only the package root, not any nodes already handed to users.
             Root.SetValue(package, null);
             Loaded.SetValue(package, false);
@@ -169,6 +230,9 @@ namespace Quest3TriggerUI
             var bulk = typeof(VarPackage).GetMethod("SyncJSONCache", new[] { typeof(HashSet<string>), typeof(HashSet<string>) });
             if (get == null || sync == null || bulk == null)
                 throw new MissingMethodException("VarPackage JSON retention methods changed");
+            var batch = typeof(DAZMorphBank).GetMethod("RuntimeImportFromDir", BindingFlags.Instance | BindingFlags.NonPublic,
+                null, new[] { typeof(DirectoryEntry), typeof(bool), typeof(bool), typeof(bool) }, null);
+            RequireBatch(batch, "A667EB8F4A9C733004286343A63E0FD544F4DEB5275C2CEC3617318CDBF7555B");
             _harmony = new Harmony("quest3triggerui.packagejson." + typeof(PackageJsonWeakRetention).Namespace);
             try
             {
@@ -176,6 +240,8 @@ namespace Quest3TriggerUI
                 var finalizer = new HarmonyMethod(typeof(PackageJsonWeakRetention), "Finalizer");
                 foreach (var method in new[] { get, sync, bulk })
                     _harmony.Patch(method, prefix: prefix, finalizer: finalizer);
+                _harmony.Patch(batch, prefix: new HarmonyMethod(typeof(PackageJsonWeakRetention), "BatchPrefix"),
+                    finalizer: new HarmonyMethod(typeof(PackageJsonWeakRetention), "BatchFinalizer"));
                 _enabled = true;
                 int seeded = 0, nodes = 0;
                 var packages = FileManager.GetPackages();
@@ -192,7 +258,7 @@ namespace Quest3TriggerUI
                         Detach(package, entry, false);
                     }
                 }
-                Log("installed methods=3 packages=" + packages.Count + " seeded=" + seeded +
+                Log("installed methods=4 packageBatchLease=True release=outermost-return packages=" + packages.Count + " seeded=" + seeded +
                     " topEntries=" + nodes + " detached=" + _detached + " unreloadable=" + _unreloadable +
                     " ownership=weak gcPolicy=unchanged");
             }
@@ -216,7 +282,11 @@ namespace Quest3TriggerUI
                 {
                     var package = entry.Owner.Target as VarPackage;
                     if (package == null) continue;
-                    lock (entry) Restore(package, entry);
+                    lock (entry)
+                    {
+                        Restore(package, entry);
+                        entry.LeasedTree = null;
+                    }
                 }
             }
             finally
@@ -225,7 +295,7 @@ namespace Quest3TriggerUI
                 _harmony = null;
                 lock (TableGate) { _entries.Clear(); Sweep.Clear(); }
                 Log("shutdown detached=" + _detached + " hotHits=" + _hotHits + " coldLoads=" + _coldLoads +
-                    " unreloadable=" + _unreloadable + " nativeLazyLoad=restored");
+                    " unreloadable=" + _unreloadable + " batches=" + _batches + " completedBatches=" + _completedBatches + " nativeLazyLoad=restored");
             }
         }
 

@@ -66,7 +66,9 @@ namespace Quest3TriggerUI.HotLoader
             }
 
             _stableObservations++;
-            if (_stableObservations >= 2)
+            // Only hash/load once after a file change has remained stable.
+            // Re-reading the unchanged DLL every poll creates avoidable garbage.
+            if (_stableObservations == 2)
                 TryLoadPayload(false);
 
             // Extermination sweeps: run a dozen times after each payload load,

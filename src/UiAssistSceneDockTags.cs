@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using BepInEx;
@@ -214,21 +214,11 @@ namespace Quest3TriggerUI
         // (默认+新建+pager+服装+预设+删除+隐藏 = 7 rows). The two extra
         // management rows (存新/保存) extend the dock below the list
         // height — RequiredSdStripHeight already grows the dock to fit.
-        private static int SdTagCapacity
-        {
-            get
-            {
-                float listH = _sdListHeight > 0f ? _sdListHeight : 400f;
-                float usable = listH - FavPad * 2f - TagCaptionH -
-                    7f * FavTagRowH - 8f * FavTagGap;
-                return Mathf.Max(1,
-                    Mathf.FloorToInt(usable / (FavTagRowH + FavTagGap)));
-            }
-        }
+        private static int SdTagCapacity { get { return SceneTagPageOrder.Capacity; } }
 
         private static int SdTagVisibleCount
         {
-            get { return Mathf.Min(_sdTagNames.Count, SdTagCapacity); }
+            get { return Mathf.Min(Mathf.Max(0, _sdTagNames.Count - _sdTagTop), SdTagCapacity); }
         }
 
         private static bool SdTagPager
@@ -239,7 +229,7 @@ namespace Quest3TriggerUI
         private static float RequiredSdStripHeight()
         {
             int rows = 1 + SdTagVisibleCount + 1 +
-                (SdTagPager ? 1 : 0) + 6;
+                (SdTagPager ? 1 : 0) + 7;
             return FavPad * 2f + rows * (FavTagRowH + FavTagGap) +
                 TagCaptionH;
         }
@@ -275,8 +265,7 @@ namespace Quest3TriggerUI
             for (int i = _sdTagStrip.childCount - 1; i >= 0; i--)
                 UnityEngine.Object.Destroy(
                     _sdTagStrip.GetChild(i).gameObject);
-            _sdTagTop = Mathf.Clamp(_sdTagTop, 0,
-                Mathf.Max(0, _sdTagNames.Count - SdTagCapacity));
+            _sdTagTop = SceneTagPageOrder.Top(_sdTagTop, _sdTagNames.Count);
             float y = 0f;
             AddSdCaption("场景收藏", y);
             y += TagCaptionH + FavTagGap;
@@ -324,6 +313,8 @@ namespace Quest3TriggerUI
             CreateSdStripRow(y, "SdModePd", "预 设",
                 new Color(0.20f, 0.24f, 0.34f, 1f),
                 delegate { SetDockMode(1); });
+            y += FavTagRowH + FavTagGap;
+            CreateSdStripRow(y, "SdModeExpression", "表 情", new Color(0.25f,0.20f,0.32f,1f), delegate { SetDockMode(3); });
             y += FavTagRowH + FavTagGap;
             _sdTagStrip.sizeDelta = new Vector2(SdStripW, y);
         }
@@ -443,7 +434,7 @@ namespace Quest3TriggerUI
             rect.sizeDelta = new Vector2(SdStripW, FavTagRowH);
             row.AddComponent<SdTagRowTag>().GroupIndex = index;
             Image bg = row.AddComponent<Image>();
-            bg.color = _sdTagIndex == index
+            bg.color = _sdDraggingTag == name ? new Color(0.55f, 0.32f, 0.10f, 1f) : _sdTagIndex == index
                 ? new Color(0.11f, 0.38f, 0.48f, 1f)
                 : new Color(0.16f, 0.16f, 0.2f, 1f);
             bg.raycastTarget = true;
@@ -456,6 +447,7 @@ namespace Quest3TriggerUI
                 if (Quest3TriggerUIPlugin.ClothingDragActive) return;
                 if (_sdTagEditing != null) return;
                 VrHaptics.Press();
+                if (Time.unscaledTime < _favoriteClickAfter || _sdDraggingTag != null) return;
                 SelectSdTag(capturedIndex);
             });
             if (_sdTagEditing == name)
@@ -525,9 +517,9 @@ namespace Quest3TriggerUI
             rect.anchoredPosition = new Vector2(0f, -y);
             rect.sizeDelta = new Vector2(SdStripW, FavTagRowH);
             float x = SdStripW * 0.25f;
-            CreateSdNavButton(rect, "▲", -x,
+            CreateSdNavButton(rect, "上一页", -x,
                 delegate { SdTagPageStep(-1); });
-            CreateSdNavButton(rect, "▼", x,
+            CreateSdNavButton(rect, "下一页", x,
                 delegate { SdTagPageStep(1); });
         }
 
@@ -541,7 +533,8 @@ namespace Quest3TriggerUI
             rect.anchorMin = new Vector2(0.5f, 0.5f);
             rect.anchorMax = new Vector2(0.5f, 0.5f);
             rect.anchoredPosition = new Vector2(x, 0f);
-            rect.sizeDelta = new Vector2(46f, FavNavH - 4f);
+            rect.sizeDelta = new Vector2(SdStripW * 0.5f - 6f, FavNavH - 4f);
+            if (x < 0) _sdPrevPage = rect; else _sdNextPage = rect;
             Image bg = go.AddComponent<Image>();
             bg.color = new Color(0.11f, 0.38f, 0.48f, 1f);
             bg.raycastTarget = true;
@@ -565,7 +558,7 @@ namespace Quest3TriggerUI
             textRect.offsetMax = Vector2.zero;
             text.text = label;
             text.alignment = TextAnchor.MiddleCenter;
-            text.fontSize = 20;
+            text.fontSize = 14;
             text.color = Color.white;
             text.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             text.raycastTarget = false;
@@ -573,9 +566,7 @@ namespace Quest3TriggerUI
 
         private static void SdTagPageStep(int delta)
         {
-            int cap = SdTagCapacity;
-            int max = Mathf.Max(0, _sdTagNames.Count - cap);
-            int next = Mathf.Clamp(_sdTagTop + delta * cap, 0, max);
+            int next = SceneTagPageOrder.Step(_sdTagTop, _sdTagNames.Count, delta);
             if (next == _sdTagTop) return;
             _sdTagTop = next;
             RefreshSdTagRows();
@@ -608,7 +599,7 @@ namespace Quest3TriggerUI
                 name = "标签" + n + "-" + (++n);
             _sdTagItems[name] = new List<string[]>();
             _sdTagNames.Add(name);
-            _sdTagTop = Mathf.Max(0, _sdTagNames.Count - SdTagCapacity);
+            _sdTagTop = SceneTagPageOrder.Top(_sdTagNames.Count - 1, _sdTagNames.Count);
             _sdTagEditing = name;
             SaveSdTags();
             RefreshSdTagRows();

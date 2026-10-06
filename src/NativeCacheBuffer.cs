@@ -11,344 +11,133 @@ using UnityEngine;
 
 namespace Quest3TriggerUI
 {
-    // A completed .vamcache hit is read into a native block instead of a
-    // managed byte[]: large blocks leave the process once the upload has
-    // consumed them; small blocks have a short, bounded reuse window. These
-    // pages never enter Boehm's free lists. Staging is budget-bounded, and every deviation - small
-    // file, short read, budget, exception - falls back to the pooled managed
-    // read, so the request always uploads the same bytes.
-    internal static class NativeCacheBuffer
+    // Game adapter only. The arena owns allocation, budgets, sharing and free;
+    // this bounded weak table transfers leases between original consumers.
+    internal static partial class NativeCacheBuffer
     {
         internal static ConfigEntry<bool> Enabled;
-        internal static ConfigEntry<int> BudgetMiB;
-        internal static ConfigEntry<int> IdleMiB;
-        internal static ConfigEntry<int> MaxFileMiB;
-
-        // Diagnostics, read from the texture-budget cycle line.
+        internal static ConfigEntry<int> BudgetMiB, IdleMiB, MaxFileMiB;
         internal static long Staged, StagedBytes, Uploaded, Released, Failures;
-
-        // Bytes currently staged for an in-flight request, and bytes held
-        // committed for reuse. Both are bounded by config, not by traffic.
-        internal static long LiveMiB { get { return Interlocked.Read(ref _liveBytes) / 1048576L; } }
-        internal static long IdleHeldMiB { get { return Interlocked.Read(ref _idleBytes) / 1048576L; } }
-
-        private static Harmony _harmony;
         private static readonly object Sync = new object();
-        // Weak keys plus counted blocks: staging can never root the request it
-        // describes, and a retired hot-reload generation keeps at most the
-        // blocks it is still walking (its own finalizers release those).
-        private static readonly List<Stage> Stages = new List<Stage>(8);
-        private static readonly Dictionary<int, Stack<Block>> Idle =
-            new Dictionary<int, Stack<Block>>();
-        private static long _liveBytes, _idleBytes;
-        private static int _liveSlots, _generation, _nextSweep;
+        private static readonly TextureStagingArena Arena = new TextureStagingArena(BudgetBytes, IdleBytesCap);
+        private static readonly List<Stage> Stages = new List<Stage>(256);
+        private static Harmony _harmony;
         private static bool _retired;
-        private const int MaxIdleBlock = 16 * 1048576;
-        private const long MaxIdleBytes = 64L * 1048576;
-        private const int IdleMilliseconds = 10000;
-        private const int MaxStages = 16;
-        private const int MinShift = 20;
-        private const int MaxShift = 30;
-        private const uint MEM_COMMIT = 0x1000;
-        private const uint MEM_RESERVE = 0x2000;
-        private const uint MEM_RELEASE = 0x8000;
-        private const uint PAGE_READWRITE = 0x04;
+        private static int _nextSweep;
         private const int ScratchBytes = 128 * 1024;
         private const BindingFlags Static = BindingFlags.Static | BindingFlags.NonPublic;
         private const BindingFlags All = BindingFlags.Static | BindingFlags.Instance |
             BindingFlags.Public | BindingFlags.NonPublic;
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr VirtualAlloc(IntPtr address, UIntPtr size,
-            uint type, uint protect);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern bool VirtualFree(IntPtr address, UIntPtr size, uint type);
-
         [ThreadStatic] private static byte[] _scratch;
-
-        private sealed class Block
-        {
-            internal IntPtr ptr;
-            internal int capacity;
-            internal int length;
-            internal string path;
-            internal int generation, returnedAt;
-            internal bool charged;
-            ~Block()
-            {
-                // Safety net only: a staged block is released on the main
-                // thread, an idle block is owned by the reuse list. This runs
-                // for a block whose generation was retired with it still open.
-                IntPtr handle = ptr;
-                ptr = IntPtr.Zero;
-                if (handle != IntPtr.Zero) VirtualFree(handle, UIntPtr.Zero, MEM_RELEASE);
-            }
-        }
 
         private sealed class Stage
         {
             internal WeakReference image;
-            internal Block block;
+            internal TextureStagingArena.Lease lease;
         }
 
-        private static bool Active()
-        {
-            return Enabled == null || Enabled.Value;
-        }
-
+        internal static long LiveMiB { get { return Arena.Snapshot().LiveBytes / 1048576; } }
+        internal static long IdleHeldMiB { get { return Arena.Snapshot().IdleBytes / 1048576; } }
+        internal static int LiveSlots { get { return Arena.Snapshot().LiveBlocks; } }
+        internal static TextureStagingArena.State OwnershipState { get { return Arena.Snapshot(); } }
+        private static bool Active() { return Enabled == null || Enabled.Value; }
         private static long BudgetBytes()
-        {
-            long mib = BudgetMiB == null ? 1024L : Math.Max(0L, BudgetMiB.Value);
-            return mib * 1048576L;
-        }
-
+        { return (BudgetMiB == null ? 1024L : Math.Max(0L, BudgetMiB.Value)) * 1048576; }
         private static long IdleBytesCap()
-        {
-            long mib = IdleMiB == null ? 192L : Math.Max(0L, IdleMiB.Value);
-            return Math.Min(MaxIdleBytes, mib * 1048576L);
-        }
-
+        { return Math.Min(64L, IdleMiB == null ? 192L : Math.Max(0L, IdleMiB.Value)) * 1048576; }
         private static long FileCapBytes()
-        {
-            long mib = MaxFileMiB == null ? 512L : Math.Max(1L, MaxFileMiB.Value);
-            return mib * 1048576L;
-        }
+        { return (MaxFileMiB == null ? 512L : Math.Max(1L, MaxFileMiB.Value)) * 1048576; }
+        private static int AllocationCapacity(int length, bool raster)
+        { return TextureStagingArena.Capacity(length, raster); }
+        private static TextureStagingArena.Lease Rent(int length, bool raster = false)
+        { return Arena.Rent(length, raster); }
+        private static void Drop(TextureStagingArena.Lease lease)
+        { if (lease != null) lease.Dispose(); }
 
-        // Called at both cache reads of QueuedImage.Process. True means a
-        // native block now owns the payload and q.raw must stay null.
         internal static bool TryStage(ImageLoaderThreaded.QueuedImage q, string path)
         {
             if (q == null || !Active() || string.IsNullOrEmpty(path)) return false;
-            Block block = null;
+            TextureStagingArena.Lease lease = null;
             try
             {
                 var info = new FileInfo(path);
                 if (!info.Exists) return false;
                 long length = info.Length;
-                if (length < TextureCacheByteReuse.MinimumBytes() || length > FileCapBytes() ||
-                    length > int.MaxValue) return false;
-                int size = (int)length;
-                block = Rent(size); // Reserves rounded capacity and a slot before I/O.
-                if (block == null) return false;
-                int read;
-                if (!Fill(block, path, size, out read) || read != size)
-                {
-                    Interlocked.Increment(ref Failures);
-                    return false;
-                }
-                block.length = size;
-                block.path = path;
-                if (!StageIt(q, block)) return false;
-                block = null; // The stage now owns the reservation.
-                Interlocked.Increment(ref Staged);
-                Interlocked.Add(ref StagedBytes, size);
+                if (length < TextureCacheByteReuse.MinimumBytes() || length > FileCapBytes() || length > int.MaxValue) return false;
+                lease = Rent((int)length);
+                if (lease == null) return false;
+                if (!Fill(lease, path)) { Interlocked.Increment(ref Failures); return false; }
+                lease.SourcePath = path;
+                if (!StageIt(q, lease)) return false;
+                lease = null; // Transfer, not a second reference-count increment.
+                Interlocked.Increment(ref Staged); Interlocked.Add(ref StagedBytes, length);
                 return true;
             }
-            catch (Exception)
-            {
-                Interlocked.Increment(ref Failures);
-                return false;
-            }
-            finally { if (block != null) Drop(block); }
+            catch (Exception) { Interlocked.Increment(ref Failures); return false; }
+            finally { if (lease != null) lease.Dispose(); }
         }
 
-        // Stands in for tex.LoadRawTextureData(q.raw) at the preprocessed
-        // upload of QueuedImage.Finish. A staged block is uploaded by pointer
-        // and released immediately; every other request - decode, inflight
-        // share, web cache - keeps the exact byte[] upload it had.
         internal static void Upload(Texture2D texture, ImageLoaderThreaded.QueuedImage q)
         {
-            Block block = Detach(q);
-            if (block == null)
-            {
-                texture.LoadRawTextureData(q.raw);
-                return;
-            }
-            try
+            var lease = Detach(q);
+            if (lease == null) { texture.LoadRawTextureData(q.raw); return; }
+            using (lease)
             {
                 try
                 {
-                    texture.LoadRawTextureData(block.ptr, block.length);
+                    texture.LoadRawTextureData(lease.Pointer, lease.Length);
                     Interlocked.Increment(ref Uploaded);
                 }
                 catch (Exception)
                 {
                     Interlocked.Increment(ref Failures);
-                    q.raw = TextureCacheByteReuse.ReadCachedBytes(block.path, false);
+                    q.raw = lease.SourcePath != null ? TextureCacheByteReuse.ReadCachedBytes(lease.SourcePath, false) : CopyManaged(lease);
                     texture.LoadRawTextureData(q.raw);
                 }
-            }
-            finally
-            {
-                Interlocked.Increment(ref Released);
-                Drop(block);
+                finally { Interlocked.Increment(ref Released); }
             }
         }
 
-        // Runs even when Finish throws; preserve the original exception.
-        private static Exception AfterFinish(ImageLoaderThreaded.QueuedImage __instance,
-            Exception __exception)
+        private static Exception AfterFinish(ImageLoaderThreaded.QueuedImage __instance, Exception __exception)
+        { Release(__instance); return __exception; }
+        private static Exception AfterProcess(ImageLoaderThreaded.QueuedImage __instance, Exception __exception)
         {
-            Release(__instance);
+            if (__exception != null || (__instance != null && __instance.hadError)) Release(__instance);
             return __exception;
         }
-
-        private static Exception AfterProcess(ImageLoaderThreaded.QueuedImage __instance,
-            Exception __exception)
-        {
-            // Native Finish guards hadError/finished, not cancel. A cancel flag
-            // alone is not permission to discard a payload it may still upload.
-            if (__exception != null || (__instance != null && __instance.hadError))
-                Release(__instance);
-            return __exception;
-        }
-
         internal static void Release(ImageLoaderThreaded.QueuedImage q)
         {
-            Block block = Detach(q);
-            if (block == null) return;
-            Interlocked.Increment(ref Released);
-            Drop(block);
+            var lease = Detach(q);
+            if (lease == null) return;
+            Interlocked.Increment(ref Released); lease.Dispose();
         }
-
         internal static long StagedLength(ImageLoaderThreaded.QueuedImage q)
         {
-            if (q == null) return 0L;
-            lock (Sync)
-                for (int i = 0; i < Stages.Count; i++)
-                    if (ReferenceEquals(Stages[i].image.Target, q)) return Stages[i].block.length;
-            return 0L;
+            if (q == null) return 0;
+            lock (Sync) foreach (Stage stage in Stages)
+                if (ReferenceEquals(stage.image.Target, q)) return stage.lease.Length;
+            return 0;
         }
-
-        private static bool StageIt(ImageLoaderThreaded.QueuedImage q, Block block)
+        private static bool StageIt(ImageLoaderThreaded.QueuedImage q, TextureStagingArena.Lease lease)
         {
             lock (Sync)
             {
-                if (_retired || block.generation != _generation || q.cancel || q.finished)
-                    return false;
-                for (int i = 0; i < Stages.Count; i++)
-                    if (ReferenceEquals(Stages[i].image.Target, q)) return false;
-                // Rent counts filling, staged and uploading blocks. Never evict a live request.
-                Stages.Add(new Stage { image = new WeakReference(q), block = block });
-                // Publish pointer ownership and detach raw under the same lock
-                // used by Shutdown. The caller must not clear raw afterwards.
+                if (_retired || !Arena.Accepts(lease) || q.cancel || q.finished || Stages.Count >= 256) return false;
+                foreach (Stage stage in Stages) if (ReferenceEquals(stage.image.Target, q)) return false;
+                Stages.Add(new Stage { image = new WeakReference(q), lease = lease });
                 q.raw = null;
                 return true;
             }
         }
-
-        private static Block Detach(ImageLoaderThreaded.QueuedImage q)
+        private static TextureStagingArena.Lease Detach(ImageLoaderThreaded.QueuedImage q)
         {
             if (q == null) return null;
-            lock (Sync)
-                for (int i = 0; i < Stages.Count; i++)
-                    if (ReferenceEquals(Stages[i].image.Target, q))
-                    {
-                        Block block = Stages[i].block;
-                        Stages.RemoveAt(i);
-                        return block;
-                    }
+            lock (Sync) for (int i = 0; i < Stages.Count; i++)
+                if (ReferenceEquals(Stages[i].image.Target, q))
+                { var lease = Stages[i].lease; Stages.RemoveAt(i); return lease; }
             return null;
         }
-
-        private static void Drop(Block block)
-        {
-            if (block == null) return;
-            lock (Sync)
-            {
-                if (!block.charged) return;
-                block.charged = false;
-                _liveBytes -= block.capacity;
-                _liveSlots--;
-                if (!_retired && block.generation == _generation && block.ptr != IntPtr.Zero &&
-                    block.capacity <= MaxIdleBlock && _idleBytes + block.capacity <= IdleBytesCap())
-                {
-                    Stack<Block> idle;
-                    if (!Idle.TryGetValue(block.capacity, out idle))
-                        Idle[block.capacity] = idle = new Stack<Block>();
-                    block.length = 0;
-                    block.path = null;
-                    block.returnedAt = Environment.TickCount;
-                    idle.Push(block);
-                    _idleBytes += block.capacity;
-                    return;
-                }
-            }
-            Free(block);
-        }
-
-        private static void Free(Block block)
-        {
-            IntPtr ptr = block.ptr;
-            block.ptr = IntPtr.Zero;
-            if (ptr != IntPtr.Zero) VirtualFree(ptr, UIntPtr.Zero, MEM_RELEASE);
-        }
-
-        private static int Capacity(int length)
-        {
-            if (length <= 0 || length > (1 << MaxShift)) return 0;
-            int shift = MinShift;
-            while ((1 << shift) < length && shift < MaxShift) shift++;
-            return 1 << shift;
-        }
-
-        private static Block Rent(int length)
-        {
-            int capacity = Capacity(length);
-            if (capacity == 0) return null;
-            lock (Sync)
-            {
-                if (_retired || _liveSlots >= MaxStages || _liveBytes + capacity > BudgetBytes())
-                    return null;
-                Block block = null;
-                Stack<Block> idle;
-                if (Idle.TryGetValue(capacity, out idle) && idle.Count > 0)
-                {
-                    block = idle.Pop();
-                    _idleBytes -= block.capacity;
-                    if (idle.Count == 0) Idle.Remove(capacity);
-                }
-                // Idle committed pages are included in the allocation budget too.
-                TrimIdleLocked(capacity);
-                if (block == null)
-                {
-                    IntPtr ptr = VirtualAlloc(IntPtr.Zero, new UIntPtr((ulong)capacity),
-                        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-                    if (ptr == IntPtr.Zero) return null;
-                    block = new Block { ptr = ptr, capacity = capacity };
-                }
-                block.charged = true;
-                block.generation = _generation;
-                _liveBytes += capacity;
-                _liveSlots++;
-                return block;
-            }
-        }
-
-        // Caller holds Sync. Small bounded idle pool; no Unity object enumeration.
-        private static void TrimIdleLocked(int upcoming)
-        {
-            int now = Environment.TickCount;
-            var empty = new List<int>();
-            foreach (var pair in Idle)
-            {
-                Block[] blocks = pair.Value.ToArray();
-                pair.Value.Clear();
-                foreach (Block block in blocks)
-                {
-                    if (_retired || unchecked(now - block.returnedAt) >= IdleMilliseconds ||
-                        _idleBytes > IdleBytesCap() || _liveBytes + _idleBytes + upcoming > BudgetBytes())
-                    {
-                        _idleBytes -= block.capacity;
-                        Free(block);
-                    }
-                    else pair.Value.Push(block);
-                }
-                if (pair.Value.Count == 0) empty.Add(pair.Key);
-            }
-            foreach (int key in empty) Idle.Remove(key);
-        }
-
+        internal static long TrimIdleNow() { return Arena.TrimIdle(true); }
         internal static void SweepIdle()
         {
             int now = Environment.TickCount;
@@ -358,44 +147,31 @@ namespace Quest3TriggerUI
                 _nextSweep = now + 1000;
                 for (int i = Stages.Count - 1; i >= 0; i--)
                 {
-                    var q = Stages[i].image.Target as ImageLoaderThreaded.QueuedImage;
-                    if (q != null && !q.finished) continue;
-                    Block block = Stages[i].block;
-                    Stages.RemoveAt(i);
-                    Drop(block);
+                    // A public finished/cancel flag is not an end-of-consumer
+                    // receipt. Normal retirement is the original finalizer.
+                    if (Stages[i].image.Target != null) continue;
+                    var lease = Stages[i].lease; Stages.RemoveAt(i); lease.Dispose();
                 }
-                TrimIdleLocked(0);
+                Arena.TrimIdle(false);
             }
         }
-
-        private static bool Fill(Block block, string path, int length, out int read)
+        private static bool Fill(TextureStagingArena.Lease lease, string path)
         {
-            read = 0;
             byte[] scratch = _scratch;
-            if (scratch == null || scratch.Length != ScratchBytes)
-                scratch = _scratch = new byte[ScratchBytes];
-            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite, ScratchBytes, FileOptions.SequentialScan))
-            {
+            if (scratch == null || scratch.Length != ScratchBytes) scratch = _scratch = new byte[ScratchBytes];
+            int read = 0, length = lease.Length;
+            using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, ScratchBytes, FileOptions.SequentialScan))
                 while (read < length)
                 {
-                    int want = Math.Min(scratch.Length, length - read);
-                    int n = stream.Read(scratch, 0, want);
+                    int n = stream.Read(scratch, 0, Math.Min(scratch.Length, length - read));
                     if (n <= 0) break;
-                    Marshal.Copy(scratch, 0, Offset(block.ptr, read), n);
-                    read += n;
+                    Marshal.Copy(scratch, 0, new IntPtr(lease.Pointer.ToInt64() + read), n); read += n;
                 }
-            }
             return read == length;
         }
 
-        private static IntPtr Offset(IntPtr address, int offset)
-        {
-            return new IntPtr(address.ToInt64() + offset);
-        }
-
-        // Finish uploads the preprocessed cache payload with the first byte[]
-        // overload. Only that site is replaced, and it is replaced in place so
+        // Finish uploads raw at four sites. Replace only q.raw byte[] calls,
+        // in place, so
         // every label, branch and exception boundary stays where it was.
         internal static IEnumerable<CodeInstruction> FinishTranspiler(
             IEnumerable<CodeInstruction> instructions, ILGenerator generator)
@@ -405,33 +181,27 @@ namespace Quest3TriggerUI
                 new[] { typeof(byte[]) });
             if (loadBytes == null) throw new MissingMethodException("byte[] upload");
             FieldInfo raw = typeof(ImageLoaderThreaded.QueuedImage).GetField("raw", All);
-            FieldInfo preprocessed = typeof(ImageLoaderThreaded.QueuedImage).GetField("preprocessed", All);
-            if (raw == null || preprocessed == null) throw new MissingFieldException("raw/preprocessed");
-            int anchor = -1, seen = 0;
+            if (raw == null) throw new MissingFieldException("raw");
+            var sites = new List<int>();
             for (int i = 2; i < code.Count; i++)
             {
                 if (code[i].opcode != OpCodes.Callvirt || !Equals(code[i].operand, loadBytes)) continue;
                 if (code[i - 1].opcode != OpCodes.Ldfld || !Equals(code[i - 1].operand, raw)) continue;
                 if (code[i - 2].opcode != OpCodes.Ldarg_0) continue;
-                seen++;
-                bool guarded = false;
-                for (int k = Math.Max(0, i - 8); k < i - 1; k++)
-                    if (code[k].opcode == OpCodes.Ldfld && Equals(code[k].operand, preprocessed))
-                        guarded = true;
-                if (!guarded) continue;
-                if (anchor >= 0) throw new InvalidOperationException("multiple preprocessed uploads");
                 if (code[i].blocks.Count != 0 || code[i - 1].blocks.Count != 0)
                     throw new InvalidOperationException("upload exception boundary changed");
-                anchor = i;
+                sites.Add(i);
             }
-            if (anchor < 0 || seen == 0)
-                throw new InvalidOperationException("preprocessed upload anchor: " + seen);
-            // tex is already on the stack here; the helper takes the request
-            // from the field load it replaces, so the stack shape is unchanged.
-            code[anchor - 1].opcode = OpCodes.Nop;
-            code[anchor - 1].operand = null;
-            code[anchor].opcode = OpCodes.Call;
-            code[anchor].operand = typeof(NativeCacheBuffer).GetMethod("Upload", Static);
+            // Exactly the preprocessed first/retry, DXT intermediary and plain
+            // cold uploads. tex.GetRawTextureData uploads are not q.raw sites.
+            if (sites.Count != 4) throw new InvalidOperationException("request upload anchors: " + sites.Count);
+            foreach (int site in sites)
+            {
+                code[site - 1].opcode = OpCodes.Nop;
+                code[site - 1].operand = null;
+                code[site].opcode = OpCodes.Call;
+                code[site].operand = typeof(NativeCacheBuffer).GetMethod("Upload", Static);
+            }
             return code;
         }
 
@@ -452,10 +222,10 @@ namespace Quest3TriggerUI
                         .GetMethod("AfterFinish", Static)));
                 _harmony.Patch(typeof(ImageLoaderThreaded.QueuedImage).GetMethod("Process", All),
                     finalizer: new HarmonyMethod(typeof(NativeCacheBuffer).GetMethod("AfterProcess", Static)));
-                lock (Sync) { _retired = false; }
+                lock (Sync) { Arena.Reactivate(); _retired = false; }
                 Log("installed; staged cache reads upload by pointer, budget=" +
                     (BudgetBytes() / 1048576) + "MiB reuse=" + (IdleBytesCap() / 1048576) +
-                    "MiB filecap=" + (FileCapBytes() / 1048576) + "MiB");
+                    "MiB filecap=" + (FileCapBytes() / 1048576) + "MiB ownership=consumer-leases reclamation=last-consumer");
             }
             catch (Exception e)
             {
@@ -468,33 +238,27 @@ namespace Quest3TriggerUI
         {
             lock (Sync)
             {
-                _retired = true;
-                _generation++;
-                // Future Finish calls are unpatched. Preserve live staged payloads
-                // before releasing pointers; filling workers own their blocks until finally.
+                _retired = true; Arena.Retire();
+                // Restore each shared payload once. Filling/uploading consumers
+                // keep their private leases; retirement never frees their pages.
+                var restored = new Dictionary<IntPtr, byte[]>();
                 for (int i = Stages.Count - 1; i >= 0; i--)
                 {
-                    Stage stage = Stages[i];
-                    var q = stage.image.Target as ImageLoaderThreaded.QueuedImage;
+                    Stage stage = Stages[i]; var q = stage.image.Target as ImageLoaderThreaded.QueuedImage;
                     if (q != null && !q.hadError && !q.finished && q.raw == null)
                     {
-                        var raw = new byte[stage.block.length];
-                        Marshal.Copy(stage.block.ptr, raw, 0, raw.Length);
+                        byte[] raw;
+                        if (!restored.TryGetValue(stage.lease.Pointer, out raw))
+                        { raw = CopyManaged(stage.lease); restored.Add(stage.lease.Pointer, raw); }
                         q.raw = raw;
                     }
-                    Stages.RemoveAt(i);
-                    Drop(stage.block);
+                    Stages.RemoveAt(i); stage.lease.Dispose();
                 }
-                TrimIdleLocked(0); // Idle blocks are not live reservations.
             }
             if (_harmony != null) _harmony.UnpatchAll(_harmony.Id);
             _harmony = null;
         }
-
         private static void Log(string message)
-        {
-            if (Quest3TriggerUIPlugin.Log != null)
-                Quest3TriggerUIPlugin.Log.LogInfo("[native-cache] " + message);
-        }
+        { if (Quest3TriggerUIPlugin.Log != null) Quest3TriggerUIPlugin.Log.LogInfo("[native-cache] " + message); }
     }
 }
