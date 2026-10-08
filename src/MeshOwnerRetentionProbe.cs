@@ -49,11 +49,6 @@ namespace Quest3TriggerUI
             internal long registrations, lastBytes;
             internal int lastItems = -1;
         }
-        private sealed class Identity : IEqualityComparer<object>
-        {
-            public new bool Equals(object a, object b) { return ReferenceEquals(a, b); }
-            public int GetHashCode(object a) { return RuntimeHelpers.GetHashCode(a); }
-        }
         private sealed class Stats
         {
             internal string tag;
@@ -65,20 +60,20 @@ namespace Quest3TriggerUI
             internal readonly Dictionary<string,long> skinFieldAliasBytes = new Dictionary<string,long>();
             internal int rootDeadSkins, rootDeadWraps, retiredFields, cacheCandidatesSkipped, dynamicCandidatesSkipped, controlCandidatesSkipped;
             internal long rootDeadWrapBytes;
-            internal readonly HashSet<object> rootWrapSeen = new HashSet<object>(new Identity());
-            internal readonly HashSet<object> rootWrapArrays = new HashSet<object>(new Identity());
-            internal readonly HashSet<object> rootSkinSeen = new HashSet<object>(new Identity());
-            internal readonly HashSet<object> rootSkinArrays = new HashSet<object>(new Identity());
-            internal readonly HashSet<object> rootMeshArrays = new HashSet<object>(new Identity());
+            internal readonly WeakObservationSet rootWrapSeen = new WeakObservationSet();
+            internal readonly WeakObservationSet rootWrapArrays = new WeakObservationSet();
+            internal readonly WeakObservationSet rootSkinSeen = new WeakObservationSet();
+            internal readonly WeakObservationSet rootSkinArrays = new WeakObservationSet();
+            internal readonly WeakObservationSet rootMeshArrays = new WeakObservationSet();
             internal readonly List<CacheCandidate> cacheCandidates = new List<CacheCandidate>();
             internal readonly List<KeyValuePair<WeakReference,string>> dynamicCandidates = new List<KeyValuePair<WeakReference,string>>();
             internal readonly List<WeakReference> controlCandidates = new List<WeakReference>();
-            internal readonly HashSet<object> rootDeadMeshes = new HashSet<object>(new Identity());
-            internal readonly HashSet<object> rootArrays = new HashSet<object>(new Identity());
+            internal readonly WeakObservationSet rootDeadMeshes = new WeakObservationSet();
+            internal readonly WeakObservationSet rootArrays = new WeakObservationSet();
             internal bool rootPartial, rootMorePages, rootBudgetClipped;
-            internal readonly HashSet<object> rootSeen = new HashSet<object>(new Identity());
+            internal readonly WeakObservationSet rootSeen = new WeakObservationSet();
             internal readonly HashSet<int> matchedDead = new HashSet<int>();
-            internal readonly Dictionary<object, bool> arrays = new Dictionary<object, bool>(new Identity());
+            internal readonly WeakObservationIndex<bool> arrays = new WeakObservationIndex<bool>();
         }
         private static bool Ready()
         {
@@ -245,6 +240,7 @@ namespace Quest3TriggerUI
                         s.arrays[array] = true;
                         s.nativeDeadBytes += array.LongLength * width;
                     }
+                    array = null;
                     yield return 0;
                 }
                 if (s.rows < OwnerCap && ((_rootPage == 0 && nativeDead) || e.lastItems < 0 || items != e.lastItems || ownerBytes != e.lastBytes || nativeDead != e.lastNativeDead))
@@ -255,6 +251,8 @@ namespace Quest3TriggerUI
                         " registrations=" + e.registrations + " perOwnerAliasSum=True"); s.rows++;
                 }
                 e.lastItems = items; e.lastBytes = ownerBytes; e.lastNativeDead = nativeDead;
+                // Finished owners are not pinned throughout the following root-directory walk.
+                owner = null;
                 yield return 0;
             }
             foreach (int step in ScanKnownRoots(s)) yield return step;

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -19,7 +19,6 @@ namespace Quest3TriggerUI
         private const string Cloth = "GPUTools.Cloth.Scripts.ClothSettings";
         private static readonly List<Record> Records = new List<Record>();
         private static readonly Dictionary<Type, FieldInfo[]> FieldCache = new Dictionary<Type, FieldInfo[]>();
-        private static readonly Identity Comparer = new Identity();
         private static Harmony _harmony;
         private static bool _installed, _reporting;
         private static int _nextId, _dropped;
@@ -30,11 +29,6 @@ namespace Quest3TriggerUI
         internal static bool Running { get { return _walk != null; } }
         internal static int Tracked { get { return Records.Count; } }
 
-        private sealed class Identity : IEqualityComparer<object>
-        {
-            public new bool Equals(object x, object y) { return ReferenceEquals(x, y); }
-            public int GetHashCode(object x) { return RuntimeHelpers.GetHashCode(x); }
-        }
         private sealed class Record
         {
             internal WeakReference target;
@@ -48,8 +42,8 @@ namespace Quest3TriggerUI
             internal string path;
             internal long bytes;
             internal int buffersLive, buffersDisposed, buffersUnknown;
-            internal readonly HashSet<object> seen = new HashSet<object>(Comparer);
-            internal readonly HashSet<object> arrays = new HashSet<object>(Comparer);
+            internal readonly WeakObservationSet seen = new WeakObservationSet();
+            internal readonly WeakObservationSet arrays = new WeakObservationSet();
         }
         private sealed class Data
         {
@@ -73,10 +67,10 @@ namespace Quest3TriggerUI
             internal int consumersBefore = -1, consumersAfter = -1;
             internal int consumersScanned, consumerDuplicates, consumerNulls, consumerDead, consumerOther;
             internal int clothAttachments, attachmentReadFailures, clothSwitcherVisits, clothCreatorVisits, clothReloaderVisits;
-            internal readonly HashSet<object> consumersSeen = new HashSet<object>(Comparer);
-            internal readonly HashSet<object> rootsSeen = new HashSet<object>(Comparer);
-            internal readonly Dictionary<object, Owner> owners = new Dictionary<object, Owner>(Comparer);
-            internal readonly Dictionary<object, Data> arrays = new Dictionary<object, Data>(Comparer);
+            internal readonly WeakObservationSet consumersSeen = new WeakObservationSet();
+            internal readonly WeakObservationSet rootsSeen = new WeakObservationSet();
+            internal readonly WeakObservationIndex<Owner> owners = new WeakObservationIndex<Owner>();
+            internal readonly WeakObservationIndex<Data> arrays = new WeakObservationIndex<Data>();
             internal readonly Stack<Node> stack = new Stack<Node>();
         }
 
@@ -301,6 +295,8 @@ namespace Quest3TriggerUI
                 if (array != null && array.Rank == 1 && array.GetType().GetElementType().IsValueType)
                 {
                     if (n.owner != null && array.Length != 0) AddArray(s, n, array);
+                    // No payload alias survives in this iterator after its scalar receipt.
+                    array = null; value = null; n.value = null;
                     yield return 0; continue;
                 }
                 var seen = n.owner == null ? s.rootsSeen : n.owner.seen;
